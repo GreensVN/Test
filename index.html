@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shop Grow A Garden - Dịch Vụ & Giống Cây Chất Lượng</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container header-container">
+            <a href="index.html">
+                <img src="images/logo.png" alt="Shop Grow A Garden" class="logo">
+            </a>
+            
+            <nav class="nav-menu">
+                <a href="index.html" class="nav-link active">
+                    <i class="fas fa-home"></i>
+                    <span>Trang Chủ</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-seedling"></i>
+                    <span>Giống Cây</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-paw"></i>
+                    <span>Thú Cưng</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-gamepad"></i>
+                    <span>Tài Khoản Game</span>
+                </a>
+            </nav>
+
+            <div class="user-dropdown" id="userDropdown" style="display: none;">
+                <div class="user-avatar" id="userAvatar">U</div>
+                <span class="user-name" id="userName">User</span>
+                <div class="dropdown-menu">
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-user"></i>
+                        <span>Tài khoản</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-heart"></i>
+                        <span>Yêu thích</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-shopping-cart"></i>
+                        <span>Giỏ hàng</span>
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <div class="dropdown-item" id="logoutButton">
+                        <i class="fas fa-sign-out-alt"></i>
+                        <span>Đăng xuất</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="loginButton">
+                <i class="fas fa-user"></i>
+                <span>Đăng Nhập</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Account Modal -->
+<div class="modal" id="accountModal">
+    <div class="modal-content account-modal">
+        <button class="modal-close" id="closeAccountModal">&times;</button>
+        
+        <div class="account-header">
+            <div class="account-avatar" id="accountAvatar">U</div>
+            <div class="account-info">
+                <div class="account-name" id="accountName">Người dùng</div>
+                <div class="account-email" id="accountEmail">user@example.com</div>
+            </div>
+        </div>
+        
+        <div class="account-balance">
+            Số dư: <span id="accountBalance">0</span>đ
+        </div>
+        
+        <div class="account-actions">
+            <div class="account-action" id="depositAction">
+                <i class="fas fa-money-bill-wave"></i>
+                <span>Nạp tiền</span>
+            </div>
+            <div class="account-action coming-soon-action">
+                <i class="fas fa-shopping-cart"></i>
+                <span>Giỏ hàng</span>
+                <small class="coming-soon-badge">Coming Soon</small>
+            </div>
+            <div class="account-action coming-soon-action">
+                <i class="fas fa-heart"></i>
+                <span>Yêu thích</span>
+                <small class="coming-soon-badge">Coming Soon</small>
+            </div>
+            <div class="account-action coming-soon-action">
+                <i class="fas fa-history"></i>
+                <span>Lịch sử</span>
+                <small class="coming-soon-badge">Coming Soon</small>
+            </div>
+        </div>
+        
+        <button class="btn btn-outline" id="logoutAccountBtn" style="width: 100%;">
+            <i class="fas fa-sign-out-alt"></i>
+            <span>Đăng xuất</span>
+        </button>
+    </div>
+</div>
+
+<!-- Deposit Modal -->
+<!-- Cập nhật modal nạp tiền -->
+<div class="modal" id="depositModal">
+  <div class="modal-content deposit-modal">
+    <button class="modal-close" id="closeDepositModal">&times;</button>
+    <h2 class="modal-title">Nạp tiền bằng thẻ cào</h2>
+    
+    <div class="deposit-steps">
+      <div class="step active" data-step="1">1. Chọn loại thẻ</div>
+      <div class="step" data-step="2">2. Nhập thông tin</div>
+      <div class="step" data-step="3">3. Hoàn thành</div>
+    </div>
+    
+    <div class="card-types">
+      <div class="card-type selected" data-type="viettel">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Viettel-Pay.png" alt="Viettel">
+        <span>Viettel</span>
+      </div>
+      <div class="card-type" data-type="mobifone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-MobiFone.png" alt="Mobifone">
+        <span>Mobifone</span>
+      </div>
+      <div class="card-type" data-type="vinaphone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-VinaPhone.png" alt="Vinaphone">
+        <span>Vinaphone</span>
+      </div>
+      <div class="card-type" data-type="gate">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Gate.png" alt="Gate">
+        <span>Gate</span>
+      </div>
+    </div>
+    
+    <form class="deposit-form" id="depositForm">
+      <div class="form-group">
+        <label for="cardNumber">Mã thẻ <small>(10-15 chữ số)</small></label>
+        <input type="text" id="cardNumber" placeholder="Nhập mã thẻ" required maxlength="15">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardSerial">Số serial <small>(5-12 chữ số)</small></label>
+        <input type="text" id="cardSerial" placeholder="Nhập số serial" required maxlength="12">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardAmount">Mệnh giá</label>
+        <select id="cardAmount" class="filter-input" required>
+          <option value="">-- Chọn mệnh giá --</option>
+          <option value="10000">10,000đ</option>
+          <option value="20000">20,000đ</option>
+          <option value="50000">50,000đ</option>
+          <option value="100000">100,000đ</option>
+          <option value="200000">200,000đ</option>
+          <option value="500000">500,000đ</option>
+        </select>
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-note">
+        <i class="fas fa-info-circle"></i>
+        <span>Mã thẻ và số serial nằm ở mặt sau thẻ cào</span>
+      </div>
+      
+      <button type="submit" class="btn btn-primary btn-submit">
+        <i class="fas fa-check-circle"></i>
+        <span>Nạp tiền</span>
+        <div class="spinner"></div>
+      </button>
+    </form>
+    
+    <div class="deposit-history" id="depositHistory">
+      <h3>Lịch sử nạp tiền gần đây</h3>
+      <div class="history-list">
+        <!-- Nội dung sẽ được thêm bằng JavaScript -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Coming Soon Modal -->
+<div class="modal" id="comingSoonModal">
+    <div class="modal-content">
+        <button class="modal-close" id="closeComingSoonModal">&times;</button>
+        <div class="coming-soon">
+            <i class="fas fa-clock"></i>
+            <h3>Tính năng đang phát triển</h3>
+            <p>Chúng tôi đang nỗ lực để mang đến cho bạn trải nghiệm tốt nhất. Vui lòng quay lại sau!</p>
+        </div>
+    </div>
+</div>
+    
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container hero-container">
+            <h1 class="hero-title">Dịch Vụ Grow A Garden</h1>
+            <p class="hero-subtitle">Khám phá các dịch vụ và sản phẩm chất lượng cao với giá cả hợp lý nhất thị trường</p>
+        </div>
+    </section>
+    
+    <!-- Main Content -->
+    <main class="container">
+        <!-- Filter Section -->
+        <section class="filter-section">
+            <span class="filter-title">BỘ LỌC TÌM KIẾM</span>
+            
+            <div class="filter-grid">
+                <div class="filter-group">
+                    <label class="filter-label">Mã Số Tài Khoản</label>
+                    <input type="text" id="id" class="filter-input" placeholder="Nhập Mã Số Tài Khoản...">
+                </div>
+                
+                <div class="filter-group">
+                    <label class="filter-label">Giá Tiền</label>
+                    <select id="price" class="filter-input filter-select">
+                        <option value="">-- Chọn Giá Tiền --</option>
+                        <option value="duoi-50k">Dưới 50K</option>
+                        <option value="tu-50k-200k">Từ 50K - 200K</option>
+                        <option value="tu-200k-500k">Từ 200K - 500K</option>
+                        <option value="tu-500k-1-trieu">Từ 500K - 1 Triệu</option>
+                        <option value="tren-1-trieu">Trên 1 Triệu</option>
+                    </select>
+                </div>
+                
+                <div class="filter-group">
+                    <label class="filter-label">Ghi Chú</label>
+                    <input type="text" id="ghichu" class="filter-input" placeholder="Nhập ghi chú...">
+                </div>
+            </div>
+            
+            <div class="filter-actions">
+                <button class="btn btn-primary" onclick="filterProducts()">
+                    <i class="fas fa-filter"></i>
+                    <span>Lọc</span>
+                </button>
+                <button class="btn btn-outline" onclick="resetFilters()">
+                    <i class="fas fa-times"></i>
+                    <span>Xóa Lọc</span>
+                </button>
+            </div>
+        </section>
+        
+        <!-- Products Grid -->
+        <section id="productsSection">
+            <div class="products-grid" id="productsGrid">
+                <!-- Products will be loaded here via JavaScript -->
+            </div>
+        </section>
+    </main>
+    
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-logo">
+                    <img src="images/logo.png" alt="Shop Grow A Garden">
+                    <span>Shop Grow A Garden - Giống Cây - Thú Cưng</span>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Về Chúng Tôi</h3>
+                    <p class="footer-text">Chuyên cung cấp dịch vụ, giống cây và thú cưng chất lượng. Giao dịch nhanh chóng, uy tín.</p>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Liên Hệ</h3>
+                    <ul class="footer-links">
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-envelope"></i>
+                                <span>Email: support@shopgrowgarden.com</span>
+                            </a>
+                        </li>
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-phone"></i>
+                                <span>Hotline: 0123 456 789</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>© 2025 Shop Grow A Garden. All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+    
+    <!-- Back to Top Button -->
+    <button class="back-to-top" id="backToTop">
+        <i class="fas fa-arrow-up"></i>
+    </button>
+    
+    <!-- Messenger Float Button -->
+    <a href="https://www.messenger.com/t/8645401405544278" target="_blank" class="messenger-float">
+        <img src="https://i.imgur.com/G7i5D02.png" alt="Messenger">
+    </a>
+
+<div class="modal" id="authModal">
+    <div class="modal-content">
+        <button class="modal-close" id="closeModal">&times;</button>
+        <h2 class="modal-title">Chào mừng bạn</h2>
+        
+        <div class="modal-tabs">
+            <div class="modal-tab active" data-tab="login">Đăng nhập</div>
+            <div class="modal-tab" data-tab="register">Đăng ký</div>
+        </div>
+        
+        <!-- Login Form -->
+        <form class="modal-form active" id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail">Email</label>
+                <input type="email" id="loginEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="loginPassword">Mật khẩu</label>
+                <input type="password" id="loginPassword" placeholder="Nhập mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="remember-me">
+                <input type="checkbox" id="rememberMe">
+                <label for="rememberMe">Ghi nhớ đăng nhập</label>
+            </div>
+            
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary btn-submit">
+                    <i class="fas fa-sign-in-alt"></i>
+                    <span>Đăng nhập</span>
+                    <div class="spinner"></div>
+                </button>
+                
+                <span class="modal-link" id="forgotPassword">Quên mật khẩu?</span>
+            </div>
+            
+            <div class="form-footer">
+                Chưa có tài khoản? <a href="#" class="switch-to-register">Đăng ký ngay</a>
+            </div>
+        </form>
+        
+        <!-- Register Form -->
+        <form class="modal-form" id="registerForm">
+            <div class="form-group">
+                <label for="registerName">Họ và tên</label>
+                <input type="text" id="registerName" placeholder="Nhập họ và tên" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerEmail">Email</label>
+                <input type="email" id="registerEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerPassword">Mật khẩu</label>
+                <input type="password" id="registerPassword" placeholder="Nhập mật khẩu (ít nhất 6 ký tự)" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerConfirmPassword">Nhập lại mật khẩu</label>
+                <input type="password" id="registerConfirmPassword" placeholder="Nhập lại mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-submit">
+                <i class="fas fa-user-plus"></i>
+                <span>Đăng ký</span>
+                <div class="spinner"></div>
+            </button>
+            
+            <div class="form-footer">
+                Đã có tài khoản? <a href="#" class="switch-to-login">Đăng nhập ngay</a>
+            </div>
+        </form>
+        
+        <!-- Social Login -->
+        <div class="social-login">
+            <div class="social-login-title">Hoặc đăng nhập bằng</div>
+            
+            <div class="social-buttons">
+                <div class="social-button facebook">
+                    <i class="fab fa-facebook-f"></i>
+                </div>
+                <div class="social-button google">
+                    <i class="fab fa-google"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Forgot Password Modal -->
+<div class="modal" id="forgotPasswordModal">
+    <div class="modal-content">
+        <button class="modal-close" id="closeForgotModal">&times;</button>
+        <h2 class="modal-title">Quên mật khẩu</h2>
+        
+        <form class="modal-form" id="forgotPasswordForm">
+            <div class="form-group">
+                <label for="forgotEmail">Email</label>
+                <input type="email" id="forgotEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <p style="font-size: 0.9rem; color: var(--gray-color); margin-bottom: 15px;">
+                Chúng tôi sẽ gửi link đặt lại mật khẩu đến email của bạn.
+            </p>
+            
+            <button type="submit" class="btn btn-primary btn-submit">
+                <i class="fas fa-paper-plane"></i>
+                <span>Gửi yêu cầu</span>
+                <div class="spinner"></div>
+            </button>
+            
+            <div class="form-footer" style="margin-top: 15px;">
+                <a href="#" class="switch-to-login">Quay lại đăng nhập</a>
+            </div>
+        </form>
+    </div>
+</div>
+    
+    <!-- JavaScript -->
+    <script src="script.js"></script>
+    <script>
+        // Load products on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadProducts();
+            
+            // Sample product data
+            const products = [
+                {
+                    id: 1,
+                    title: "Gói VIP 1 Tháng",
+                    description: "Tài khoản VIP Grow A Garden với đầy đủ đặc quyền",
+                    price: 150000,
+                    oldPrice: 200000,
+                    image: "images/product1.jpg",
+                    sales: 100,
+                    badge: "HOT",
+                    details: {
+                        features: ["Đầy đủ tính năng VIP", "Hỗ trợ 24/7", "Quà tặng hàng tháng"],
+                        description: "Gói VIP 1 tháng cung cấp cho bạn trải nghiệm tốt nhất với đầy đủ các tính năng cao cấp..."
+                    }
+                },
+                {
+                    id: 2,
+                    title: "Gói Premium 3 Tháng",
+                    description: "Tài khoản Premium Grow A Garden với nhiều ưu đãi",
+                    price: 400000,
+                    oldPrice: 450000,
+                    image: "images/product2.jpg",
+                    sales: 75,
+                    badge: null,
+                    details: {
+                        features: ["Tính năng Premium", "Hỗ trợ nhanh", "Quà tặng định kỳ"],
+                        description: "Gói Premium 3 tháng là lựa chọn tiết kiệm cho những ai muốn trải nghiệm lâu dài..."
+                    }
+                }
+            ];
+            
+            // Render products
+            function renderProducts() {
+                const productsGrid = document.getElementById('productsGrid');
+                productsGrid.innerHTML = '';
+                
+                products.forEach(product => {
+                    const productCard = document.createElement('div');
+                    productCard.className = 'product-card fade-in';
+                    productCard.innerHTML = `
+                        <div class="product-image">
+                            <img src="${product.image}" alt="${product.title}" loading="lazy">
+                            ${product.badge ? `<span class="product-badge">${product.badge}</span>` : ''}
+                        </div>
+                        <div class="product-info">
+                            <h3 class="product-title">${product.title}</h3>
+                            <p class="product-description">${product.description}</p>
+                            
+                            <div class="product-price">
+                                <div>
+                                    <span class="product-current-price">${formatPrice(product.price)}đ</span>
+                                    ${product.oldPrice ? `<span class="product-old-price">${formatPrice(product.oldPrice)}đ</span>` : ''}
+                                </div>
+                                <span class="product-sales">
+                                    <i class="fas fa-user"></i>
+                                    ${product.sales}
+                                </span>
+                            </div>
+                            
+                            <div class="product-actions">
+                                <a href="product.html?id=${product.id}" class="btn-add-to-cart">
+                                    <i class="fas fa-shopping-cart"></i>
+                                    <span>Mua Ngay</span>
+                                </a>
+                                <button class="btn-wishlist" onclick="addToWishlist(${product.id})">
+                                    <i class="far fa-heart"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    
+                    productsGrid.appendChild(productCard);
+                });
+            }
+            
+            function formatPrice(price) {
+                return price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+            }
+            
+            function loadProducts() {
+                // Show loading
+                document.getElementById('productsGrid').innerHTML = `
+                    <div class="fade-in" style="grid-column: 1/-1; text-align: center; padding: 40px;">
+                        <i class="fas fa-spinner fa-spin fa-2x" style="color: var(--primary-color);"></i>
+                    </div>
+                `;
+                
+                // Simulate API call
+                setTimeout(renderProducts, 800);
+            }
+        });
+    </script>
+</body>
+</html>

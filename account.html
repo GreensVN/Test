@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tài khoản - Shop Grow A Garden</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container header-container">
+            <a href="index.html">
+                <img src="images/logo.png" alt="Shop Grow A Garden" class="logo">
+            </a>
+            
+            <nav class="nav-menu">
+                <a href="index.html" class="nav-link">
+                    <i class="fas fa-home"></i>
+                    <span>Trang Chủ</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-seedling"></i>
+                    <span>Giống Cây</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-paw"></i>
+                    <span>Thú Cưng</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-gamepad"></i>
+                    <span>Tài Khoản Game</span>
+                </a>
+            </nav>
+
+            <div class="user-dropdown" id="userDropdown" style="display: none;">
+                <div class="user-avatar" id="userAvatar">U</div>
+                <span class="user-name" id="userName">User</span>
+                <div class="dropdown-menu">
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-user"></i>
+                        <span>Tài khoản</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-heart"></i>
+                        <span>Yêu thích</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-shopping-cart"></i>
+                        <span>Giỏ hàng</span>
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <div class="dropdown-item" id="logoutButton">
+                        <i class="fas fa-sign-out-alt"></i>
+                        <span>Đăng xuất</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="loginButton">
+                <i class="fas fa-user"></i>
+                <span>Đăng Nhập</span>
+            </button>
+    </header>
+    <!-- Account Detail Section -->
+    <main class="container account-detail-container">
+        <div class="breadcrumb">
+            <a href="index.html">Trang chủ</a>
+            <i class="fas fa-chevron-right"></i>
+            <span>Tài khoản</span>
+        </div>
+        
+        <div class="account-detail">
+            <div class="account-sidebar">
+                <div class="account-avatar" id="accountAvatar">U</div>
+                <h2 class="account-name" id="accountName">User</h2>
+                <div class="account-id" id="accountId">ID: 123456</div>
+                
+                <div class="account-menu">
+                    <a href="#" class="account-menu-item active" data-tab="info">
+                        <i class="fas fa-user"></i>
+                        Thông tin tài khoản
+                    </a>
+                    <a href="#" class="account-menu-item" data-tab="balance">
+                        <i class="fas fa-wallet"></i>
+                        Số dư & Nạp tiền
+                    </a>
+                    <a href="#" class="account-menu-item" data-tab="history">
+                        <i class="fas fa-history"></i>
+                        Lịch sử giao dịch
+                    </a>
+                    <a href="#" class="account-menu-item" data-tab="security">
+                        <i class="fas fa-shield-alt"></i>
+                        Bảo mật
+                    </a>
+                </div>
+                
+                <button class="btn btn-outline" id="logoutBtn">
+                    <i class="fas fa-sign-out-alt"></i>
+                    Đăng xuất
+                </button>
+            </div>
+            
+<div class="account-content">
+  <!-- Thông tin tài khoản -->
+  <div class="account-tab active" id="info">
+    <h2>Thông tin tài khoản</h2>
+    <div class="account-info-grid">
+      <div class="info-item">
+        <label>Họ và tên</label>
+        <div class="info-value" id="userFullName">Nguyễn Văn A</div>
+      </div>
+      <div class="info-item">
+        <label>Email</label>
+        <div class="info-value" id="userEmail">user@example.com</div>
+      </div>
+      <div class="info-item">
+        <label>Số điện thoại</label>
+        <div class="info-value" id="userPhone">Chưa cập nhật</div>
+      </div>
+      <div class="info-item">
+        <label>Ngày đăng ký</label>
+        <div class="info-value" id="userRegisterDate">01/01/2023</div>
+      </div>
+      <div class="info-item">
+        <label>ID tài khoản</label>
+        <div class="info-value" id="userAccountId">123456</div>
+      </div>
+    </div>
+    
+    <button class="btn btn-outline" id="editProfileBtn">
+      <i class="fas fa-edit"></i>
+      Chỉnh sửa thông tin
+    </button>
+  </div>
+  
+  <!-- Số dư & Nạp tiền -->
+  <div class="account-tab" id="balance">
+    <h2>Số dư tài khoản</h2>
+    <div class="account-balance-card">
+      <div class="balance-amount" id="balanceAmount">0đ</div>
+      <div class="balance-actions">
+        <button class="btn btn-primary" id="depositBtn">
+          <i class="fas fa-money-bill-wave"></i>
+          Nạp tiền
+        </button>
+        <button class="btn btn-outline" id="withdrawBtn" disabled>
+          <i class="fas fa-hand-holding-usd"></i>
+          Rút tiền (sắp ra mắt)
+        </button>
+      </div>
+    </div>
+    
+    <div class="deposit-methods">
+      <h3>Phương thức nạp tiền</h3>
+      <div class="methods-grid">
+        <div class="method-card active" data-method="card">
+          <i class="fas fa-credit-card"></i>
+          <span>Thẻ cào</span>
+        </div>
+        <div class="method-card coming-soon" data-method="bank">
+          <i class="fas fa-university"></i>
+          <span>Chuyển khoản</span>
+          <small>Coming Soon</small>
+        </div>
+        <div class="method-card coming-soon" data-method="momo">
+          <i class="fas fa-mobile-alt"></i>
+          <span>Ví MoMo</span>
+          <small>Coming Soon</small>
+        </div>
+      </div>
+    </div>
+    
+    <div class="quick-deposit">
+      <h3>Nạp nhanh theo mệnh giá</h3>
+      <div class="quick-amounts">
+        <button class="quick-amount" data-amount="10000">10,000đ</button>
+        <button class="quick-amount" data-amount="20000">20,000đ</button>
+        <button class="quick-amount" data-amount="50000">50,000đ</button>
+        <button class="quick-amount" data-amount="100000">100,000đ</button>
+        <button class="quick-amount" data-amount="200000">200,000đ</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Lịch sử giao dịch -->
+  <div class="account-tab" id="history">
+    <div class="history-header">
+      <h2>Lịch sử giao dịch</h2>
+      <div class="history-export">
+        <button class="btn btn-outline">
+          <i class="fas fa-download"></i>
+          Xuất báo cáo
+        </button>
+      </div>
+    </div>
+    
+    <div class="history-filters">
+      <select class="filter-select" id="historyTypeFilter">
+        <option value="all">Tất cả giao dịch</option>
+        <option value="deposit">Nạp tiền</option>
+        <option value="purchase">Mua hàng</option>
+        <option value="withdraw">Rút tiền</option>
+      </select>
+      
+      <div class="date-range">
+        <input type="date" id="historyStartDate">
+        <span>đến</span>
+        <input type="date" id="historyEndDate">
+      </div>
+    </div>
+    
+    <div class="history-list" id="historyList">
+      <div class="history-item">
+        <div class="history-icon success">
+          <i class="fas fa-arrow-down"></i>
+        </div>
+        <div class="history-details">
+          <div class="history-title">Nạp tiền từ thẻ Viettel</div>
+          <div class="history-date">10/10/2023 15:30</div>
+          <div class="history-info">••••1234</div>
+        </div>
+        <div class="history-amount success">+50,000đ</div>
+      </div>
+      
+      <div class="history-item">
+        <div class="history-icon purchase">
+          <i class="fas fa-shopping-cart"></i>
+        </div>
+        <div class="history-details">
+          <div class="history-title">Mua gói VIP 1 tháng</div>
+          <div class="history-date">09/10/2023 10:15</div>
+          <div class="history-info">ID đơn hàng: #12345</div>
+        </div>
+        <div class="history-amount purchase">-150,000đ</div>
+      </div>
+    </div>
+    
+    <div class="history-pagination">
+      <button class="btn btn-outline" disabled>
+        <i class="fas fa-chevron-left"></i>
+      </button>
+      <span>Trang 1/1</span>
+      <button class="btn btn-outline" disabled>
+        <i class="fas fa-chevron-right"></i>
+      </button>
+    </div>
+  </div>
+  
+  <!-- Bảo mật -->
+  <div class="account-tab" id="security">
+    <h2>Bảo mật tài khoản</h2>
+    
+    <div class="security-settings">
+      <div class="security-item">
+        <div class="security-info">
+          <i class="fas fa-lock"></i>
+          <div>
+            <h4>Mật khẩu</h4>
+            <p>••••••••••</p>
+            <small>Lần thay đổi cuối: 01/10/2023</small>
+          </div>
+        </div>
+        <button class="btn btn-outline" id="changePasswordBtn">
+          <i class="fas fa-edit"></i>
+          Đổi mật khẩu
+        </button>
+      </div>
+      
+      <div class="security-item">
+        <div class="security-info">
+          <i class="fas fa-shield-alt"></i>
+          <div>
+            <h4>Xác thực 2 bước</h4>
+            <p>Chưa bật</p>
+            <small>Tăng cường bảo mật cho tài khoản</small>
+          </div>
+        </div>
+        <button class="btn btn-outline" id="enable2FABtn">
+          <i class="fas fa-toggle-off"></i>
+          Bật
+        </button>
+      </div>
+      
+      <div class="security-item">
+        <div class="security-info">
+          <i class="fas fa-device"></i>
+          <div>
+            <h4>Thiết bị đã đăng nhập</h4>
+            <p>1 thiết bị</p>
+            <small>Trình duyệt Chrome trên Windows</small>
+          </div>
+        </div>
+        <button class="btn btn-outline" id="manageDevicesBtn">
+          <i class="fas fa-cog"></i>
+          Quản lý
+        </button>
+      </div>
+    </div>
+    
+    <div class="security-actions">
+      <button class="btn btn-danger" id="logoutAllBtn">
+        <i class="fas fa-sign-out-alt"></i>
+        Đăng xuất tất cả thiết bị
+      </button>
+    </div>
+  </div>
+</div>
+    
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-logo">
+                    <img src="images/logo.png" alt="Shop Grow A Garden">
+                    <span>Shop Grow A Garden - Giống Cây - Thú Cưng</span>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Về Chúng Tôi</h3>
+                    <p class="footer-text">Chuyên cung cấp dịch vụ, giống cây và thú cưng chất lượng. Giao dịch nhanh chóng, uy tín.</p>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Liên Hệ</h3>
+                    <ul class="footer-links">
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-envelope"></i>
+                                <span>Email: support@shopgrowgarden.com</span>
+                            </a>
+                        </li>
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-phone"></i>
+                                <span>Hotline: 0123 456 789</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>© 2025 Shop Grow A Garden. All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+<!-- Auth Modal -->
+<div class="modal" id="authModal">
+    <div class="modal-content">
+        <button class="modal-close" id="closeModal">&times;</button>
+        <h2 class="modal-title">Chào mừng bạn</h2>
+        
+        <div class="modal-tabs">
+            <div class="modal-tab active" data-tab="login">Đăng nhập</div>
+            <div class="modal-tab" data-tab="register">Đăng ký</div>
+        </div>
+        
+        <!-- Login Form -->
+        <form class="modal-form active" id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail">Email</label>
+                <input type="email" id="loginEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="loginPassword">Mật khẩu</label>
+                <input type="password" id="loginPassword" placeholder="Nhập mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="remember-me">
+                <input type="checkbox" id="rememberMe">
+                <label for="rememberMe">Ghi nhớ đăng nhập</label>
+            </div>
+            
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary btn-submit">
+                    <i class="fas fa-sign-in-alt"></i>
+                    <span>Đăng nhập</span>
+                    <div class="spinner"></div>
+                </button>
+                
+                <span class="modal-link" id="forgotPassword">Quên mật khẩu?</span>
+            </div>
+            
+            <div class="form-footer">
+                Chưa có tài khoản? <a href="#" class="switch-to-register">Đăng ký ngay</a>
+            </div>
+        </form>
+        
+        <!-- Register Form -->
+        <form class="modal-form" id="registerForm">
+            <div class="form-group">
+                <label for="registerName">Họ và tên</label>
+                <input type="text" id="registerName" placeholder="Nhập họ và tên" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerEmail">Email</label>
+                <input type="email" id="registerEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerPassword">Mật khẩu</label>
+                <input type="password" id="registerPassword" placeholder="Nhập mật khẩu (ít nhất 6 ký tự)" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerConfirmPassword">Nhập lại mật khẩu</label>
+                <input type="password" id="registerConfirmPassword" placeholder="Nhập lại mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-submit">
+                <i class="fas fa-user-plus"></i>
+                <span>Đăng ký</span>
+                <div class="spinner"></div>
+            </button>
+            
+            <div class="form-footer">
+                Đã có tài khoản? <a href="#" class="switch-to-login">Đăng nhập ngay</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Deposit Modal -->
+<div class="modal" id="depositModal">
+  <div class="modal-content deposit-modal">
+    <button class="modal-close" id="closeDepositModal">&times;</button>
+    <h2 class="modal-title">Nạp tiền bằng thẻ cào</h2>
+    
+    <div class="deposit-steps">
+      <div class="step active" data-step="1">1. Chọn loại thẻ</div>
+      <div class="step" data-step="2">2. Nhập thông tin</div>
+      <div class="step" data-step="3">3. Hoàn thành</div>
+    </div>
+    
+    <div class="card-types">
+      <div class="card-type selected" data-type="viettel">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Viettel-Pay.png" alt="Viettel">
+        <span>Viettel</span>
+      </div>
+      <div class="card-type" data-type="mobifone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-MobiFone.png" alt="Mobifone">
+        <span>Mobifone</span>
+      </div>
+      <div class="card-type" data-type="vinaphone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-VinaPhone.png" alt="Vinaphone">
+        <span>Vinaphone</span>
+      </div>
+      <div class="card-type" data-type="gate">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Gate.png" alt="Gate">
+        <span>Gate</span>
+      </div>
+    </div>
+    
+    <form class="deposit-form" id="depositForm">
+      <div class="form-group">
+        <label for="cardNumber">Mã thẻ <small>(10-15 chữ số)</small></label>
+        <input type="text" id="cardNumber" placeholder="Nhập mã thẻ" required maxlength="15">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardSerial">Số serial <small>(5-12 chữ số)</small></label>
+        <input type="text" id="cardSerial" placeholder="Nhập số serial" required maxlength="12">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardAmount">Mệnh giá</label>
+        <select id="cardAmount" class="filter-input" required>
+          <option value="">-- Chọn mệnh giá --</option>
+          <option value="10000">10,000đ</option>
+          <option value="20000">20,000đ</option>
+          <option value="50000">50,000đ</option>
+          <option value="100000">100,000đ</option>
+          <option value="200000">200,000đ</option>
+          <option value="500000">500,000đ</option>
+        </select>
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-note">
+        <i class="fas fa-info-circle"></i>
+        <span>Mã thẻ và số serial nằm ở mặt sau thẻ cào</span>
+      </div>
+      
+      <button type="submit" class="btn btn-primary btn-submit">
+        <i class="fas fa-check-circle"></i>
+        <span>Nạp tiền</span>
+        <div class="spinner"></div>
+      </button>
+    </form>
+    
+    <div class="deposit-history" id="depositHistory">
+      <h3>Lịch sử nạp tiền gần đây</h3>
+      <div class="history-list">
+        <!-- Nội dung sẽ được thêm bằng JavaScript -->
+      </div>
+    </div>
+  </div>
+</div>
+
+    <!-- Change Password Modal -->
+    <div class="modal" id="changePasswordModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeChangePasswordModal">&times;</button>
+            <h2 class="modal-title">Đổi mật khẩu</h2>
+            
+            <form id="changePasswordForm">
+                <div class="form-group">
+                    <label for="currentPassword">Mật khẩu hiện tại</label>
+                    <input type="password" id="currentPassword" required>
+                    <span class="password-toggle">
+                        <i class="fas fa-eye"></i>
+                    </span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="newPassword">Mật khẩu mới</label>
+                    <input type="password" id="newPassword" required>
+                    <span class="password-toggle">
+                        <i class="fas fa-eye"></i>
+                    </span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirmNewPassword">Nhập lại mật khẩu mới</label>
+                    <input type="password" id="confirmNewPassword" required>
+                    <span class="password-toggle">
+                        <i class="fas fa-eye"></i>
+                    </span>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">Xác nhận</button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- JavaScript -->
+    <script src="script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Lấy thông tin user từ localStorage
+            const currentUser = JSON.parse(localStorage.getItem('currentUser'));
+            const users = JSON.parse(localStorage.getItem('users')) || [];
+            
+            if (!currentUser) {
+                window.location.href = 'index.html';
+                return;
+            }
+            
+            // Tìm user trong danh sách
+            const user = users.find(u => u.email === currentUser.email);
+            
+            // Hiển thị thông tin user
+            if (user) {
+                document.getElementById('accountAvatar').textContent = user.avatarText || user.name.charAt(0).toUpperCase();
+                document.getElementById('accountName').textContent = user.name;
+                document.getElementById('accountId').textContent = `ID: ${user.id || '123456'}`;
+                document.getElementById('userFullName').textContent = user.name;
+                document.getElementById('userEmail').textContent = user.email;
+                document.getElementById('balanceAmount').textContent = formatPrice(user.balance || 0) + 'đ';
+                
+                // Nếu user chưa có ID, tạo ID ngẫu nhiên và lưu lại
+                if (!user.id) {
+                    user.id = Math.floor(100000 + Math.random() * 900000);
+                    localStorage.setItem('users', JSON.stringify(users));
+                }
+            }
+            
+            // Khởi tạo tabs
+            const tabLinks = document.querySelectorAll('.account-menu-item');
+            const tabPanes = document.querySelectorAll('.account-tab');
+            
+            tabLinks.forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const tabId = this.getAttribute('data-tab');
+                    
+                    // Xóa active từ tất cả tabs
+                    tabLinks.forEach(l => l.classList.remove('active'));
+                    tabPanes.forEach(p => p.classList.remove('active'));
+                    
+                    // Thêm active cho tab được chọn
+                    this.classList.add('active');
+                    document.getElementById(tabId).classList.add('active');
+                });
+            });
+            
+            // Nút nạp tiền
+            document.getElementById('depositBtn').addEventListener('click', function() {
+                const depositModal = document.getElementById('depositModal');
+                depositModal.style.display = 'flex';
+                
+                setTimeout(() => {
+                    depositModal.classList.add('show');
+                }, 10);
+            });
+            
+            // Nút đăng xuất
+            document.getElementById('logoutBtn').addEventListener('click', function() {
+                logoutUser();
+            });
+            
+            // Định dạng giá tiền
+            function formatPrice(price) {
+                return price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+            }
+        });
+    </script>
+</body>
+</html>

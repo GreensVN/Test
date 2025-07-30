@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chi tiết sản phẩm - Shop Grow A Garden</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container header-container">
+            <a href="index.html">
+                <img src="images/logo.png" alt="Shop Grow A Garden" class="logo">
+            </a>
+            
+            <nav class="nav-menu">
+                <a href="index.html" class="nav-link">
+                    <i class="fas fa-home"></i>
+                    <span>Trang Chủ</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-seedling"></i>
+                    <span>Giống Cây</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-paw"></i>
+                    <span>Thú Cưng</span>
+                </a>
+                <a href="#" class="nav-link">
+                    <i class="fas fa-gamepad"></i>
+                    <span>Tài Khoản Game</span>
+                </a>
+            </nav>
+
+            <div class="user-dropdown" id="userDropdown" style="display: none;">
+                <div class="user-avatar" id="userAvatar">U</div>
+                <span class="user-name" id="userName">User</span>
+                <div class="dropdown-menu">
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-user"></i>
+                        <span>Tài khoản</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-heart"></i>
+                        <span>Yêu thích</span>
+                    </a>
+                    <a href="#" class="dropdown-item">
+                        <i class="fas fa-shopping-cart"></i>
+                        <span>Giỏ hàng</span>
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <div class="dropdown-item" id="logoutButton">
+                        <i class="fas fa-sign-out-alt"></i>
+                        <span>Đăng xuất</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="loginButton">
+                <i class="fas fa-user"></i>
+                <span>Đăng Nhập</span>
+            </button>
+    </header>
+    <!-- Product Detail Section -->
+    <main class="container product-detail-container">
+        <div class="breadcrumb">
+            <a href="index.html">Trang chủ</a>
+            <i class="fas fa-chevron-right"></i>
+            <a href="#">Dịch vụ</a>
+            <i class="fas fa-chevron-right"></i>
+            <span id="productTitleBreadcrumb">Chi tiết sản phẩm</span>
+        </div>
+        
+        <div class="product-detail">
+            <div class="product-gallery">
+                <div class="main-image">
+                    <img id="mainProductImage" src="" alt="Product Image" loading="lazy">
+                </div>
+                <div class="thumbnail-images" id="thumbnailImages">
+                    <!-- Thumbnails will be added by JavaScript -->
+                </div>
+            </div>
+            
+            <div class="product-info">
+                <h1 id="productTitle">Đang tải...</h1>
+                <div class="product-meta">
+                    <span class="product-rating">
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star-half-alt"></i>
+                        <span class="rating-count">(42 đánh giá)</span>
+                    </span>
+                    <span class="product-status in-stock">
+                        <i class="fas fa-check-circle"></i>
+                        Còn hàng
+                    </span>
+                </div>
+                
+                <div class="product-price-container">
+                    <span class="current-price" id="currentPrice">0đ</span>
+                    <span class="old-price" id="oldPrice"></span>
+                    <span class="discount-badge" id="discountBadge"></span>
+                </div>
+                
+                <div class="product-description" id="productDescription">
+                    <p>Đang tải mô tả sản phẩm...</p>
+                </div>
+                
+                <div class="product-features" id="productFeatures">
+                    <h3>Tính năng nổi bật:</h3>
+                    <ul>
+                        <!-- Features will be added by JavaScript -->
+                    </ul>
+                </div>
+                
+                <div class="product-actions">
+                    <div class="quantity-selector">
+                        <button class="quantity-btn" id="decreaseQty">-</button>
+                        <input type="number" id="productQty" value="1" min="1">
+                        <button class="quantity-btn" id="increaseQty">+</button>
+                    </div>
+                    
+                    <button class="btn btn-primary btn-add-to-cart" id="addToCartBtn">
+                        <i class="fas fa-shopping-cart"></i>
+                        Thêm vào giỏ hàng
+                    </button>
+                    
+                    <button class="btn btn-outline btn-wishlist" id="addToWishlistBtn">
+                        <i class="far fa-heart"></i>
+                        Yêu thích
+                    </button>
+                </div>
+                
+                <div class="product-meta-info">
+                    <div class="meta-item">
+                        <i class="fas fa-tag"></i>
+                        <span>Danh mục: <a href="#">Dịch vụ Grow A Garden</a></span>
+                    </div>
+                    <div class="meta-item">
+                        <i class="fas fa-share-alt"></i>
+                        <span>Chia sẻ: 
+                            <a href="#"><i class="fab fa-facebook"></i></a>
+                            <a href="#"><i class="fab fa-twitter"></i></a>
+                            <a href="#"><i class="fab fa-pinterest"></i></a>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Product Tabs -->
+        <div class="product-tabs">
+            <ul class="tabs-nav">
+                <li class="active" data-tab="description">Mô tả chi tiết</li>
+                <li data-tab="reviews">Đánh giá</li>
+                <li data-tab="shipping">Vận chuyển</li>
+            </ul>
+            
+            <div class="tabs-content">
+                <div class="tab-pane active" id="description">
+                    <div id="detailedDescription">
+                        <!-- Content will be loaded by JavaScript -->
+                    </div>
+                </div>
+                
+                <div class="tab-pane" id="reviews">
+                    <h3>Đánh giá sản phẩm</h3>
+                    <div class="review-form">
+                        <h4>Viết đánh giá</h4>
+                        <form id="reviewForm">
+                            <div class="form-group">
+                                <label for="reviewName">Tên của bạn</label>
+                                <input type="text" id="reviewName" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="reviewEmail">Email</label>
+                                <input type="email" id="reviewEmail" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Đánh giá của bạn</label>
+                                <div class="rating-input">
+                                    <input type="radio" id="star5" name="rating" value="5">
+                                    <label for="star5"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="star4" name="rating" value="4">
+                                    <label for="star4"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="star3" name="rating" value="3">
+                                    <label for="star3"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="star2" name="rating" value="2">
+                                    <label for="star2"><i class="fas fa-star"></i></label>
+                                    <input type="radio" id="star1" name="rating" value="1">
+                                    <label for="star1"><i class="fas fa-star"></i></label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="reviewText">Nội dung đánh giá</label>
+                                <textarea id="reviewText" rows="5" required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Gửi đánh giá</button>
+                        </form>
+                    </div>
+                    
+                    <div class="review-list">
+                        <div class="review-item">
+                            <div class="review-header">
+                                <span class="review-author">Nguyễn Văn A</span>
+                                <span class="review-date">20/06/2023</span>
+                                <div class="review-rating">
+                                    <i class="fas fa-star"></i>
+                                    <i class="fas fa-star"></i>
+                                    <i class="fas fa-star"></i>
+                                    <i class="fas fa-star"></i>
+                                    <i class="fas fa-star"></i>
+                                </div>
+                            </div>
+                            <div class="review-content">
+                                <p>Sản phẩm rất tốt, tôi rất hài lòng với dịch vụ này. Sẽ ủng hộ shop dài dài.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tab-pane" id="shipping">
+                    <h3>Chính sách vận chuyển</h3>
+                    <p>Chúng tôi giao hàng toàn quốc với các phương thức sau:</p>
+                    <ul>
+                        <li>Giao hàng nhanh trong 2-4 giờ (nội thành Hà Nội, TP.HCM)</li>
+                        <li>Giao hàng tiêu chuẩn 1-3 ngày (toàn quốc)</li>
+                        <li>Nhận hàng tại cửa hàng</li>
+                    </ul>
+                    <p>Phí vận chuyển từ 15.000đ - 30.000đ tùy khu vực.</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Related Products -->
+        <section class="related-products">
+            <h2 class="section-title">Sản phẩm liên quan</h2>
+            <div class="products-grid" id="relatedProducts">
+                <!-- Related products will be loaded by JavaScript -->
+            </div>
+        </section>
+    </main>
+    
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-logo">
+                    <img src="images/logo.png" alt="Shop Grow A Garden">
+                    <span>Shop Grow A Garden - Giống Cây - Thú Cưng</span>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Về Chúng Tôi</h3>
+                    <p class="footer-text">Chuyên cung cấp dịch vụ, giống cây và thú cưng chất lượng. Giao dịch nhanh chóng, uy tín.</p>
+                </div>
+                
+                <div>
+                    <h3 class="footer-title">Liên Hệ</h3>
+                    <ul class="footer-links">
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-envelope"></i>
+                                <span>Email: support@shopgrowgarden.com</span>
+                            </a>
+                        </li>
+                        <li class="footer-link">
+                            <a href="#">
+                                <i class="fas fa-phone"></i>
+                                <span>Hotline: 0123 456 789</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>© 2025 Shop Grow A Garden. All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+<!-- Auth Modal -->
+<div class="modal" id="authModal">
+    <div class="modal-content">
+        <button class="modal-close" id="closeModal">&times;</button>
+        <h2 class="modal-title">Chào mừng bạn</h2>
+        
+        <div class="modal-tabs">
+            <div class="modal-tab active" data-tab="login">Đăng nhập</div>
+            <div class="modal-tab" data-tab="register">Đăng ký</div>
+        </div>
+        
+        <!-- Login Form -->
+        <form class="modal-form active" id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail">Email</label>
+                <input type="email" id="loginEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="loginPassword">Mật khẩu</label>
+                <input type="password" id="loginPassword" placeholder="Nhập mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="remember-me">
+                <input type="checkbox" id="rememberMe">
+                <label for="rememberMe">Ghi nhớ đăng nhập</label>
+            </div>
+            
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary btn-submit">
+                    <i class="fas fa-sign-in-alt"></i>
+                    <span>Đăng nhập</span>
+                    <div class="spinner"></div>
+                </button>
+                
+                <span class="modal-link" id="forgotPassword">Quên mật khẩu?</span>
+            </div>
+            
+            <div class="form-footer">
+                Chưa có tài khoản? <a href="#" class="switch-to-register">Đăng ký ngay</a>
+            </div>
+        </form>
+        
+        <!-- Register Form -->
+        <form class="modal-form" id="registerForm">
+            <div class="form-group">
+                <label for="registerName">Họ và tên</label>
+                <input type="text" id="registerName" placeholder="Nhập họ và tên" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerEmail">Email</label>
+                <input type="email" id="registerEmail" placeholder="Nhập email của bạn" required>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerPassword">Mật khẩu</label>
+                <input type="password" id="registerPassword" placeholder="Nhập mật khẩu (ít nhất 6 ký tự)" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <div class="form-group">
+                <label for="registerConfirmPassword">Nhập lại mật khẩu</label>
+                <input type="password" id="registerConfirmPassword" placeholder="Nhập lại mật khẩu" required>
+                <span class="password-toggle">
+                    <i class="fas fa-eye"></i>
+                </span>
+                <div class="error-message"></div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-submit">
+                <i class="fas fa-user-plus"></i>
+                <span>Đăng ký</span>
+                <div class="spinner"></div>
+            </button>
+            
+            <div class="form-footer">
+                Đã có tài khoản? <a href="#" class="switch-to-login">Đăng nhập ngay</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Deposit Modal -->
+<div class="modal" id="depositModal">
+  <div class="modal-content deposit-modal">
+    <button class="modal-close" id="closeDepositModal">&times;</button>
+    <h2 class="modal-title">Nạp tiền bằng thẻ cào</h2>
+    
+    <div class="deposit-steps">
+      <div class="step active" data-step="1">1. Chọn loại thẻ</div>
+      <div class="step" data-step="2">2. Nhập thông tin</div>
+      <div class="step" data-step="3">3. Hoàn thành</div>
+    </div>
+    
+    <div class="card-types">
+      <div class="card-type selected" data-type="viettel">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Viettel-Pay.png" alt="Viettel">
+        <span>Viettel</span>
+      </div>
+      <div class="card-type" data-type="mobifone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-MobiFone.png" alt="Mobifone">
+        <span>Mobifone</span>
+      </div>
+      <div class="card-type" data-type="vinaphone">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-VinaPhone.png" alt="Vinaphone">
+        <span>Vinaphone</span>
+      </div>
+      <div class="card-type" data-type="gate">
+        <img src="https://cdn.haitrieu.com/wp-content/uploads/2022/10/Logo-Gate.png" alt="Gate">
+        <span>Gate</span>
+      </div>
+    </div>
+    
+    <form class="deposit-form" id="depositForm">
+      <div class="form-group">
+        <label for="cardNumber">Mã thẻ <small>(10-15 chữ số)</small></label>
+        <input type="text" id="cardNumber" placeholder="Nhập mã thẻ" required maxlength="15">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardSerial">Số serial <small>(5-12 chữ số)</small></label>
+        <input type="text" id="cardSerial" placeholder="Nhập số serial" required maxlength="12">
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-group">
+        <label for="cardAmount">Mệnh giá</label>
+        <select id="cardAmount" class="filter-input" required>
+          <option value="">-- Chọn mệnh giá --</option>
+          <option value="10000">10,000đ</option>
+          <option value="20000">20,000đ</option>
+          <option value="50000">50,000đ</option>
+          <option value="100000">100,000đ</option>
+          <option value="200000">200,000đ</option>
+          <option value="500000">500,000đ</option>
+        </select>
+        <div class="error-message"></div>
+      </div>
+      
+      <div class="form-note">
+        <i class="fas fa-info-circle"></i>
+        <span>Mã thẻ và số serial nằm ở mặt sau thẻ cào</span>
+      </div>
+      
+      <button type="submit" class="btn btn-primary btn-submit">
+        <i class="fas fa-check-circle"></i>
+        <span>Nạp tiền</span>
+        <div class="spinner"></div>
+      </button>
+    </form>
+    
+    <div class="deposit-history" id="depositHistory">
+      <h3>Lịch sử nạp tiền gần đây</h3>
+      <div class="history-list">
+        <!-- Nội dung sẽ được thêm bằng JavaScript -->
+      </div>
+    </div>
+  </div>
+</div>
+    
+    <!-- Back to Top Button -->
+    <button class="back-to-top" id="backToTop">
+        <i class="fas fa-arrow-up"></i>
+    </button>
+    
+    <!-- Messenger Float Button -->
+    <a href="https://www.messenger.com/t/61562518661118" target="_blank" class="messenger-float">
+        <img src="images/messenger.png" alt="Messenger">
+    </a>
+    
+    <!-- JavaScript -->
+    <script src="script.js"></script>
+    <script>
+        // Get product ID from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const productId = urlParams.get('id');
+        
+        // Sample product data (in a real app, you would fetch this from an API)
+        const products = {
+            '1': {
+                id: 1,
+                title: "Gói VIP 1 Tháng",
+                description: "Tài khoản VIP Grow A Garden với đầy đủ đặc quyền",
+                price: 150000,
+                oldPrice: 200000,
+                image: "images/product1.jpg",
+                images: [
+                    "images/product1.jpg",
+                    "images/product1-1.jpg",
+                    "images/product1-2.jpg"
+                ],
+                sales: 100,
+                badge: "HOT",
+                features: [
+                    "Đầy đủ tính năng VIP",
+                    "Hỗ trợ 24/7",
+                    "Quà tặng hàng tháng",
+                    "Ưu tiên giao dịch",
+                    "Không quảng cáo"
+                ],
+                detailedDescription: `
+                    <p>Gói VIP 1 tháng cung cấp cho bạn trải nghiệm tốt nhất với đầy đủ các tính năng cao cấp của Grow A Garden.</p>
+                    <p><strong>Đặc quyền VIP bao gồm:</strong></p>
+                    <ul>
+                        <li>Truy cập không giới hạn tất cả tính năng</li>
+                        <li>Hỗ trợ khách hàng ưu tiên 24/7</li>
+                        <li>Nhận quà tặng đặc biệt hàng tháng</li>
+                        <li>Tốc độ xử lý giao dịch nhanh hơn</li>
+                        <li>Không có quảng cáo làm phiền</li>
+                    </ul>
+                    <p><strong>Hướng dẫn sử dụng:</strong></p>
+                    <ol>
+                        <li>Mua gói VIP từ cửa hàng</li>
+                        <li>Nhận mã kích hoạt qua email</li>
+                        <li>Nhập mã vào phần Cài đặt tài khoản</li>
+                        <li>Tận hưởng các đặc quyền VIP</li>
+                    </ol>
+                `
+            },
+            '2': {
+                id: 2,
+                title: "Gói Premium 3 Tháng",
+                description: "Tài khoản Premium Grow A Garden với nhiều ưu đãi",
+                price: 400000,
+                oldPrice: 450000,
+                image: "images/product2.jpg",
+                images: [
+                    "images/product2.jpg",
+                    "images/product2-1.jpg",
+                    "images/product2-2.jpg"
+                ],
+                sales: 75,
+                features: [
+                    "Tính năng Premium",
+                    "Hỗ trợ nhanh",
+                    "Quà tặng định kỳ",
+                    "Giao dịch ưu tiên"
+                ],
+                detailedDescription: `
+                    <p>Gói Premium 3 tháng là lựa chọn tiết kiệm cho những ai muốn trải nghiệm lâu dài các tính năng cao cấp của Grow A Garden.</p>
+                    <p><strong>Lợi ích khi sử dụng:</strong></p>
+                    <ul>
+                        <li>Tiết kiệm 50.000đ so với mua 3 gói 1 tháng</li>
+                        <li>Hỗ trợ khách hàng nhanh chóng</li>
+                        <li>Nhận quà tặng định kỳ mỗi tháng</li>
+                        <li>Ưu tiên xử lý giao dịch</li>
+                    </ul>
+                    <p><strong>Điều kiện sử dụng:</strong></p>
+                    <ul>
+                        <li>Áp dụng cho 1 tài khoản duy nhất</li>
+                        <li>Không hoàn tiền sau khi kích hoạt</li>
+                        <li>Có thể gia hạn trước khi hết hạn</li>
+                    </ul>
+                `
+            }
+        };
+        
+        // Related products data
+        const relatedProducts = [
+            {
+                id: 3,
+                title: "Gói Ultimate 1 Năm",
+                description: "Tài khoản Ultimate Grow A Garden trọn gói 1 năm",
+                price: 1200000,
+                oldPrice: 1500000,
+                image: "images/product3.jpg",
+                sales: 42,
+                badge: "NEW"
+            },
+            {
+                id: 4,
+                title: "Gói Basic 1 Tháng",
+                description: "Tài khoản Basic Grow A Garden dành cho người mới",
+                price: 80000,
+                image: "images/product4.jpg",
+                sales: 120
+            }
+        ];
+        
+        // Load product details
+        document.addEventListener('DOMContentLoaded', function() {
+            if (productId && products[productId]) {
+                loadProductDetails(products[productId]);
+                loadRelatedProducts();
+            } else {
+                // Redirect to home page if product not found
+                window.location.href = 'index.html';
+            }
+            
+            // Initialize tabs
+            initTabs();
+            
+            // Initialize quantity selector
+            initQuantitySelector();
+        });
+        
+        function loadProductDetails(product) {
+            // Set page title
+            document.title = `${product.title} | Shop Grow A Garden`;
+            
+            // Update breadcrumb
+            document.getElementById('productTitleBreadcrumb').textContent = product.title;
+            
+            // Update main product info
+            document.getElementById('productTitle').textContent = product.title;
+            document.getElementById('currentPrice').textContent = formatPrice(product.price) + 'đ';
+            
+            if (product.oldPrice) {
+                document.getElementById('oldPrice').textContent = formatPrice(product.oldPrice) + 'đ';
+                const discount = Math.round((1 - product.price / product.oldPrice) * 100);
+                document.getElementById('discountBadge').textContent = `-${discount}%`;
+            }
+            
+            document.getElementById('productDescription').textContent = product.description;
+            
+            // Update features
+            const featuresList = document.querySelector('#productFeatures ul');
+            featuresList.innerHTML = '';
+            product.features.forEach(feature => {
+                const li = document.createElement('li');
+                li.textContent = feature;
+                featuresList.appendChild(li);
+            });
+            
+            // Update images
+            document.getElementById('mainProductImage').src = product.image;
+            document.getElementById('mainProductImage').alt = product.title;
+            
+            const thumbnailsContainer = document.getElementById('thumbnailImages');
+            thumbnailsContainer.innerHTML = '';
+            
+            product.images.forEach((image, index) => {
+                const thumbnail = document.createElement('div');
+                thumbnail.className = 'thumbnail';
+                thumbnail.innerHTML = `<img src="${image}" alt="${product.title} ${index + 1}" loading="lazy">`;
+                thumbnail.addEventListener('click', () => {
+                    document.getElementById('mainProductImage').src = image;
+                });
+                thumbnailsContainer.appendChild(thumbnail);
+            });
+            
+            // Update detailed description
+            document.getElementById('detailedDescription').innerHTML = product.detailedDescription;
+        }
+        
+        function loadRelatedProducts() {
+            const relatedProductsGrid = document.getElementById('relatedProducts');
+            relatedProductsGrid.innerHTML = '';
+            
+            relatedProducts.forEach(product => {
+                const productCard = document.createElement('div');
+                productCard.className = 'product-card fade-in';
+                productCard.innerHTML = `
+                    <div class="product-image">
+                        <img src="${product.image}" alt="${product.title}" loading="lazy">
+                        ${product.badge ? `<span class="product-badge">${product.badge}</span>` : ''}
+                    </div>
+                    <div class="product-info">
+                        <h3 class="product-title">${product.title}</h3>
+                        <p class="product-description">${product.description}</p>
+                        
+                        <div class="product-price">
+                            <div>
+                                <span class="product-current-price">${formatPrice(product.price)}đ</span>
+                                ${product.oldPrice ? `<span class="product-old-price">${formatPrice(product.oldPrice)}đ</span>` : ''}
+                            </div>
+                            <span class="product-sales">
+                                <i class="fas fa-user"></i>
+                                ${product.sales}
+                            </span>
+                        </div>
+                        
+                        <div class="product-actions">
+                            <a href="product.html?id=${product.id}" class="btn-add-to-cart">
+                                <i class="fas fa-shopping-cart"></i>
+                                <span>Mua Ngay</span>
+                            </a>
+                            <button class="btn-wishlist" onclick="addToWishlist(${product.id})">
+                                <i class="far fa-heart"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                relatedProductsGrid.appendChild(productCard);
+            });
+        }
+        
+        function initTabs() {
+            const tabNavs = document.querySelectorAll('.tabs-nav li');
+            const tabPanes = document.querySelectorAll('.tab-pane');
+            
+            tabNavs.forEach(tabNav => {
+                tabNav.addEventListener('click', function() {
+                    const tabId = this.getAttribute('data-tab');
+                    
+                    // Remove active class from all tabs
+                    tabNavs.forEach(nav => nav.classList.remove('active'));
+                    tabPanes.forEach(pane => pane.classList.remove('active'));
+                    
+                    // Add active class to clicked tab
+                    this.classList.add('active');
+                    document.getElementById(tabId).classList.add('active');
+                });
+            });
+        }
+        
+        function initQuantitySelector() {
+            const decreaseBtn = document.getElementById('decreaseQty');
+            const increaseBtn = document.getElementById('increaseQty');
+            const quantityInput = document.getElementById('productQty');
+            
+            decreaseBtn.addEventListener('click', function() {
+                let value = parseInt(quantityInput.value);
+                if (value > 1) {
+                    quantityInput.value = value - 1;
+                }
+            });
+            
+            increaseBtn.addEventListener('click', function() {
+                let value = parseInt(quantityInput.value);
+                quantityInput.value = value + 1;
+            });
+        }
+        
+        function formatPrice(price) {
+            return price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+        }
+        
+        // Add to cart function
+        document.getElementById('addToCartBtn').addEventListener('click', function() {
+            const quantity = parseInt(document.getElementById('productQty').value);
+            alert(`Đã thêm ${quantity} sản phẩm vào giỏ hàng`);
+        });
+        
+        // Add to wishlist function
+        document.getElementById('addToWishlistBtn').addEventListener('click', function() {
+            alert('Đã thêm sản phẩm vào danh sách yêu thích');
+        });
+    </script>
+</body>
+</html>
