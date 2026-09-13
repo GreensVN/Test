@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 dataset.py
 ----------
@@ -52,10 +51,9 @@ Chạy để xem thống kê:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
 
-from text_utils import strip_diacritics
 from platform_utils import safe_print, setup_console
+from text_utils import strip_diacritics
 
 # ============================================================================
 # 1. ĐỐI TƯỢNG (OBJECTS) - THÊM TỪ CỦA BẠN VÀO ĐÂY
@@ -139,7 +137,7 @@ CALC_SPECIAL = [
 ]
 
 
-def _generate_calc() -> List[str]:
+def _generate_calc() -> list[str]:
     """Sinh câu tính toán: ghép cặp số x phép toán x mẫu câu."""
     out = []
     for i, (a, b) in enumerate(CALC_NUMBER_PAIRS):
@@ -238,7 +236,7 @@ CHITCHAT_SENTENCES = [
 ]
 
 
-def _generate_reminders() -> List[str]:
+def _generate_reminders() -> list[str]:
     """Sinh câu nhắc nhở: ghép công việc x thời điểm x mẫu câu."""
     out = []
     for i, task in enumerate(REMINDER_TASKS):
@@ -252,11 +250,17 @@ def _generate_reminders() -> List[str]:
     return out
 
 
-def _generate(templates: List[str], objects: List[str], per_object: int = 3) -> List[str]:
+def _generate(templates: list[str], objects: list[str], per_object: int = 3) -> list[str]:
     """Ghép mẫu câu với đối tượng. Mỗi đối tượng dùng `per_object` mẫu khác nhau
     (xoay vòng theo chỉ số để kết quả luôn ổn định, không phụ thuộc random)."""
     out = []
     n = len(templates)
+    if n == 0 or not objects:
+        # v7.2: người dùng tự sửa dataset.py mà xoá/rỗng một danh sách MẪU CÂU
+        # (WEATHER_TEMPLATES = []) là `% n` ném ZeroDivisionError ngay lúc import
+        # `dataset` -> cả trợ lý lẫn mọi test chết không rõ lý do. Trả về rỗng
+        # là đủ; build_intent_data vẫn chạy và cảnh báo ở dưới sẽ nêu nhóm thiếu câu.
+        return out
     for i, obj in enumerate(objects):
         for k in range(per_object):
             out.append(templates[(i + k * 3) % n].format(obj))
@@ -390,7 +394,7 @@ HANDWRITTEN = {
 # 4. TỔNG HỢP DATASET GỐC (11 intent, dữ liệu có dấu)
 # ============================================================================
 
-def build_intent_data() -> Dict[str, List[str]]:
+def build_intent_data() -> dict[str, list[str]]:
     """Tạo dictionary: intent -> danh sách câu (đã khử trùng lặp)."""
     data = {
         "open_website": _generate(WEB_TEMPLATES, WEBSITES, 3),
@@ -430,7 +434,7 @@ PASSIVE_INTENTS = {"chitchat", "get_datetime", "calculate", "get_weather"}
 # 5. HÀM TIỆN ÍCH
 # ============================================================================
 
-def get_dataset_as_lists(augment_no_diacritics: bool = True) -> Tuple[List[str], List[str]]:
+def get_dataset_as_lists(augment_no_diacritics: bool = True) -> tuple[list[str], list[str]]:
     """
     Trả về 2 list song song: (texts, labels).
 
@@ -467,11 +471,13 @@ def get_dataframe(augment_no_diacritics: bool = True):  # type: ignore[no-untype
     return pd.DataFrame({"text": texts, "intent": labels})
 
 
-def export_csv(path: str | Path = "dataset_intent.csv", augment_no_diacritics: bool = False) -> Path:
+def export_csv(
+    path: str | Path = "dataset_intent.csv", augment_no_diacritics: bool = False
+) -> Path:
     """Xuất dataset ra file CSV để bạn dễ xem / chỉnh sửa bằng Excel. v7.0: dùng pathlib."""
     import csv
-    from pathlib import Path as _Path
-    out_path = _Path(path)
+
+    out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     texts, labels = get_dataset_as_lists(augment_no_diacritics=augment_no_diacritics)
     with out_path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -489,8 +495,8 @@ def load_extra_csv(path: str | Path = "my_dataset.csv") -> int:
     v7.0: dùng pathlib, type hints.
     """
     import csv
-    from pathlib import Path as _Path
-    csv_path = _Path(path)
+
+    csv_path = Path(path)
     if not csv_path.exists():
         return 0
     count = 0

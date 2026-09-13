@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-
 from intent_model import (
     extract_entity,
     parse_math_expression,
@@ -211,12 +209,12 @@ def test_parse_math_expression_basic_addition():
 
 
 def test_parse_math_expression_square_root():
-    expr, result = parse_math_expression("căn bậc hai của 81")
+    _expr, result = parse_math_expression("căn bậc hai của 81")
     assert result == 9.0
 
 
 def test_parse_math_expression_percentage():
-    expr, result = parse_math_expression("10 phần trăm của 500")
+    _expr, result = parse_math_expression("10 phần trăm của 500")
     assert result == 50.0
 
 
@@ -228,6 +226,6 @@ def test_parse_math_expression_returns_none_for_non_math_text():
 
 def test_parse_math_expression_rejects_unsafe_input():
     """Không được cho phép chạy mã tuỳ ý - chỉ số + toán tử được chấp nhận."""
-    expr, result = parse_math_expression("__import__('os').system('echo hi') cộng 1")
+    _expr, result = parse_math_expression("__import__('os').system('echo hi') cộng 1")
     # Không có số hợp lệ để ghép biểu thức -> không tính được, không ném lỗi ra ngoài
     assert result is None or isinstance(result, (int, float))

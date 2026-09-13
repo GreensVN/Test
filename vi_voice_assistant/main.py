@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 main.py - Trợ lý ảo tiếng Việt v7.1
 
@@ -17,8 +16,8 @@ import json
 import logging
 import signal
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
 
 from platform_utils import safe_print, setup_console
 
@@ -71,29 +70,50 @@ HISTORY_PATH = Path(__file__).resolve().parent / ".history.json"
 MAX_HISTORY = 200
 
 
+@dataclass
+class ReplState:
+    """Trạng thái bật/tắt của phiên REPL (tách khỏi main() để test được từng lệnh)."""
+
+    dry_run: bool = False
+    mic_mode: bool = False
+    stop: bool = False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=f"{APP_NAME} - demo hiểu ý + thực thi",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Ví dụ: python main.py --once \"mở youtube\" --json",
+        epilog='Ví dụ: python main.py --once "mở youtube" --json',
     )
     parser.add_argument("--dry-run", action="store_true", help="Chỉ phân tích, không thực thi")
     parser.add_argument("--voice", action="store_true", help="Nhận lệnh qua micro")
     parser.add_argument("--speak", action="store_true", help="Đọc phản hồi bằng giọng nói")
-    parser.add_argument("--once", metavar="CÂU_LỆNH", help='Chạy 1 lệnh rồi thoát (vd: --once "mở youtube")')
+    parser.add_argument(
+        "--once", metavar="CÂU_LỆNH", help='Chạy 1 lệnh rồi thoát (vd: --once "mở youtube")'
+    )
     parser.add_argument("--json", action="store_true", help="In kết quả JSON (dùng kèm --once)")
-    parser.add_argument("--version", action="store_true", help="In phiên bản + loại model rồi thoát")
-    parser.add_argument("--sysinfo", action="store_true", help="In báo cáo khả năng của máy rồi thoát")
+    parser.add_argument(
+        "--version", action="store_true", help="In phiên bản + loại model rồi thoát"
+    )
+    parser.add_argument(
+        "--sysinfo", action="store_true", help="In báo cáo khả năng của máy rồi thoát"
+    )
     parser.add_argument("--debug", action="store_true", help="Bật log DEBUG chi tiết")
     parser.add_argument("--no-banner", action="store_true", help="Không in banner khi khởi động")
     parser.add_argument("--config", metavar="PATH", help="Đường dẫn config.json tuỳ chỉnh")
-    parser.add_argument("--engine", choices=["auto", "piper", "pyttsx3", "sapi", "gtts", "print"], help="Chọn engine TTS")
+    parser.add_argument(
+        "--engine",
+        # v7.2: thêm "nc" (nhân bản giọng) - tts.py hỗ trợ engine này từ lâu
+        # nhưng CLI không cho chọn, nên muốn dùng phải sửa mã nguồn.
+        choices=["auto", "piper", "nc", "pyttsx3", "sapi", "gtts", "print"],
+        help="Chọn engine TTS",
+    )
     parser.add_argument("--history", action="store_true", help="In lịch sử lệnh rồi thoát")
     return parser.parse_args()
 
 
 # --- History ---
-def load_history() -> List[str]:
+def load_history() -> list[str]:
     if not HISTORY_PATH.exists():
         return []
     try:
@@ -221,8 +241,11 @@ def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False) 
     for result in commands:
         if not as_json:
             safe_print(
-                "-> {0} | {1} | {2:.0%} | {3}".format(
-                    result.get("intent"), result.get("target"), result.get("confidence", 0), result.get("status")
+                "-> {} | {} | {:.0%} | {}".format(
+                    result.get("intent"),
+                    result.get("target"),
+                    result.get("confidence", 0),
+                    result.get("status"),
                 )
             )
         if dry_run:
@@ -244,38 +267,28 @@ def setup_signal_handlers():
     try:
         signal.signal(signal.SIGINT, _handler)
         signal.signal(signal.SIGTERM, _handler)
+    except (ValueError, OSError, AttributeError) as e:
+        # Không bật được signal handler (Python chạy ngoài luồng chính, hoặc
+        # Windows không hỗ trợ SIGTERM) -> Ctrl+C vẫn xử lý bằng KeyboardInterrupt
+        # ở vòng lặp, chỉ là thông báo chào tạm biệt có thể không in ra.
+        logger.debug("Không đăng ký được signal handler: %s", e)
+
+
+def _print_version() -> None:
+    """In phiên bản + loại model đang dùng rồi thoát (--version)."""
+    try:
+        from intent_model import describe_engine
+
+        engine_desc = describe_engine()
     except Exception:
-        pass  # Windows có thể không hỗ trợ SIGTERM
+        engine_desc = "không xác định (chưa nạp model)"
+    safe_print(f"{APP_NAME} - phiên bản {APP_VERSION}")
+    safe_print(f"Bộ hiểu ý: {engine_desc}")
+    safe_print(f"Python: {sys.version.split()[0]} | Platform: {sys.platform}")
 
 
-def main() -> int:
-    args = parse_args()
-
-    if args.sysinfo:
-        print_sysinfo()
-        return 0
-
-    if args.history:
-        print_history()
-        return 0
-
-    # Logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    setup_logging(level=log_level)
-
-    if args.version:
-        try:
-            from intent_model import describe_engine
-
-            engine_desc = describe_engine()
-        except Exception:
-            engine_desc = "không xác định (chưa nạp model)"
-        safe_print(f"{APP_NAME} - phiên bản {APP_VERSION}")
-        safe_print(f"Bộ hiểu ý: {engine_desc}")
-        safe_print(f"Python: {sys.version.split()[0]} | Platform: {sys.platform}")
-        return 0
-
-    # Config tuỳ chỉnh
+def _apply_cli_options(args: argparse.Namespace) -> int | None:
+    """Áp --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
     if args.config:
         try:
             executor.reload_config(args.config)
@@ -284,7 +297,6 @@ def main() -> int:
             safe_print(f"[LỖI] Không nạp được config {args.config}: {e}")
             return 1
 
-    # TTS engine tuỳ chỉnh
     if args.engine:
         try:
             import tts
@@ -293,10 +305,11 @@ def main() -> int:
             safe_print(f"[TTS] Engine: {args.engine}")
         except Exception as e:
             safe_print(f"[LỖI] Không đặt được engine TTS: {e}")
+    return None
 
-    if not args.once and not args.no_banner:
-        safe_print(BANNER)
 
+def _warn_missing_optional_features(args: argparse.Namespace) -> None:
+    """Báo (không chết) nếu người dùng bật --voice/--speak mà máy thiếu thư viện."""
     if args.voice:
         try:
             import stt
@@ -324,6 +337,236 @@ def main() -> int:
         except Exception as e:
             safe_print(f"[LƯU Ý] Lỗi kiểm tra TTS: {e}")
 
+
+# ---------------------------------------------------------------------------
+# Các lệnh điều khiển trong REPL (v7.2: tách khỏi main() - trước đây main()
+# chứa cả vòng lặp + 13 lệnh, độ phức tạp 55 nhánh, sửa một lệnh là phải đọc
+# hết 200 dòng. Mỗi lệnh giờ là một hàm nhỏ, độc lập và test được.)
+# ---------------------------------------------------------------------------
+def _cmd_toggle_mic(state: ReplState) -> None:
+    if not state.mic_mode:
+        safe_print("[MIC] Tắt chế độ mic, quay về gõ tay.")
+        return
+    try:
+        import stt
+
+        if stt.is_available():
+            safe_print("[MIC] Bật chế độ nghe qua mic.")
+        else:
+            safe_print("[MIC] Chưa cài SpeechRecognition, không bật được.")
+            state.mic_mode = False
+    except Exception:
+        safe_print("[MIC] Lỗi khi bật mic.")
+        state.mic_mode = False
+
+
+def _cmd_toggle_voice() -> None:
+    try:
+        import tts
+
+        executor.set_speech_enabled(not executor.SPEAK_ENABLED)
+        if executor.SPEAK_ENABLED and not tts.is_available():
+            safe_print("[VOICE] Chưa cài engine giọng nói nào - sẽ chỉ in chữ.")
+        safe_print(f"[VOICE] Đọc phản hồi bằng giọng nói = {executor.SPEAK_ENABLED}")
+    except Exception as e:
+        safe_print(f"[VOICE] Lỗi: {e}")
+
+
+def _format_reminder(item: dict) -> str:
+    """Một dòng liệt kê nhắc nhở, chịu được dữ liệu thiếu/hỏng (v7.2)."""
+    task = item.get("task", "?") or "?"
+    at = executor._reminder_at(item)
+    if at is None:
+        return f"{task} - ??:??"
+    return f"{task} - {at:%H:%M %d/%m}"
+
+
+def _cmd_list_reminders() -> None:
+    if not ACTIVE_REMINDERS:
+        safe_print("(Chưa có nhắc nhở nào đang chờ)")
+        return
+    for i, r in enumerate(ACTIVE_REMINDERS, 1):
+        safe_print(f"  {i}. {_format_reminder(r)}")
+    safe_print("   (Gõ 'huy nhac <từ khoá>' để huỷ, hoặc 'huy nhac' để huỷ tất cả)")
+
+
+def _cmd_cancel_reminder(text: str) -> None:
+    parts = text.split(None, 2)
+    removed = executor.cancel_reminder(parts[2] if len(parts) > 2 else None)
+    if not removed:
+        safe_print("(Không tìm thấy nhắc nhở nào khớp để huỷ)")
+        return
+    for r in removed:
+        safe_print(f"[ĐÃ HUỶ] {_format_reminder(r)}")
+
+
+def _cmd_reload_config() -> None:
+    try:
+        cfg = executor.reload_config()
+        safe_print(
+            f"[CẤU HÌNH] Đã nạp lại config.json "
+            f"({len(cfg['website_map'])} web, {len(cfg['file_map'])} file)."
+        )
+        # v7.2: in ra ngưỡng đang dùng để người dùng THẤY được config có thực sự
+        # có tác dụng hay không (trước đây đổi ngưỡng rồi "nap lai" nhưng tầng
+        # NLU vẫn dùng số cũ, không cách nào biết được).
+        import nlu_advanced
+
+        safe_print(
+            f"   Ngưỡng NLU hiện tại: accept={nlu_advanced.CONFIDENCE_ACCEPT}, "
+            f"ask={nlu_advanced.CONFIDENCE_ASK} | ngưỡng executor="
+            f"{executor.CONFIDENCE_THRESHOLD}"
+        )
+    except Exception as e:
+        safe_print(f"[LỖI] Không nạp lại được config: {e}")
+
+
+def _cmd_teach(nlu: NLU, text: str) -> None:
+    body = text[4:]
+    if "=" not in body:
+        safe_print("Cú pháp:  day <câu nói> = <tên intent>")
+        return
+    try:
+        sentence, intent = (p.strip() for p in body.split("=", 1))
+        safe_print(nlu.teach(sentence, intent))
+    except Exception as e:
+        safe_print(f"[LỖI] Không dạy được: {e}")
+
+
+def handle_control_command(text: str, nlu: NLU, state: ReplState) -> bool:
+    """Xử lý một dòng lệnh điều khiển. Trả về True nếu dòng đó ĐÃ được tiêu.
+
+    Trả về qua biến logic chứ không `continue` để main() đọc gọn và để test có
+    thể gọi thẳng từng lệnh mà không cần chạy cả vòng REPL.
+    """
+    low = text.lower()
+
+    if low in ("thoat", "thoát", "exit", "quit", "q"):
+        safe_print("Tạm biệt!")
+        logger.info("Kết thúc phiên làm việc.")
+        state.stop = True
+        return True
+
+    if low in ("help", "giup", "giúp", "?"):
+        safe_print(BANNER)
+        return True
+
+    if low in ("lich su", "lịch sử", "history"):
+        print_history()
+        return True
+
+    if low == "mic":
+        state.mic_mode = not state.mic_mode
+        _cmd_toggle_mic(state)
+        return True
+
+    if low == "voice":
+        _cmd_toggle_voice()
+        return True
+
+    if low == "test":
+        state.dry_run = not state.dry_run
+        safe_print(f"[TEST] Chỉ phân tích = {state.dry_run}")
+        return True
+
+    if low in ("nhac nho", "nhắc nhở"):
+        _cmd_list_reminders()
+        return True
+
+    if low.startswith(("huy nhac", "huỷ nhắc", "hủy nhắc")):
+        _cmd_cancel_reminder(text)
+        return True
+
+    if low in ("nap lai", "nạp lại", "reload"):
+        _cmd_reload_config()
+        return True
+
+    if low in ("he thong", "hệ thống", "sysinfo"):
+        print_sysinfo()
+        return True
+
+    if low in ("quen", "quên", "reset"):
+        if nlu.context:
+            nlu.context.clear()
+        safe_print("[NGỮ CẢNH] Đã xoá trí nhớ hội thoại.")
+        return True
+
+    if low.startswith(("day ", "dạy ")):
+        _cmd_teach(nlu, text)
+        return True
+
+    return False
+
+
+def _execute_commands(commands: list, nlu: NLU, dry_run: bool) -> None:
+    """In kết quả + cho người dùng xác nhận với từng lệnh trong câu."""
+    if len(commands) > 1:
+        safe_print(f"(Phát hiện {len(commands)} lệnh trong câu)")
+
+    for i, result in enumerate(commands, 1):
+        if len(commands) > 1:
+            safe_print(f"\n--- LỆNH {i}: {result.get('raw','')} ---\n")
+        try:
+            handle_result(result, nlu, dry_run)
+        except Exception as e:
+            logger.exception("Lỗi không mong muốn khi xử lý lệnh")
+            safe_print(f"[LỖI] Có lỗi không mong muốn: {e}")
+            safe_print("   Phiên làm việc vẫn tiếp tục bình thường.")
+
+
+def _run_repl(nlu: NLU, state: ReplState) -> int:
+    safe_print("Sẵn sàng! (gõ 'help' để xem hướng dẫn)\n")
+    while True:
+        text = get_input(state.mic_mode)
+        if not text:
+            continue
+
+        save_history_entry(text)
+        if handle_control_command(text, nlu, state):
+            if state.stop:
+                return 0
+            continue
+
+        if state.mic_mode:
+            safe_print(f"[MIC] Bạn nói: {text}")
+
+        try:
+            commands = nlu.understand(text)
+        except Exception as e:
+            logger.exception("Lỗi khi phân tích câu nói: %r", text)
+            safe_print(f"[LỖI] Không phân tích được câu vừa rồi: {e}")
+            safe_print("   (Đã ghi log - bạn thử nói lại câu khác nhé)")
+            continue
+
+        _execute_commands(commands, nlu, state.dry_run)
+
+
+def main() -> int:
+    args = parse_args()
+
+    if args.sysinfo:
+        print_sysinfo()
+        return 0
+
+    if args.history:
+        print_history()
+        return 0
+
+    setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
+
+    if args.version:
+        _print_version()
+        return 0
+
+    option_error = _apply_cli_options(args)
+    if option_error is not None:
+        return option_error
+
+    if not args.once and not args.no_banner:
+        safe_print(BANNER)
+
+    _warn_missing_optional_features(args)
+
     if not args.once:
         safe_print("Đang nạp mô hình hiểu ý...")
     try:
@@ -345,151 +588,7 @@ def main() -> int:
         save_history_entry(args.once)
         return run_once(args.once, nlu, dry_run=args.dry_run, as_json=args.json)
 
-    safe_print("Sẵn sàng! (gõ 'help' để xem hướng dẫn)\n")
-
-    dry_run = args.dry_run
-    mic_mode = args.voice
-
-    while True:
-        text = get_input(mic_mode)
-        if not text:
-            continue
-
-        save_history_entry(text)
-        low = text.lower()
-
-        # Lệnh điều khiển
-        if low in ("thoat", "thoát", "exit", "quit", "q"):
-            safe_print("Tạm biệt!")
-            logger.info("Kết thúc phiên làm việc.")
-            break
-
-        if low in ("help", "giup", "giúp", "?"):
-            safe_print(BANNER)
-            continue
-
-        if low in ("lich su", "lịch sử", "history"):
-            print_history()
-            continue
-
-        if low == "mic":
-            mic_mode = not mic_mode
-            if mic_mode:
-                try:
-                    import stt
-
-                    if stt.is_available():
-                        safe_print("[MIC] Bật chế độ nghe qua mic.")
-                    else:
-                        safe_print("[MIC] Chưa cài SpeechRecognition, không bật được.")
-                        mic_mode = False
-                except Exception:
-                    safe_print("[MIC] Lỗi khi bật mic.")
-                    mic_mode = False
-            else:
-                safe_print("[MIC] Tắt chế độ mic, quay về gõ tay.")
-            continue
-
-        if low == "voice":
-            try:
-                import tts
-
-                executor.set_speech_enabled(not executor.SPEAK_ENABLED)
-                if executor.SPEAK_ENABLED and not tts.is_available():
-                    safe_print("[VOICE] Chưa cài engine giọng nói nào - sẽ chỉ in chữ.")
-                safe_print(f"[VOICE] Đọc phản hồi bằng giọng nói = {executor.SPEAK_ENABLED}")
-            except Exception as e:
-                safe_print(f"[VOICE] Lỗi: {e}")
-            continue
-
-        if low == "test":
-            dry_run = not dry_run
-            safe_print(f"[TEST] Chỉ phân tích = {dry_run}")
-            continue
-
-        if low in ("nhac nho", "nhắc nhở"):
-            if not ACTIVE_REMINDERS:
-                safe_print("(Chưa có nhắc nhở nào đang chờ)")
-            else:
-                for i, r in enumerate(ACTIVE_REMINDERS, 1):
-                    try:
-                        at = r["at"]
-                        safe_print(f"  {i}. {r['task']} - {at:%H:%M %d/%m}")
-                    except Exception:
-                        safe_print(f"  {i}. {r.get('task','?')} - ??:??")
-                safe_print("   (Gõ 'huy nhac <từ khoá>' để huỷ, hoặc 'huy nhac' để huỷ tất cả)")
-            continue
-
-        if low.startswith(("huy nhac", "huỷ nhắc", "hủy nhắc")):
-            parts = text.split(None, 2)
-            removed = executor.cancel_reminder(parts[2] if len(parts) > 2 else None)
-            if removed:
-                for r in removed:
-                    try:
-                        safe_print(f"[ĐÃ HUỶ] {r['task']} - {r['at']:%H:%M %d/%m}")
-                    except Exception:
-                        safe_print(f"[ĐÃ HUỶ] {r.get('task','?')}")
-            else:
-                safe_print("(Không tìm thấy nhắc nhở nào khớp để huỷ)")
-            continue
-
-        if low in ("nap lai", "nạp lại", "reload"):
-            try:
-                cfg = executor.reload_config()
-                safe_print(
-                    f"[CẤU HÌNH] Đã nạp lại config.json "
-                    f"({len(cfg['website_map'])} web, {len(cfg['file_map'])} file)."
-                )
-            except Exception as e:
-                safe_print(f"[LỖI] Không nạp lại được config: {e}")
-            continue
-
-        if low in ("he thong", "hệ thống", "sysinfo"):
-            print_sysinfo()
-            continue
-
-        if low in ("quen", "quên", "reset"):
-            if nlu.context:
-                nlu.context.clear()
-            safe_print("[NGỮ CẢNH] Đã xoá trí nhớ hội thoại.")
-            continue
-
-        if low.startswith(("day ", "dạy ")):
-            body = text[4:]
-            if "=" not in body:
-                safe_print("Cú pháp:  day <câu nói> = <tên intent>")
-            else:
-                try:
-                    sentence, intent = (p.strip() for p in body.split("=", 1))
-                    safe_print(nlu.teach(sentence, intent))
-                except Exception as e:
-                    safe_print(f"[LỖI] Không dạy được: {e}")
-            continue
-
-        # Hiểu ý + thực thi
-        if mic_mode:
-            safe_print(f"[MIC] Bạn nói: {text}")
-
-        try:
-            commands = nlu.understand(text)
-        except Exception as e:
-            logger.exception("Lỗi khi phân tích câu nói: %r", text)
-            safe_print(f"[LỖI] Không phân tích được câu vừa rồi: {e}")
-            safe_print("   (Đã ghi log - bạn thử nói lại câu khác nhé)")
-            continue
-
-        if len(commands) > 1:
-            safe_print(f"(Phát hiện {len(commands)} lệnh trong câu)")
-
-        for i, result in enumerate(commands, 1):
-            if len(commands) > 1:
-                safe_print(f"\n--- LỆNH {i}: {result.get('raw','')} ---\n")
-            try:
-                handle_result(result, nlu, dry_run)
-            except Exception as e:
-                logger.exception("Lỗi không mong muốn khi xử lý lệnh")
-                safe_print(f"[LỖI] Có lỗi không mong muốn: {e}")
-                safe_print("   Phiên làm việc vẫn tiếp tục bình thường.")
+    return _run_repl(nlu, ReplState(dry_run=args.dry_run, mic_mode=args.voice))
 
 
 if __name__ == "__main__":

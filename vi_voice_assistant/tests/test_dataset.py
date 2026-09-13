@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
@@ -55,5 +54,5 @@ def test_calculate_sentences_are_all_parseable():
     được (giới hạn đã ghi nhận ở HUONG_DAN mục 0-D, nay đã khắc phục)."""
     from intent_model import parse_math_expression
     for s in INTENT_DATA["calculate"]:
-        expr, result = parse_math_expression(s)
-        assert result is not None, "Câu calculate không tính được: %r" % s
+        _expr, result = parse_math_expression(s)
+        assert result is not None, f"Câu calculate không tính được: {s!r}"

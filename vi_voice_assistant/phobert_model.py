@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 phobert_model.py v7.0
 ---------------------
@@ -29,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+
 from platform_utils import safe_print, setup_console
 
 # v6.1: neo đường dẫn vào thư mục chứa file này. Trước đây là đường dẫn
@@ -67,7 +67,7 @@ class PhoBertIntentClassifier:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         labels_path = os.path.join(self.model_dir, "labels.json")
-        with open(labels_path, "r", encoding="utf-8") as f:
+        with open(labels_path, encoding="utf-8") as f:
             self.labels = json.load(f)
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
@@ -110,6 +110,13 @@ class PhoBertIntentClassifier:
 
         if self.model is None or self.tokenizer is None:
             self.load()
+
+        if self.model is None or self.tokenizer is None:
+            self.load()
+        # v7.2: self.labels = None khi label.json thuat/duoc goi ma chua load ->
+        # zip(None, ...) nem TypeError kho hieu. Tra ve dict trong khi cho doi.
+        if not self.labels:
+            return {}
 
         inputs = self._encode(text)
         with torch.no_grad():

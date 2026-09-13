@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 giong_noi_ai.py
 ---------------
@@ -51,9 +50,12 @@ CÀI:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 
 from platform_utils import safe_print, setup_console
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_DIR = os.path.join(BASE_DIR, "giong_ai")  # giữ lại cho tương thích ngược (Piper)
@@ -159,7 +161,7 @@ DATASETS = {
         "ten": "Giọng chính bạn tự thu (chỉ cần 3-5 giây!)",
         "giay_phep": "Bạn sở hữu 100%",
         "thuong_mai": True,
-        "url": "python giong_noi_ai.py nhan-ban mau.wav \"Câu cần đọc\"",
+        "url": 'python giong_noi_ai.py nhan-ban mau.wav "Câu cần đọc"',
         "ghi_chu": "VieNeu nhân bản giọng TỨC THÌ từ 3-5 giây audio mẫu — "
                    "không cần 300-500 câu hay GPU train nhiều giờ như Piper nữa.",
     },
@@ -244,7 +246,7 @@ def download_voice(force: bool = False):
 
     _write_attribution()
     safe_print("\n[XONG] VieNeu-TTS-v3-Turbo đã sẵn sàng.")
-    safe_print("Thử ngay:  python giong_noi_ai.py thu \"Xin chào Việt Nam\"")
+    safe_print('Thử ngay:  python giong_noi_ai.py thu "Xin chào Việt Nam"')
     return True
 
 
@@ -269,7 +271,7 @@ def _write_attribution():
 
 
 def synth_to_file(text: str, out_path: str, voice: str = DEFAULT_VOICE,
-                   ref_audio: str = None) -> bool:
+                   ref_audio: str | None = None) -> bool:
     """Tổng hợp `text` thành file WAV. Trả về True nếu thành công.
 
     v7.0: tự tạo thư mục cha nếu chưa có, kiểm tra text rỗng.
@@ -279,11 +281,15 @@ def synth_to_file(text: str, out_path: str, voice: str = DEFAULT_VOICE,
         return False
 
     # Đảm bảo thư mục cha tồn tại
+    from pathlib import Path
+
     try:
-        from pathlib import Path
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except OSError as e:
+        # Bỏ qua được: nếu thư mục không tạo nổi thì bước ghi file phía dưới
+        # sẽ báo lỗi đường dẫn - nhưng phải ghi log để phân biệt "mất quyền
+        # ghi đĩa" với "chưa cài giọng AI", hai lỗi người dùng hay nhầm.
+        logger.debug("Không tạo được thư mục cha cho %s: %s", out_path, e)
 
     if ref_audio and not is_clone_available():
         safe_print(
@@ -312,7 +318,7 @@ def synth_to_file(text: str, out_path: str, voice: str = DEFAULT_VOICE,
         return False
 
 
-def speak(text: str, voice: str = DEFAULT_VOICE, ref_audio: str = None) -> bool:
+def speak(text: str, voice: str = DEFAULT_VOICE, ref_audio: str | None = None) -> bool:
     """Đọc `text` bằng giọng AI. Trả về True nếu đọc được.
 
     Đây là hàm tts.py gọi tới (engine 'piper' / '_speak_piper', tên hàm giữ
@@ -338,7 +344,7 @@ def speak(text: str, voice: str = DEFAULT_VOICE, ref_audio: str = None) -> bool:
             pass
 
 
-def nhan_ban_giong(ref_audio: str, text: str, out_path: str = None) -> bool:
+def nhan_ban_giong(ref_audio: str, text: str, out_path: str | None = None) -> bool:
     """Nhân bản giọng tức thời từ 1 file audio mẫu 3-5 giây.
 
     Thay thế hoàn toàn quy trình fine-tune Piper (WSL/Linux/Colab, vài giờ
@@ -504,7 +510,7 @@ def in_giay_phep():
         safe_print(f"      {ly_do}\n")
 
     safe_print("### DATASET / CÁCH CÓ GIỌNG RIÊNG ###\n")
-    for key, d in DATASETS.items():
+    for d in DATASETS.values():
         mark = "OK" if d["thuong_mai"] else "X "
         safe_print(f"  [{mark}] {d['ten']}  —  {d['giay_phep']}")
         safe_print(f"      {d['url']}")

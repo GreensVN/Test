@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vi-voice-assistant"
-version = "7.1.0"
+version = "7.2.0"
 description = "Trợ lý ảo tiếng Việt - hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng"
 readme = "vi_voice_assistant/README.md"
 license = { text = "MIT" }
@@ -25,13 +25,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 requires-python = ">=3.9"
-dependencies = [
-    # Core - không bắt buộc nhưng khuyến nghị
-    # Lite model chạy không cần gì, nhưng để có TF-IDF tốt hơn:
-    "scikit-learn>=1.3.0; python_version < '3.9'",
-    "scikit-learn>=1.5.0; python_version >= '3.9'",
-    "joblib>=1.3.0",
-]
+# v7.2: TRƯỚC ĐÂY scikit-learn + joblib nằm trong `dependencies` (bắt buộc),
+# trong khi TOÀN BỘ thiết kế v6-v7 của dự án là "máy chưa cài được
+# scikit-learn vẫn chạy bình thường nhờ lite_model.py" - README còn quảng cáo
+# "Chạy ngay không cần cài gì". Hệ quả thật: `pip install -e .` kéo theo ~30MB
+# scikit-learn + numpy trên mọi máy, và máy không có mạng/không có wheel cho
+# Python của họ thì CÀI ĐẶT THẤT BẠI chứ không phải "chạy bản nhẹ".
+# Nay core không cần gì; muốn tăng độ chính xác thì `pip install -e ".[full]"`.
+# (Đồng thời bỏ 2 marker "python_version < '3.9'" vốn MÂU THUẪN với
+# requires-python = ">=3.9" nên không bao giờ được chọn - chỉ gây hiểu nhầm.)
+dependencies = []
 
 [project.optional-dependencies]
 full = [
@@ -46,7 +49,9 @@ full = [
 tts = [
     "pyttsx3>=2.90",
     "gTTS>=2.5.0",
-    "playsound==1.2.2; sys_platform == 'win32'",
+    # v7.2: bỏ "==1.2.2" (pin cứng 1 phiên bản duy nhất) -> playsound có bản
+    # mới hơn và pip sẽ xung đột khi người dùng cài kèm gói khác cần >=1.3.
+    "playsound>=1.2.2; sys_platform == 'win32'",
 ]
 stt = [
     "SpeechRecognition>=3.10.0",
@@ -111,9 +116,15 @@ exclude = ["__pycache__", "voice_cache", "giong_ai", "logs", "phobert_model"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I", "N", "UP", "S", "B", "A", "C4", "TCH", "TID", "Q", "RUF"]
 ignore = [
-    "S101",  # assert used
+    "S101",  # assert used (tests)
     "S603",  # subprocess without shell=True is actually safe, but ruff warns
-    "S607",  # partial executable path
+    "S607",  # partial executable path - đây LÀ chủ ý: gọi "shutdown"/"xdg-open" có sẵn của hệ thống
+    # v7.2 - các rule dưới là cảnh báo KHÔNG áp dụng cho dự án này, ghi rõ lý do
+    # không đi "sửa" thành code xấu hơn:
+    "S311",  # random.random() không dùng cho mật khẩu - dự án chỉ dùng để NGẪU NHIÊN CÂU TRẢ LỜI trò chuyện
+    "S324",  # hashlib chỉ để LÀM FINGERPRINT dataset/model, không phải mục đích bảo mật (đã truyền usedforsecurity=False)
+    "S605",  # chạy lệnh hệ thống - dự án KHÔNG bao giờ truyền chuỗi người dùng vào shell (luôn dùng list args)
+    "SIM105",  # contextlib.suppress() gọn hơn try/except/pass nhưng mất chỗ đặt comment giải thích
 ]
 
 [tool.mypy]
@@ -126,6 +137,24 @@ ignore_missing_imports = true
 testpaths = ["vi_voice_assistant/tests"]
 addopts = "-v --tb=short"
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff.lint.per-file-ignores]
+# v7.2 - vì sao cần bỏ qua THEO TỪNG FILE (thay vì sửa code cho "đẹp" một cách
+# máy móc, thứ thường làm code khó đọc hơn hoặc hỏng tính năng):
+#
+# main.py gọi setup_console() TRƯỚC các import dự án để console Windows đổi sang
+# UTF-8 KỊP lúc module khác in tiếng Việt lần đầu. Chuyển import lên đầu file là
+# làm HỒI QUY đúng lỗi ký tự tiếng Việt mà dự án đã sửa từ v6 -> bỏ qua E402.
+"vi_voice_assistant/main.py" = ["E402"]
+# intent_model.py: "token" ở đây là TOKEN TỪ VỰNG (từ-số tiếng Việt: "hai",
+# "mươi"...) chứ không phải khoá/mật khẩu - S105 chỉ đoán theo tên biến.
+# X_train/y_test là quy ước chuẩn của scikit-learn (xem tài liệu ML).
+"vi_voice_assistant/intent_model.py" = ["S105", "N806"]
+"vi_voice_assistant/train_nlu.py" = ["N806"]
+"vi_voice_assistant/train_phobert.py" = ["N806"]
+# Script test tự chạy, cố tình viết gọn (nhiều lệnh 1 dòng, in bằng %); nó còn
+# PHẢI đặt mã giữa file để vá pytest shim trước khi nạp các file test.
+"vi_voice_assistant/run_tests.py" = ["E401", "E402", "E701", "E702", "C901", "N802", "UP031", "S102"]
 
 [tool.coverage.run]
 source = ["vi_voice_assistant"]

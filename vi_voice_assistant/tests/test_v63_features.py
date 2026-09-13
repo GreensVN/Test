@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Test cho các nâng cấp HỖ TRỢ HỆ ĐIỀU HÀNH của bản v6.3:
 
@@ -97,8 +96,8 @@ def test_capability_report_structure():
     report = platform_utils.capability_report()
     assert report["os"] in ("Windows", "Darwin", "Linux")
     assert report["python"]
-    assert "features" in report and report["features"]
-    for name, info in report["features"].items():
+    assert report.get("features")
+    for info in report["features"].values():
         assert set(info) == {"ok", "via"}
         assert isinstance(info["ok"], bool)
         assert info["via"]

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 giong_nc.py
 -----------
@@ -40,10 +39,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import tempfile
 
 from platform_utils import safe_print, setup_console
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NC_DIR = os.path.join(BASE_DIR, "giong_nc_model")
@@ -187,7 +189,7 @@ def _load_consent() -> dict:
     if not os.path.exists(CONSENT_FILE):
         return {}
     try:
-        with open(CONSENT_FILE, "r", encoding="utf-8") as f:
+        with open(CONSENT_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -302,11 +304,12 @@ def synth_mms(text: str, out_path: str) -> bool:
     """Tổng hợp giọng bằng facebook/mms-tts-vie, ghi ra file WAV. v7.0: tự tạo thư mục cha."""
     if not text or not text.strip():
         return False
+    from pathlib import Path
+
     try:
-        from pathlib import Path
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except OSError as e:
+        logger.debug("Không tạo được thư mục cha cho %s: %s", out_path, e)
     if not da_dong_y("mms-vie"):
         safe_print("[CHẶN] Chưa xác nhận giấy phép phi thương mại.")
         safe_print("       Chạy: python giong_nc.py dong-y mms-vie")
@@ -374,7 +377,7 @@ def is_available(mo_hinh: str = DEFAULT_NC) -> bool:
 # ============================================================================
 # SINH FILE GIẤY PHÉP CHO REPO CỦA BẠN
 # ============================================================================
-def tao_notice(mo_hinh: str = None, out_path: str = None) -> str:
+def tao_notice(mo_hinh: str | None = None, out_path: str | None = None) -> str:
     """Sinh GIAY_PHEP_MODEL.md — file bạn PHẢI có khi mở mã nguồn dự án."""
     chon = [mo_hinh] if mo_hinh else sorted(_load_consent().keys())
     chon = [m for m in chon if m in NC_MODELS]
@@ -597,7 +600,7 @@ def kiem_tra():
 
     safe_print("")
     if is_available("mms-vie"):
-        safe_print("  Sẵn sàng: python giong_nc.py thu \"Xin chào\"")
+        safe_print('  Sẵn sàng: python giong_nc.py thu "Xin chào"')
     else:
         safe_print("  Chưa chạy được. Làm theo thứ tự:")
         safe_print("      python giong_nc.py giay-phep")

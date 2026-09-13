@@ -1,35 +1,103 @@
-name: CI - Trợ lý ảo tiếng Việt v7.1
+name: CI - Trợ lý ảo tiếng Việt v7.2
 
 on:
   push:
     branches: [ main, arena/* ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # v7.2: thêm 3.13 - pyproject.toml đã quảng cáo "Programming Language ::
+        # Python :: 3.13" nhưng CI chưa từng kiểm tra một bản nào.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      # v5: setup-python@v4 chạy trên Node 16 đã bị GitHub khai tử (warning +
+      # nguy cơ hết hỗ trợ), v5 dùng Node 20 và cache pip chuẩn hơn.
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+        cache: pip
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r vi_voice_assistant/requirements.txt
-        pip install pytest
-    - name: Test with run_tests.py
-      run: |
-        cd vi_voice_assistant
-        python run_tests.py
+        python -m pip install -r vi_voice_assistant/requirements.txt
+        python -m pip install pytest
+
+    # v7.2 - SỬA LỖI "CI XANH GIẢ": bước test trước đây là
+    #     pytest tests/ -v --tb=short || python run_tests.py
+    # Dấu `||` nghĩa là "nếu pytest FAIL thì chạy tiếp run_tests.py", và kết
+    # quả cuối cùng quyết định màu of CI. Chỉ cần run_tests.py (dùng runner nhúng,
+    # bớt khắt khe hơn pytest) xanh là CI XANH DÙ TOÀN BỘ pytest ĐỎ.
+    # Từ đây mỗi bộ test là một bước riêng, bước nào đỏ làm CI đỏ.
+    - name: Test with run_tests.py (built-in runner)
+      working-directory: vi_voice_assistant
+      run: python run_tests.py
+
     - name: Test with pytest
+      working-directory: vi_voice_assistant
+      run: python -m pytest tests/ -v --tb=short
+
+    - name: Smoke test CLI (--version / --sysinfo / --once)
+      working-directory: vi_voice_assistant
       run: |
-        cd vi_voice_assistant
-        pytest tests/ -v --tb=short || python run_tests.py
+        python main.py --version
+        python main.py --sysinfo
+        python main.py --once "mở youtube" --dry-run --json
+        python main.py --once "15 cộng 27 bằng bao nhiêu" --dry-run --json
+
+  # v7.2 - BƯỚC TĨNH (lint/type) MỚI: pyproject.toml đã khai báo [tool.ruff] và
+  # [tool.mypy] từ bản 7.0 nhưng chưa lần nào được CI chạy, nên 347 cảnh báo
+  # (bao gồm 2 lỗi F821 "tên không tồn tại" thật) tích tụ không ai thấy.
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Install ruff
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "ruff>=0.5.0"
+    - name: ruff check
+      run: ruff check .
+
+  # Chạy được cả khi CHƯA cài scikit-learn: đây là hợp đồng cốt lõi của dự án
+  # (lite_model.py). Nếu môi trường tối giản sập nghĩa là lỗi import mềm bị hồi quy.
+  no-deps:
+    name: Test without optional deps (chỉ stdlib)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install pytest only
+      run: python -m pip install pytest
+    - name: Test
+      working-directory: vi_voice_assistant
+      run: python -m pytest tests/ -q
+    - name: CLI smoke
+      working-directory: vi_voice_assistant
+      run: |
+        python main.py --version
+        python main.py --once "mở google" --dry-run --json
+        python run_tests.py -q

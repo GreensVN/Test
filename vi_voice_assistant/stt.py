@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 stt.py - Speech-To-Text
 
@@ -15,10 +14,12 @@ import io
 import logging
 import os
 import wave
-from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from platform_utils import safe_print, setup_console
+
+if TYPE_CHECKING:  # Path chi xuat hien trong chu thich kieu (co __future__ annotations)
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -274,13 +275,11 @@ def _record_audiodata_sd(timeout: float = 6.0, phrase_limit: float = 8.0):
     audio = np.concatenate(frames, axis=0).flatten()
     safe_print("   Đã ghi %.1fs audio." % (len(audio) / SAMPLE_RATE))
 
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(audio.tobytes())
-    return _sr.AudioData(buf.getvalue()[44:], SAMPLE_RATE, 2)
+    # v7.2: AudioData nhận thẳng PCM gốc, không cần đóng/mở WAV giả rồi cắt
+    # cứng 44 byte đầu. Con số 44 chỉ ĐÚNG với header PCM "canonical" - nếu
+    # wave thêm chunk mở rộng (hoặc ai đó đổi định dạng) là dữ liệu bị lệch
+    # một vài byte và nhận diện ra kết quả rác mà không báo lỗi nào.
+    return _sr.AudioData(audio.tobytes(), SAMPLE_RATE, 2)
 
 
 def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
@@ -352,7 +351,7 @@ def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
         return ""
 
 
-_default_instance: Optional[STT] = None
+_default_instance: STT | None = None
 
 
 def _default_stt() -> STT:
@@ -379,7 +378,7 @@ if __name__ == "__main__":
             for i, d in enumerate(devices):
                 if d["max_input_channels"] > 0:
                     safe_print(f"  [{i}] {d['name']} (in: {d['max_input_channels']} ch)")
-        except Exception:
-            pass
+        except Exception as e:
+            safe_print(f"(Không liệt kê được thiết bị âm thanh: {e})")
     else:
         safe_print("Chưa cài sounddevice: pip install sounddevice")

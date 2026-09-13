@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from text_utils import normalize_text, strip_diacritics, normalize_no_diacritics
+from text_utils import normalize_no_diacritics, normalize_text, strip_diacritics
 
 
 def test_normalize_text_lowercases_and_trims():

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tts.py - Text-To-Speech, tự động chọn engine khả dụng
 
@@ -19,27 +18,27 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable
 
-from platform_utils import safe_print, setup_console, is_wsl
+from platform_utils import is_wsl, safe_print, setup_console
 
 SYSTEM = platform.system()
 
 ENABLED: bool = True
 ENGINE: str = "auto"
 
-_engine_cache: Optional[object] = None
-_resolved_engine: Optional[Callable[[str], bool]] = None
+_engine_cache: object | None = None
+_resolved_engine: Callable[[str], bool] | None = None
 _engine_lock = threading.RLock()
 _speak_lock = threading.Lock()
 
 VOICE_CACHE_DIR = Path(__file__).resolve().parent / "voice_cache"
-_voice_cache_index: Optional[Dict[str, Path]] = None
+_voice_cache_index: dict[str, Path] | None = None
 
 logger = logging.getLogger(__name__)
 
 
-def _load_voice_cache() -> Dict[str, Path]:
+def _load_voice_cache() -> dict[str, Path]:
     global _voice_cache_index
     if _voice_cache_index is not None:
         return _voice_cache_index
@@ -81,7 +80,9 @@ def _play_audio(path: str | Path) -> bool:
 
     try:
         if SYSTEM == "Windows":
-            os.startfile(str(p))  # type: ignore[attr-defined]
+            # os.startfile la API chuan de mo file bang ung dung mac dinh cua
+            # Windows - khong co chuoi nguoi dung nao duoc ghep vao shell.
+            os.startfile(str(p))  # type: ignore[attr-defined]  # noqa: S606
         elif SYSTEM == "Darwin":
             subprocess.run(["afplay", str(p)], check=True, timeout=30)
         else:
@@ -150,8 +151,8 @@ def _speak_pyttsx3(text: str) -> bool:
                         if "vietnam" in info or "vi-vn" in info:
                             _engine_cache.setProperty("voice", voice.id)
                             break
-                except Exception:
-                    pass
+                except Exception as voice_error:
+                    logger.debug("Không chọn được giọng tiếng Việt: %s", voice_error)
             _engine_cache.say(text)
             _engine_cache.runAndWait()
             return True
@@ -244,6 +245,15 @@ def speak(text: str, show: bool = True) -> None:
     order = order_map.get(ENGINE)
 
     if order is None:  # auto
+        if ENGINE not in order_map:
+            # v7.2: tên engine sai trước đây bị hiểu nhầm là "auto" hoàn toàn âm thầm
+            # - người dùng gõ --engine pipper vẫn thấy trợ lý "chạy bình thường" nên không bao
+            # giờ biết mình viết sai. Ghi log kèm danh sách engine hợp lệ để dễ chẩn đoán.
+            logger.warning(
+                "ENGINE=%r không hợp lệ -> dùng 'auto'. Hợp lệ: %s",
+                ENGINE,
+                ", ".join(sorted([*order_map, "auto"])),
+            )
         if _resolved_engine is not None:
             order = [_resolved_engine]
         else:
@@ -269,7 +279,9 @@ def speak(text: str, show: bool = True) -> None:
                     if fn(text):
                         _resolved_engine = fn
                         return
-                except Exception:
+                except Exception as engine_error:
+                    logger.debug("Engine dự phòng %s cũng lỗi: %s",
+                                 getattr(fn, "__name__", fn), engine_error)
                     continue
             _resolved_engine = None
 
@@ -279,8 +291,8 @@ def set_enabled(value: bool) -> None:
     ENABLED = bool(value)
 
 
-def available_engines() -> List[str]:
-    found: List[str] = []
+def available_engines() -> list[str]:
+    found: list[str] = []
     try:
         import giong_noi_ai
 
@@ -343,8 +355,8 @@ def is_available() -> bool:
 
         if giong_noi_ai.is_available():
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Không kiểm tra được VieNeu: %s", e)
     return False
 
 

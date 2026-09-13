@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 executor.py v7.1
 -----------
@@ -34,17 +33,17 @@ import urllib.parse
 import uuid
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from config import load_config
-from text_utils import strip_diacritics
 from platform_utils import (
     is_windows7_or_older,
-    windows_version_label,
-    setup_console,
-    safe_print,
     is_wsl,
+    safe_print,
+    setup_console,
+    windows_version_label,
 )
+from text_utils import strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -63,20 +62,29 @@ SYSTEM = platform.system()
 CONFIG = load_config()
 
 CONFIDENCE_THRESHOLD: float = float(CONFIG.get("confidence_threshold", 0.35))
-DANGEROUS_ACTIONS: set[str] = set(CONFIG.get("dangerous_actions", []))
+DANGEROUS_ACTIONS: set[str] = {str(a) for a in CONFIG.get("dangerous_actions", [])}
 
 # --- Speech ---
 SPEAK_ENABLED: bool = False
 
 
-def reload_config(path: str | Path | None = None) -> Dict[str, Any]:
+def reload_config(path: str | Path | None = None) -> dict[str, Any]:
     """Nạp lại config.json khi đang chạy, cập nhật tại chỗ."""
     global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS
     fresh = load_config(path) if path else load_config()
     CONFIG.clear()
     CONFIG.update(fresh)
     CONFIDENCE_THRESHOLD = float(CONFIG.get("confidence_threshold", 0.35))
-    DANGEROUS_ACTIONS = set(CONFIG.get("dangerous_actions", []))
+    DANGEROUS_ACTIONS = {str(a) for a in CONFIG.get("dangerous_actions", [])}
+    # v7.2: đồng bộ cả ngưỡng của tầng NLU. Trước đây "nap lai"/--config chỉ
+    # cập nhật executor nên người dùng đổi confidence_accept trong config.json
+    # rồi nạp lại vẫn thấy trợ lý hỏi y như cũ (ngưỡng NLU đóng băng lúc import).
+    try:
+        import nlu_advanced
+
+        nlu_advanced.refresh_thresholds(CONFIG)
+    except Exception as e:  # pragma: no cover - NLU không bắt buộc phải có
+        logger.debug("Không cập nhật được ngưỡng của tầng NLU: %s", e)
     logger.info(
         "Đã nạp lại cấu hình: %d web, %d file",
         len(CONFIG.get("website_map", {})),
@@ -97,7 +105,7 @@ _URL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 _BARE_DOMAIN_RE = re.compile(r"^[\w.\-]+\.[a-z]{2,}(?:/\S*)?$", re.IGNORECASE)
 
 HOME = Path.home()
-ACTIVE_REMINDERS: List[Dict[str, Any]] = []
+ACTIVE_REMINDERS: list[dict[str, Any]] = []
 ACTIVE_REMINDERS_LOCK = threading.RLock()
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -133,7 +141,7 @@ EXECUTABLE_EXTENSIONS = {
     ".lnk",  # v7.0: chặn thêm shortcut
 }
 
-CHITCHAT_REPLIES: List[Tuple[str, List[str]]] = [
+CHITCHAT_REPLIES: list[tuple[str, list[str]]] = [
     (
         r"xin chào|chào bạn|hello|hi bạn|chào trợ lý|alô",
         ["Xin chào! Tôi có thể giúp gì cho bạn?", "Chào bạn, tôi đang nghe đây."],
@@ -170,8 +178,8 @@ CHITCHAT_REPLIES: List[Tuple[str, List[str]]] = [
 # Helpers
 # ============================================================================
 def _best_match(
-    target: str, mapping: Dict[str, Any], score_cutoff: int = 78, fuzzy: bool = True
-) -> Tuple[Optional[Any], Optional[str]]:
+    target: str, mapping: dict[str, Any], score_cutoff: int = 78, fuzzy: bool = True
+) -> tuple[Any | None, str | None]:
     if not target:
         return None, None
     target = target.strip().lower()
@@ -215,7 +223,24 @@ def _escape_powershell_single_quoted(s: str) -> str:
 
 
 def _escape_osascript(s: str) -> str:
-    return s.replace('"', '\\"').replace("\\", "\\\\")
+    """Escape cho chuỗi double-quoted AppleScript.
+
+    v7.2 - SỬA LỖI BẢO MẬT NGHIÊM TRỌNG: thứ tự escape trước đây bị ĐẢO
+    NGƯỢC (thay ``\"`` trước rồi mới thay ``\\\\``), nên chính dấu ``\\\\`` vừa chèn
+    vào bị nhân đôi thành ``\\\\\\\\`` -> AppleScript hiểu là "1 backslash nguyên văn"
+    và dấu ``\"`` phía sau TRỞ THÀNH KÝ TỰ ĐÓNG CHUỖI. Kết quả: nội dung nhắc nhở
+    (vd "nhắc tôi a\\" with title \\"PWNED\\"") thoát ra khỏi chuỗi và được
+    AppleScript chạy như MÃ LỆNH. Phải escape backslash TRƯỚC, rồi mới đến nháy kép.
+    Ngoài ra AppleScript không cho phép ký tự xuống dòng trong chuỗi -> thay bằng khoảng trắng.
+    """
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace("\t", " ")
+    )
 
 
 def respond(text: str) -> None:
@@ -261,7 +286,9 @@ def _open_path(path: str) -> bool:
 
     try:
         if SYSTEM == "Windows":
-            os.startfile(str(p))  # type: ignore[attr-defined]
+            # os.startfile là API chuẩn để mở file bằng ứng dụng mặc định của
+            # Windows; không có chuỗi người dùng nào được ghép vào shell ở đây.
+            os.startfile(str(p))  # type: ignore[attr-defined]  # noqa: S606
         elif SYSTEM == "Darwin":
             _popen(["open", str(p)])
         elif is_wsl():
@@ -277,7 +304,7 @@ def _open_path(path: str) -> bool:
         return False
 
 
-def _volume_via_pycaw(target: str) -> Optional[bool]:
+def _volume_via_pycaw(target: str) -> bool | None:
     try:
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -305,7 +332,7 @@ def _volume_via_pycaw(target: str) -> Optional[bool]:
         return None
 
 
-def _app_map_for_platform() -> Dict[str, str]:
+def _app_map_for_platform() -> dict[str, str]:
     if SYSTEM == "Darwin":
         return CONFIG.get("app_map_macos", {})
     if SYSTEM == "Windows":
@@ -347,7 +374,8 @@ def action_open_app(target: str) -> bool:
         and is_windows7_or_older()
     ):
         safe_print(
-            f"[TỪ CHỐI] '{matched_key}' là ứng dụng kiểu Store App (UWP), chỉ chạy được từ Windows 8 trở lên - "
+            f"[TỪ CHỐI] '{matched_key}' là ứng dụng kiểu Store App (UWP), chỉ chạy được từ "
+            f"Windows 8 trở lên - "
             f"Máy bạn: {windows_version_label()}. "
             f'Hãy đổi "{matched_key}" trong config.json sang .exe tương đương.'
         )
@@ -389,7 +417,7 @@ def action_open_app(target: str) -> bool:
         return False
 
 
-def _popen(cmd: List[str]) -> None:
+def _popen(cmd: list[str]) -> None:
     """Popen wrapper that tolerates simple mocks (lambda cmd: ...) used in tests."""
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -398,7 +426,7 @@ def _popen(cmd: List[str]) -> None:
         subprocess.Popen(cmd)
     # FileNotFoundError sẽ được caller xử lý
 
-def _run_first_available(candidates: List[List[str]]) -> bool:
+def _run_first_available(candidates: list[list[str]]) -> bool:
     for cmd in candidates:
         try:
             _popen(cmd)
@@ -458,7 +486,9 @@ def _system_control_wsl(target: str) -> bool:
             logger.info("Lệnh hệ thống qua Windows host (WSL): %s", target)
             return True
         except FileNotFoundError:
-            safe_print("[LỖI] Không gọi được lệnh Windows từ WSL (interop tắt? kiểm tra /etc/wsl.conf).")
+            safe_print(
+                "[LỖI] Không gọi được lệnh Windows từ WSL (interop tắt? kiểm tra /etc/wsl.conf)."
+            )
             logger.error("WSL interop không khả dụng cho: %s", target)
             return False
 
@@ -679,7 +709,8 @@ def action_system_control(target: str) -> bool:
                     return True
                 safe_print(
                     "[LỖI] Không tìm thấy công cụ chỉnh âm lượng (đã thử wpctl, pactl, amixer) "
-                    "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc ALSA utils (amixer)."
+                    "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc "
+                    "ALSA utils (amixer - gói alsa-utils, có ở gần mọi bản Linux để bàn)."
                 )
                 logger.warning("Không tìm thấy công cụ âm lượng Linux khả dụng cho: %s", target)
                 return False
@@ -747,7 +778,7 @@ def _format_number(value: Any) -> str:
     return str(value)
 
 
-def action_calculate(target: str, data: Dict[str, Any] | None = None) -> bool:
+def action_calculate(target: str, data: dict[str, Any] | None = None) -> bool:
     data = data or {}
     result = data.get("result")
     if result is None:
@@ -803,13 +834,35 @@ def action_chitchat(target: str) -> bool:
 
 
 # --- Reminders với atomic write và lock ---
+def _reminder_at(item: dict[str, Any]):
+    """Lấy mốc giờ của một lời nhắc, chấp nhận cả khi nó được lưu dạng chuỗi.
+
+    v7.2: ``reminders.json`` có thể bị sửa tay hoặc được ghi bởi phiên bản cũ,
+    nên mọi chỗ đọc danh sách này phải dùng hàm "an toàn" thay vì index thẳng.
+    """
+    at = item.get("at")
+    if isinstance(at, str):
+        try:
+            return datetime.datetime.fromisoformat(at)
+        except ValueError:
+            return None
+    return at if isinstance(at, datetime.datetime) else None
+
+
 def _save_reminders() -> None:
     try:
         with ACTIVE_REMINDERS_LOCK:
-            data = [
-                {"id": item.get("id"), "task": item["task"], "at": item["at"].isoformat()}
-                for item in ACTIVE_REMINDERS
-            ]
+            data = []
+            for item in ACTIVE_REMINDERS:
+                at = _reminder_at(item)
+                if at is None:
+                    logger.warning(
+                        "Bỏ qua nhắc nhở không hợp lệ khi lưu (thiếu mốc giờ): %r", item
+                    )
+                    continue
+                data.append(
+                    {"id": item.get("id"), "task": item.get("task", ""), "at": at.isoformat()}
+                )
         # Atomic write - handle both Path and str for test compatibility
         rem_path = Path(REMINDERS_PATH)
         fd, tmp_path = tempfile.mkstemp(
@@ -818,11 +871,11 @@ def _save_reminders() -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         Path(tmp_path).replace(rem_path)
-    except (OSError, KeyError, AttributeError) as e:
+    except OSError as e:
         logger.warning("Không lưu được danh sách nhắc nhở: %s", e)
 
 
-def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True) -> Optional[str]:
+def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True) -> str | None:
     delay = (run_at - datetime.datetime.now()).total_seconds()
     if delay <= 0:
         return None
@@ -852,9 +905,12 @@ def restore_reminders() -> int:
 
     restored = 0
     for item in data if isinstance(data, list) else []:
-        try:
-            run_at = datetime.datetime.fromisoformat(str(item.get("at")))
-        except (TypeError, ValueError):
+        if not isinstance(item, dict):
+            logger.warning("Bỏ qua mục nhắc nhở không phải object trong reminders.json: %r", item)
+            continue
+        run_at = _reminder_at(item)
+        if run_at is None:
+            logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
             continue
         task = str(item.get("task") or "báo thức")
         if _schedule_reminder(task, run_at, persist=False):
@@ -865,18 +921,28 @@ def restore_reminders() -> int:
     return restored
 
 
-def cancel_reminder(keyword: str | None = None) -> List[Dict[str, Any]]:
+def cancel_reminder(keyword: str | None = None) -> list[dict[str, Any]]:
     key = strip_diacritics((keyword or "").strip().lower())
-    removed: List[Dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
     with ACTIVE_REMINDERS_LOCK:
         for item in list(ACTIVE_REMINDERS):
-            if key and key not in strip_diacritics(item["task"].lower()) and key != item.get("id"):
+            # v7.2: dùng .get() - mục nhắc nhở có thể thiếu "task" (file
+            # reminders.json bị sửa tay/ghi bởi bản cũ). Trước đây index thẳng
+            # làm cancel_reminder ném KeyError và SẬP cả lệnh "huy nhac".
+            task = str(item.get("task") or "")
+            if key and key not in strip_diacritics(task.lower()) and key != item.get("id"):
                 continue
+            timer = item.get("timer")
+            cancel = getattr(timer, "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception as e:  # pragma: no cover - timer lạ không được làm hỏng lệnh huỷ
+                    logger.warning("Không huỷ được timer của nhắc nhở %r: %s", item.get("id"), e)
             try:
-                item["timer"].cancel()
-            except AttributeError:
+                ACTIVE_REMINDERS.remove(item)
+            except ValueError:  # pragma: no cover - đã bị gỡ ở nơi khác
                 pass
-            ACTIVE_REMINDERS.remove(item)
             removed.append(item)
     if removed:
         _save_reminders()
@@ -908,7 +974,7 @@ def _fire_reminder(task: str, reminder_id: str | None = None) -> None:
         logger.warning("Không hiện được popup nhắc nhở: %s", e)
 
 
-def action_set_reminder(target: str, data: Dict[str, Any] | None = None) -> bool:
+def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool:
     time_info = (data or {}).get("time") or {"type": None}
     task = target or "báo thức"
     now = datetime.datetime.now()
@@ -965,7 +1031,7 @@ HANDLERS = {
 _HANDLERS_WITH_DATA = {"set_reminder", "calculate"}
 
 
-def execute_command(intent_json: Dict[str, Any] | str) -> bool:
+def execute_command(intent_json: dict[str, Any] | str) -> bool:
     if isinstance(intent_json, str):
         try:
             intent_json = json.loads(intent_json)

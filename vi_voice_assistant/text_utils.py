@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 text_utils.py
 -------------
@@ -23,10 +22,10 @@ _KEEP_RE: Final = re.compile(r"[^\w\s./:\\-]+", re.UNICODE)
 _INVALID_FILENAME_RE: Final = re.compile(r'[<>:"/\\|?*]')
 
 __all__ = [
-    "normalize_text",
-    "strip_diacritics",
     "normalize_no_diacritics",
+    "normalize_text",
     "sanitize_filename",
+    "strip_diacritics",
     "truncate_text",
 ]
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import io
 import os
 import sys
@@ -43,7 +42,9 @@ def test_safe_print_falls_back_to_ascii_when_console_rejects_write(monkeypatch, 
     def flaky_print(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise PermissionError("[WinError 31] A device attached to the system is not functioning")
+            raise PermissionError(
+                "[WinError 31] A device attached to the system is not functioning"
+            )
         real_print(*args, **kwargs)
 
     monkeypatch.setattr("builtins.print", flaky_print)

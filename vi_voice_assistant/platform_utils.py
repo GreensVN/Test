@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 platform_utils.py
 ------------------
@@ -13,6 +12,7 @@ v7.0 nâng cấp:
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shutil
@@ -20,7 +20,8 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 SYSTEM: str = platform.system()
 _console_ready: bool = False
@@ -50,8 +51,11 @@ class _ResilientStream:
                             import time
 
                             time.sleep(0.02)
-                        except Exception:
-                            pass
+                        except Exception as sleep_error:
+                            # Không ngủ được thì bỏ qua, nhưng PHẢI ghi lại:
+                            # đây là nhánh chỉ chạy khi console lỗi, im lặng là
+                            # không bao giờ truy ra nguyên nhân in thiếu ký tự.
+                            logger.debug("sleep retries thất bại: %s", sleep_error)
                         continue
                     # Fallback: ascii
                     try:
@@ -122,8 +126,11 @@ def setup_console() -> None:
             ctypes.windll.kernel32.SetConsoleOutputCP(65001)
             ctypes.windll.kernel32.SetConsoleCP(65001)
             time.sleep(0.05)
-        except Exception:
-            pass
+        except Exception as cp_error:
+            # Không đổi được code page -> tiếng Việt có thể hiển thị sai trên
+            # console Windows cũ. stream đã được reconfigure(errors="replace")
+            # nên chương trình vẫn chạy; ghi log để người dùng biết mà đối chiếu.
+            logger.debug("Không đổi được code page sang UTF-8: %s", cp_error)
 
 
 def safe_print(text: str = "", end: str = "\n") -> None:
@@ -147,7 +154,11 @@ def safe_print(text: str = "", end: str = "\n") -> None:
                     strip_diacritics(line).encode("ascii", errors="replace").decode("ascii"),
                     end=line_end,
                 )
-            except Exception:
+            except Exception:  # noqa: S110
+                # Đây là tầng FALLBACK CUỐI của việc in ấn: nếu nó cũng hỏng thì
+                # không còn cách nào khác ngoài im lặng (ném lỗi ở đây sẽ làm sập
+                # chương trình chỉ vì in chữ không được). Không log vì logger có
+                # thể chính là thứ đang hỏng (nó ghi ra cùng stream).
                 pass
 
 
@@ -157,19 +168,19 @@ def _get_windows_build() -> int:
         # Python 3.8+ có sys.getwindowsversion
         if hasattr(sys, "getwindowsversion"):
             return int(sys.getwindowsversion().build)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("sys.getwindowsversion() lỗi: %s", e)
     try:
         raw = platform.win32_ver()[1]  # fallback, deprecated nhưng vẫn hoạt động
         parts = raw.split(".")
         if len(parts) >= 3:
             return int(parts[2])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("platform.win32_ver() fallback lỗi: %s", e)
     return 0
 
 
-def windows_version() -> Optional[Tuple[int, int]]:
+def windows_version() -> tuple[int, int] | None:
     """
     Trả về (major, minor) kernel Windows, vd (6,1) cho Win7, (10,0) cho Win10/11.
     None nếu không phải Windows.
@@ -180,8 +191,8 @@ def windows_version() -> Optional[Tuple[int, int]]:
         if hasattr(sys, "getwindowsversion"):
             v = sys.getwindowsversion()
             return int(v.major), int(v.minor)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Không đọc được phiên bản Windows: %s", e)
     try:
         raw = platform.win32_ver()[1]
         parts = raw.split(".")
@@ -283,7 +294,7 @@ class CapabilityReport:
     is_wsl: bool
     is_docker: bool
     desktop: str
-    features: Dict[str, FeatureInfo] = field(default_factory=dict)
+    features: dict[str, FeatureInfo] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -299,7 +310,7 @@ class CapabilityReport:
 
 def capability_report() -> dict:
     """Báo cáo tính năng chạy được trên máy hiện tại."""
-    features: Dict[str, FeatureInfo] = {}
+    features: dict[str, FeatureInfo] = {}
 
     def add(name: str, ok: bool, via: str):
         features[name] = FeatureInfo(ok=bool(ok), via=via)

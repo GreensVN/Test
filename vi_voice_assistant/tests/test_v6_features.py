@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Test cho TOÀN BỘ tính năng mới của bản v6.
 
@@ -20,11 +19,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest
-
 import executor
 import main
 import phobert_model
+import pytest
 import tts
 from intent_model import (
     _safe_eval,
@@ -96,7 +94,7 @@ def test_safe_eval_blocks_power_bomb():
 
 
 def test_parse_math_supports_power_word():
-    expr, result = parse_math_expression("2 mũ 10")
+    _expr, result = parse_math_expression("2 mũ 10")
     assert result == 1024
 
 
@@ -111,7 +109,9 @@ def test_open_file_refuses_executable(capsys):
 
 
 def test_open_file_refuses_batch_and_script(capsys):
-    for bad in ("C:/tools/virus.bat", "C:/tools/crack.ps1", "/tmp/xóa_hết.sh"):
+    # "/tmp/..." chi la CHUOI DOI THUONG trong test (kiem tra chan mo file .sh);
+    # chuong trinh KHONG thuc su tao hay mo file nao duoc dung den.
+    for bad in ("C:/tools/virus.bat", "C:/tools/crack.ps1", "/tmp/xóa_hết.sh"):  # noqa: S108
         assert executor.action_open_file(bad) is False
     captured = capsys.readouterr()
     assert captured.out.count("CÓ THỂ CHẠY ĐƯỢC") >= 3

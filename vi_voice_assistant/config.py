@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 config.py
 ---------
@@ -8,18 +7,29 @@ v7.0 nâng cấp:
 - Dùng pathlib, type hints đầy đủ
 - Thêm validation schema
 - Lưu file atomic (temp + rename) để tránh hỏng khi mất điện
-- Thêm hàm get_config, update_config
-- Cache với TTL đơn giản
+- Thêm hàm get_config_value, update_config
+
+v7.2 nâng cấp:
+- Bỏ mô tả "cache với TTL" trong docstring: chưa từng tồn tại cache nào (đo
+  thực tế load_config() chỉ ~0.3ms nên cache cũng không đáng đánh đổi độ phức
+  tạp + nguy cơ đọc cấu hình cũ). Docstring nay mô dung đúng những gì code làm.
+- _validate_config() TRƯỚC ĐÂY LÀ CODE CHẾT: nó tính ra `missing` rồi `pass`,
+  tức mọi validation bị bỏ qua im lặng. Nay báo cáo thật (khoá thiếu / khoá lạ
+  do gõ sai tên / sai kiểu map) qua logging, và bắt lỗi kiểu sớm ở những khoá
+  mà executor.py sẽ crash nếu sai.
+- save_config() thêm fsync trước khi rename: chỉ "temp + rename" KHÔNG đảm bảo
+  nội dung đã nằm trên đĩa - mất điện đúng lúc rename có thể để lại file rỗng.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from platform_utils import safe_print, setup_console
 
@@ -39,7 +49,17 @@ REQUIRED_KEYS = {
     "file_map",
 }
 
-DEFAULT_CONFIG: Dict[str, Any] = {
+MAP_KEYS = (
+    "website_map",
+    "app_map_windows",
+    "app_map_macos",
+    "app_map_linux",
+    "file_map",
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG: dict[str, Any] = {
     "confidence_threshold": 0.35,
     "confidence_accept": 0.45,
     "confidence_ask": 0.25,
@@ -261,7 +281,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
@@ -271,26 +291,68 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return result
 
 
-def _validate_config(cfg: Dict[str, Any]) -> None:
-    """Kiểm tra cơ bản, raise RuntimeError nếu sai nghiêm trọng."""
+def _validate_config(cfg: dict[str, Any]) -> None:
+    """Kiểm tra config: raise RuntimeError nếu sai nghiêm trọng, cảnh báo nếu nghi ngờ.
+
+    v7.2: trước đây hàm này tính `missing = REQUIRED_KEYS - cfg.keys()` rồi
+    `pass` - nghĩa là không kiểm tra gì cả, dù docstring nói "raise nếu sai
+    nghiêm trọng". Hai hậu quả thật:
+      * tên khoá viết SAI chính tả (vd "app_map_window") bị im lặng bỏ qua,
+        người dùng thêm app vào file config mà trợ lý "không hiểu" mãi;
+      * map sai kiểu (vd website_map là list) lọt qua tới executor.py mới nổ
+        AttributeError ở giữa lệnh, báo lỗi khó hiểu.
+    """
     if not isinstance(cfg, dict):
         raise RuntimeError(f"Config phải là dict, nhận được {type(cfg).__name__}")
-    missing = REQUIRED_KEYS - cfg.keys()
+
+    # Khoá thiết YẾU: _deep_merge luôn bù từ DEFAULT_CONFIG nên chỉ cảnh báo -
+    # nhưng phải cảnh báo, vì nó thường là dấu hiệu của TÊN KHOÁ BỊ GÕ SAI.
+    missing = REQUIRED_KEYS - set(cfg.keys())
+    unknown = set(cfg.keys()) - set(DEFAULT_CONFIG.keys())
     if missing:
-        # Không fail cứng, chỉ cảnh báo vì _deep_merge sẽ bổ sung
-        pass
-    # Kiểm tra ngưỡng
+        logger.warning(
+            "config.json thiếu khoá %s - đã tự bù giá trị mặc định. "
+            "Nếu bạn gõ tên khoá khác đi, hãy viết ĐÚNG tên.", ", ".join(sorted(missing))
+        )
+    if unknown:
+        logger.warning(
+            "config.json có khoá LẠ không được chương trình biết tới: %s - "
+            "nó sẽ bị BỎ QUA. Kiểm tra lại chính tả tên khoá.", ", ".join(sorted(unknown))
+        )
+
+    # Ngưỡng tự tin: sai là fail cứng (rất khó gỡ nếu để lọt).
     for k in ("confidence_threshold", "confidence_accept", "confidence_ask"):
         if k in cfg:
             try:
                 v = float(cfg[k])
-                if not 0.0 <= v <= 1.0:
-                    raise ValueError(f"{k} phải trong [0,1], nhận {v}")
             except (TypeError, ValueError) as e:
                 raise RuntimeError(f"Giá trị {k} không hợp lệ: {e}") from e
+            if not 0.0 <= v <= 1.0:
+                raise RuntimeError(f"{k} phải trong [0,1], nhận {v}")
+
+    # Map phải là dict str->str, nếu không executor.py sẽ crash lúc dùng.
+    for k in MAP_KEYS:
+        value = cfg.get(k)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                f'"{k}" phải là JSON object {{"ten": "gia tri"}}, '
+                f"nhưng đang là {type(value).__name__}."
+            )
+        bad = [str(key) for key, val in value.items() if not isinstance(val, str)]
+        if bad:
+            # Lưu ý khi sửa dòng dưới: không được đặt nháy kép cùng loại BÊN
+            # TRONG biểu thức f-string - cú pháp đó chỉ hợp lệ từ Python 3.12,
+            # mà dự án hỗ trợ từ 3.9 (sẽ SyntaxError trên Python phổ biến).
+            bad_list = ", ".join(sorted(bad)[:5])
+            raise RuntimeError(
+                f'"{k}" có giá trị KHÔNG phải chuỗi cho các khoá: {bad_list}. '
+                'Mọi giá trị phải là chuỗi, ví dụ: "chrome": "chrome.exe".'
+            )
 
 
-def load_config(path: str | Path = CONFIG_PATH) -> Dict[str, Any]:
+def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
     """
     Nạp config từ JSON. Tự tạo nếu chưa có, tự bổ sung khoá thiếu.
     Atomic read, validation, deep merge với DEFAULT_CONFIG.
@@ -325,7 +387,7 @@ def load_config(path: str | Path = CONFIG_PATH) -> Dict[str, Any]:
     return merged
 
 
-def save_config(config: Dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
+def save_config(config: dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
     """Lưu config atomic: ghi ra file tạm rồi rename."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,13 +400,19 @@ def save_config(config: Dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
             f.write("\n")
+            # v7.2: rename CHƯA đủ để an toàn khi mất điện - nội dung có thể
+            # còn nằm trong buffer của OS. fsync trước rồi mới replace.
+            f.flush()
+            os.fsync(f.fileno())
         # Atomic rename
         Path(tmp_path).replace(path)
     except Exception:
         try:
             Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        except OSError as cleanup_error:
+            # File tạm nằm lại trên đĩa không nguy hiểm bằng việc che mất lỗi
+            # chính (đang `raise` ở dưới) - ghi lại để lần sau còn truy.
+            logger.debug("Không dọn được file tạm %s: %s", tmp_path, cleanup_error)
         raise
 
 
@@ -354,7 +422,7 @@ def get_config_value(key: str, default: Any = None, config_path: str | Path = CO
     return cfg.get(key, default)
 
 
-def update_config(updates: Dict[str, Any], path: str | Path = CONFIG_PATH) -> Dict[str, Any]:
+def update_config(updates: dict[str, Any], path: str | Path = CONFIG_PATH) -> dict[str, Any]:
     """Cập nhật 1 phần config và lưu lại."""
     cfg = load_config(path)
     merged = _deep_merge(cfg, updates)

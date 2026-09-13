@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 train_phobert.py v7.0
 ---------------------
@@ -159,19 +158,19 @@ def train(args):
             "f1_macro": f1_score(refs, preds, average="macro"),
         }
 
-    common_kwargs = dict(
-        output_dir=CHECKPOINT_DIR,
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        learning_rate=args.lr,
-        weight_decay=0.01,
-        logging_steps=20,
-        save_total_limit=1,
-        load_best_model_at_end=True,
-        metric_for_best_model="f1_macro",
-        report_to=[],
-    )
+    common_kwargs = {
+        "output_dir": CHECKPOINT_DIR,
+        "num_train_epochs": args.epochs,
+        "per_device_train_batch_size": args.batch_size,
+        "per_device_eval_batch_size": args.batch_size,
+        "learning_rate": args.lr,
+        "weight_decay": 0.01,
+        "logging_steps": 20,
+        "save_total_limit": 1,
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "f1_macro",
+        "report_to": [],
+    }
 
     # Phiên bản transformers mới đổi tên tham số evaluation_strategy -> eval_strategy
     try:
@@ -214,19 +213,35 @@ def train(args):
 
     clf = PhoBertIntentClassifier(model_dir=MODEL_DIR, max_length=args.max_length)
     clf.load()
-    for sample in ["mở giúp tôi facebook", "15 cộng 27 bằng bao nhiêu", "mấy giờ rồi", "hát cho tôi nghe một bài"]:
+    for sample in [
+        "mở giúp tôi facebook",
+        "15 cộng 27 bằng bao nhiêu",
+        "mấy giờ rồi",
+        "hát cho tôi nghe một bài",
+    ]:
         intent, conf = clf.predict(sample)
         safe_print(f"  {sample!r:40} -> {intent} ({conf:.2%})")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune PhoBERT cho phân loại ý định")
-    parser.add_argument("--model", default=BASE_CHECKPOINT, help="Checkpoint gốc (mặc định vinai/phobert-base — giấy phép MIT, an toàn cho dùng thương mại; TRÁNH dùng vinai/phobert-base-v2 vì license AGPL-3.0 có thể buộc bạn phải mở mã nguồn toàn bộ ứng dụng nếu host qua mạng)")
+    parser.add_argument(
+        "--model",
+        default=BASE_CHECKPOINT,
+        help=(
+            "Checkpoint gốc (mặc định vinai/phobert-base - giay phep MIT, an toan "
+            "cho dung thuong mai). TRANH dung vinai/phobert-base-v2 vi license "
+            "AGPL-3.0 co the buoc ban phai mo ma nguon toan bo ung dung neu host "
+            "qua mang."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max-length", type=int, default=64)
-    parser.add_argument("--no-feedback", action="store_true", help="Bỏ qua feedback.csv khi gộp dữ liệu")
+    parser.add_argument(
+        "--no-feedback", action="store_true", help="Bỏ qua feedback.csv khi gộp dữ liệu"
+    )
     args = parser.parse_args()
     train(args)
 

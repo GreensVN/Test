@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 train_nlu.py v7.0
 ----------------
@@ -39,12 +38,39 @@ import random
 import sys
 from collections import Counter
 
-import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score, train_test_split
-from sklearn.pipeline import FeatureUnion, Pipeline
+# v7.2 - SỬA LỖI CRASH: 7 dòng import sklearn/joblib trước đây nằm TRẦN, nên
+# máy chưa cài scikit-learn là `python train_nlu.py` (kể cả `--help`) chết ngay
+# với ModuleNotFoundError khó hiểu. Nghiêm trọng hơn vì CHÍNH main.py in ra
+# dòng gợi ý "thử chạy: python train_nlu.py --fast" khi nạp model lỗi -> người
+# dùng làm theo và nhận thêm một traceback. Nay import mềm, thiếu thì báo rõ
+# ràng cách cài hoặc dùng `python intent_model.py` (model nhẹ thuần Python).
+try:
+    import joblib
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import classification_report, confusion_matrix
+    from sklearn.model_selection import (
+        GridSearchCV,
+        StratifiedKFold,
+        cross_val_score,
+        train_test_split,
+    )
+    from sklearn.pipeline import FeatureUnion, Pipeline
+
+    SKLEARN_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    SKLEARN_AVAILABLE = False
+    joblib = None
+    TfidfVectorizer = None
+    LogisticRegression = None
+    classification_report = None
+    confusion_matrix = None
+    GridSearchCV = None
+    StratifiedKFold = None
+    cross_val_score = None
+    train_test_split = None
+    FeatureUnion = None
+    Pipeline = None
 
 from dataset import get_dataset_as_lists
 from nlu_advanced import TEEN_CODE, smart_normalize, strip_accents
@@ -167,6 +193,18 @@ def augment(texts, labels):
 # ============================================================================
 # 3. PIPELINE ĐẶC TRƯNG KÉP (TỪ + KÝ TỰ)
 # ============================================================================
+def _require_sklearn() -> None:
+    """Báo lỗi rõ ràng thay vì ModuleNotFoundError/NameError khó hiểu (v7.2)."""
+    if not SKLEARN_AVAILABLE:
+        raise SystemExit(
+            "Cần scikit-learn + joblib để huấn luyện bản nâng cao này.\n"
+            "   Cài bằng:  pip install scikit-learn joblib\n"
+            "   Không cài được (Win7/máy không mạng)? Vẫn dùng trợ lý bình thường được:\n"
+            "     - model nhẹ thuần Python tự chạy, hoặc\n"
+            "     - python intent_model.py   (tự huấn luyện model nhẹ và lưu ra đĩa)"
+        )
+
+
 def build_pipeline() -> Pipeline:
     """
     Kết hợp 2 góc nhìn:
@@ -196,6 +234,7 @@ PARAM_GRID = {
 # 4. HUẤN LUYỆN + ĐÁNH GIÁ + PHÂN TÍCH LỖI
 # ============================================================================
 def train(fast: bool = False, use_augment: bool = True):
+    _require_sklearn()
     lines = []   # nội dung báo cáo
 
     def log(msg=""):
@@ -203,7 +242,7 @@ def train(fast: bool = False, use_augment: bool = True):
         lines.append(str(msg))
 
     log("=" * 70)
-    log("HUẤN LUYỆN MÔ HÌNH HIỂU Ý – BẢN NÂNG CAO")
+    log("HUẤN LUYỆN MÔ HÌNH HIỂU Ý - BẢN NÂNG CAO")
     log("=" * 70)
 
     # --- Nạp dữ liệu ---
@@ -282,11 +321,20 @@ def train(fast: bool = False, use_augment: bool = True):
     # --- Huấn luyện lại trên TOÀN BỘ dữ liệu rồi lưu ---
     log("\n[10] Huấn luyện lại trên toàn bộ dữ liệu và lưu model...")
     best.fit(texts, labels)
-    joblib.dump(best, MODEL_PATH)
-    log(f"     Đã lưu: {MODEL_PATH}")
+    if joblib is None:
+        log("[LỖI] Thiếu joblib nên không lưu được model (pip install joblib).")
+    else:
+        try:
+            joblib.dump(best, MODEL_PATH)
+            log(f"     Đã lưu: {MODEL_PATH}")
+        except OSError as e:
+            log(f"     [LỖI] Không lưu được model ra {MODEL_PATH}: {e}")
 
-    with open(REPORT_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    try:
+        with open(REPORT_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except OSError as e:
+        safe_print(f"[LỖI] Không ghi được báo cáo {REPORT_PATH}: {e}")
     safe_print(f"\nĐã ghi báo cáo chi tiết: {REPORT_PATH}")
 
     return best
@@ -332,6 +380,10 @@ if __name__ == "__main__":
     try:
         quick_test(model)
     except Exception as e:
-        safe_print(f"(Bỏ qua test nhanh: {e})", file=sys.stderr)
+        # v7.2: safe_print() KHONG có tham số `file` - bản cũ gọi
+        # safe_print(..., file=sys.stderr) nên chính chỗ BẮT LỖI lại ném
+        # TypeError "unexpected keyword argument 'file'", biến một cảnh báo
+        # vô hại thành lỗi sập chương trình. Dùng print() chuẩn.
+        print(f"(Bỏ qua test nhanh: {e})", file=sys.stderr)
 
     safe_print("\nXONG! Giờ chạy:  python main.py")

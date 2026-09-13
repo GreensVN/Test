@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import nlu_advanced
-from nlu_advanced import ContextMemory, NLU, smart_normalize, split_commands
+from nlu_advanced import NLU, ContextMemory, smart_normalize, split_commands
 
 
 def test_smart_normalize_restores_diacritics():

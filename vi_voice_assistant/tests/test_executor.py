@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
@@ -285,7 +284,9 @@ def test_execute_command_unknown_intent_label_falls_back_gracefully(capsys):
 
 def test_execute_command_accepts_json_string(monkeypatch):
     monkeypatch.setattr(executor.webbrowser, "open", lambda url: True)
-    ok = executor.execute_command('{"intent": "open_website", "target": "google", "confidence": 0.9}')
+    ok = executor.execute_command(
+        '{"intent": "open_website", "target": "google", "confidence": 0.9}'
+    )
     assert ok is True
 
 
@@ -352,7 +353,11 @@ def test_action_get_weather_opens_search(monkeypatch):
     monkeypatch.setattr(executor.webbrowser, "open", lambda url: opened.setdefault("url", url))
     ok = executor.action_get_weather("đà nẵng")
     assert ok is True
-    assert "thời tiết" in opened["url"] or "th%E1%BB%9Di" in opened["url"] or "google.com/search" in opened["url"]
+    assert (
+        "thời tiết" in opened["url"]
+        or "th%E1%BB%9Di" in opened["url"]
+        or "google.com/search" in opened["url"]
+    )
 
 
 def test_action_get_datetime_time(capsys):

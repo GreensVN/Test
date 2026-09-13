@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 intent_model.py v7.0
 --------------------
@@ -28,7 +27,6 @@ import logging
 import math
 import os
 import re
-from pathlib import Path
 
 # v6 - THAY ĐỔI QUAN TRỌNG: scikit-learn/joblib giờ là TUỲ CHỌN.
 # Trước đây 6 dòng import này nằm trần: máy nào chưa cài được scikit-learn
@@ -53,8 +51,8 @@ except ImportError:   # pragma: no cover
     SKLEARN_AVAILABLE = False
 
 from dataset import get_dataset_as_lists
-from text_utils import normalize_text, strip_diacritics
 from platform_utils import safe_print, setup_console
+from text_utils import normalize_text, strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +121,9 @@ def train_model(algorithm: str = "logistic", show_report: bool = True):
     thin = {intent: c for intent, c in Counter(labels).items() if c < 2}
     if thin:
         safe_print(f"[CẢNH BÁO] {len(thin)} nhóm ý định có QUÁ ÍT câu mẫu (dưới 2 câu): {thin}")
-        safe_print("   -> Nên bổ sung thêm câu cho các nhóm này (sửa dataset.py hoặc my_dataset.csv).")
+        safe_print(
+            "   -> Nên bổ sung thêm câu cho các nhóm này (sửa dataset.py hoặc my_dataset.csv)."
+        )
 
     try:
         X_train, X_test, y_train, y_test = train_test_split(
@@ -154,7 +154,7 @@ def train_model(algorithm: str = "logistic", show_report: bool = True):
 def save_model(pipeline, path: str = MODEL_PATH) -> None:
     # v6: model nhẹ tự lưu bằng pickle chuẩn của Python (không cần joblib).
     try:
-        from lite_model import LiteIntentModel, LITE_MODEL_PATH, save_lite_model
+        from lite_model import LITE_MODEL_PATH, LiteIntentModel, save_lite_model
         if isinstance(pipeline, LiteIntentModel):
             target = LITE_MODEL_PATH if path == MODEL_PATH else path
             if save_lite_model(pipeline, target):
@@ -176,7 +176,10 @@ def save_model(pipeline, path: str = MODEL_PATH) -> None:
         # công sức huấn luyện (có thể mất 1-3 phút với GridSearchCV) mà
         # không rõ lý do - báo rõ ràng thay vì traceback khó hiểu.
         safe_print(f"[LỖI] Không lưu được model ra '{path}': {e}")
-        safe_print("   (Model đã huấn luyện xong trong bộ nhớ, nhưng sẽ mất khi chương trình thoát vì chưa lưu được ra đĩa)")
+        safe_print(
+            "   (Model đã huấn luyện xong trong bộ nhớ, nhưng sẽ mất khi chương trình "
+            "thoát vì chưa lưu được ra đĩa)"
+        )
         logger.error("Không lưu được model tại %s: %s", path, e)
         return
     safe_print(f"Đã lưu model tại: {path}")
@@ -210,7 +213,26 @@ def load_model(path: str = MODEL_PATH, prefer_phobert: bool = True):
 
     if SKLEARN_AVAILABLE and os.path.exists(path):
         logger.info("Nạp model TF-IDF có sẵn từ %s", path)
-        return joblib.load(path)
+        try:
+            return joblib.load(path)
+        except Exception as e:
+            # v7.2 - SỬA LỖI LÀM SẬP TRỢ LÝ Ở BƯỚC KHỞI ĐỘNG: file
+            # intent_model.pkl có thể hỏng (mất điện lúc ghi, disk đầy) hoặc
+            # được lưu bởi MỘT PHIÊN BẢN scikit-learn khác (cấu trúc lớp bên
+            # trong thay đổi -> ValueError/AttributeError khi nạp). Trước đây
+            # lỗi này ném thẳng ra ngoài, main.py chết hẳn dù hoàn toàn có thể
+            # tự huấn luyện lại trong vài giây. Nay: cảnh báo + tự train lại.
+            safe_print(f"[MODEL] File model '{path}' nạp không được ({e}) -> sẽ huấn luyện lại.")
+            logger.warning("Không nạp được model tại %s: %s", path, e)
+            # Dời file hỏng sang .bak (không xoá luôn) để bạn còn mang đi hỏi
+            # được "vì sao model cũ không nạp nổi", đồng thời lần khởi động
+            # sau không phải lặp lại đúng cảnh báo này.
+            try:
+                backup = f"{path}.bak"
+                os.replace(path, backup)
+                safe_print(f"   Đã cất bản hỏng sang: {backup}")
+            except OSError as move_error:
+                logger.warning("Không dời được file model hỏng: %s", move_error)
 
     # v6 - TẦNG DỰ PHÒNG CUỐI: không có scikit-learn thì dùng model nhẹ thuần
     # Python. Đây chính là điểm khiến bản v5 "chết cứng" trên máy chưa cài được
@@ -219,7 +241,9 @@ def load_model(path: str = MODEL_PATH, prefer_phobert: bool = True):
         from lite_model import get_lite_model
         model = get_lite_model()
         safe_print("[MODEL] Đang dùng model nhẹ thuần Python (không cần scikit-learn).")
-        logger.info("Dùng LiteIntentModel: %d nhãn, nhiệt độ %s", len(model.classes_), model.temperature)
+        logger.info(
+            "Dùng LiteIntentModel: %d nhãn, nhiệt độ %s", len(model.classes_), model.temperature
+        )
         return model
 
     safe_print("Chưa có model, đang tự động huấn luyện...")
@@ -330,7 +354,9 @@ def _strip_affixes(text: str, prefix: str, suffix: str) -> str:
 
 # "ngày mai / sáng mai / tối mai..." -> hẹn sang HÔM SAU. Cố tình KHÔNG bắt
 # chữ "mai" đứng một mình vì đó còn là tên người ("nhắc tôi gọi Mai").
-_TOMORROW_RE = re.compile(r"\b(ngay mai|sang mai|trua mai|chieu mai|toi mai|dem mai|khuya mai|hom sau)\b")
+_TOMORROW_RE = re.compile(
+    r"\b(ngay mai|sang mai|trua mai|chieu mai|toi mai|dem mai|khuya mai|hom sau)\b"
+)
 
 
 # ============================================================================
@@ -520,7 +546,7 @@ def _format_number_word(value):
     """int/float -> chuỗi chữ số gọn (2.5 -> '2.5', 105 -> '105')."""
     if isinstance(value, int):
         return str(value)
-    return "{0:g}".format(value)
+    return f"{value:g}"
 
 
 def replace_number_words(text):
@@ -541,7 +567,9 @@ def replace_number_words(text):
             i += 1
             continue
         j = i
-        while j < len(tokens) and _classify_number_token(tokens[j], tokens[j - 1] if j > i else prev) is not None:
+        while j < len(tokens) and _classify_number_token(
+            tokens[j], tokens[j - 1] if j > i else prev
+        ) is not None:
             j += 1
         run = tokens[i:j]
         value = _parse_number_run(run, prev)
@@ -787,7 +815,12 @@ def _safe_eval(expr: str):
                 raise ValueError("Số mũ quá lớn hoặc không hợp lệ")
             if isinstance(base, (int, float)) and abs(base) > MAX_POW_BASE:
                 raise ValueError("Cơ số quá lớn")
-    return eval(compile(node, "<expr>", "eval"))
+    # eval() ở đây AN TOÀN có kiểm chứng: vòng lặp phía trên đã
+    # duyệt từng node AST và CHỐI mọi node ngoài tập _SAFE_AST_NODES (chỉ số,
+    # + - * / ** và ngoặc). Không có Name/Attribute/Call/Subscript nên không thể
+    # gọi hàm hay chạm tới thuộc tính nào. ast.literal_eval() KHÔNG thay được vì
+    # nó không đánh giá biểu thức số học (chỉ parse hằng số).
+    return eval(compile(node, "<expr>", "eval"))  # noqa: S307
 
 
 def parse_math_expression(text: str):
@@ -999,7 +1032,7 @@ def _has_literal_entity(s: str) -> bool:
     return bool(_URL_ENTITY_RE.search(s) or _PATH_ENTITY_RE.search(s))
 
 
-def predict_intent(text: str, model=None, raw_text: str = None) -> dict:
+def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     """
     Dự đoán ý định + trích xuất thực thể.
 

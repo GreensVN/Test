@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Test cho các nâng cấp / sửa lỗi của bản v6.2.
 
@@ -18,10 +17,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest
-
 import config
 import nlu_advanced
+import pytest
 from intent_model import (
     extract_entity,
     parse_math_expression,

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 nlu_advanced.py v7.0
 --------------------
@@ -37,40 +36,106 @@ Cách dùng nhanh:
 import csv
 import difflib
 import logging
+import math
 import os
 import re
 from datetime import datetime
 
-from text_utils import normalize_text, strip_diacritics as strip_accents
 from platform_utils import safe_print, setup_console
+from text_utils import normalize_text
+from text_utils import strip_diacritics as strip_accents
 
 # v6: đọc CẢ 2 ngưỡng tự tin từ config.json. Trước đây chúng bị VIẾT CỨNG
 # trong file này, trong khi executor.py lại đọc một ngưỡng KHÁC từ config.json
 # -> người dùng chỉnh confidence_threshold mãi mà trợ lý vẫn hỏi lại y như cũ,
 # rất khó hiểu và không có cách nào biết lý do nếu không đọc mã nguồn.
-_CONFIG_ACCEPT = None
-_CONFIG_ASK = None
-try:
-    from config import load_config
-    _CFG = load_config()
-    _DANGEROUS_TARGETS_CONFIG = set(_CFG.get("dangerous_actions", []))
-    _CONFIG_ACCEPT = _CFG.get("confidence_accept")
-    _CONFIG_ASK = _CFG.get("confidence_ask")
-except Exception as _cfg_error:   # pragma: no cover
-    # Không nuốt lỗi âm thầm nữa: ghi log để còn biết config.json có vấn đề.
-    logging.getLogger(__name__).warning("Không đọc được config.json (%s) - dùng mặc định an toàn.",
-                                        _cfg_error)
-    _DANGEROUS_TARGETS_CONFIG = set()
+# v7.2: việc đọc/hiệu chỉnh nằm trong _read_thresholds() để một giá trị sai
+# kiểu trong config.json không còn làm sập cả chương trình ngay lúc import.
+_DEFAULT_ACCEPT = 0.45
+_DEFAULT_ASK = 0.25
+_logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FEEDBACK_PATH = os.path.join(BASE_DIR, "feedback.csv")
+
+
+def _read_thresholds(cfg: dict | None):
+    """Đọc + hiệu chỉnh 2 ngưỡng tự tin từ config, KHÔNG BAO GIỜ ném lỗi.
+
+    v7.2 - SỬA LỖI LÀM SẬP CHƯƠNG TRÌNH: trước đây 2 dòng
+    ``float(_CONFIG_ACCEPT)`` chạy NGÀO NGÀY lúc import module, nằm NGOÀI
+    khối try/except đọc config. Chỉ cần một giá trị sai kiểu trong
+    config.json (vd ``"confidence_accept": "0.45 phan tram"`` hay ``null``
+    do sửa tay bằng Notepad) là ``ValueError/TypeError`` bay ra ngay lúc
+    ``import nlu_advanced``, kéo theo cả ``main.py`` chết vì không import
+    được NLU - trong khi toàn bộ phần còn lại của dự án (kể cả executor) vẫn
+    chạy tốt. Nay giá trị hỏng -> cảnh báo + dùng mặc định an toàn.
+    """
+    cfg = cfg or {}
+
+    def one(key: str, fallback: float) -> float:
+        raw = cfg.get(key)
+        if raw is None or isinstance(raw, bool):
+            return fallback
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "Giá trị %r trong config.json không phải số (%r) - dùng mặc định %s.",
+                key, raw, fallback,
+            )
+            return fallback
+        if not math.isfinite(value):
+            _logger.warning("Giá trị %r = %r không hữu hạn - dùng mặc định %s.", key, raw, fallback)
+            return fallback
+        return min(1.0, max(0.0, value))
+
+    accept = one("confidence_accept", _DEFAULT_ACCEPT)
+    ask = one("confidence_ask", _DEFAULT_ASK)
+    if ask > accept:
+        _logger.warning(
+            "confidence_ask (%s) lớn hơn confidence_accept (%s) - mọi câu sẽ bị coi là "
+            "'không hiểu'. Đã tự đổi chỗ 2 giá trị cho nhau.", ask, accept,
+        )
+        ask, accept = accept, ask
+    return accept, ask
+
+
+def _load_cfg_quietly() -> dict:
+    try:
+        from config import load_config
+        return load_config()
+    except Exception as cfg_error:   # pragma: no cover
+        # Không nuốt lỗi âm thầm nữa: ghi log để còn biết config.json có vấn đề.
+        _logger.warning("Không đọc được config.json (%s) - dùng mặc định an toàn.", cfg_error)
+        return {}
+
+
+_CFG = _load_cfg_quietly()
+_DANGEROUS_TARGETS_CONFIG = {str(a) for a in _CFG.get("dangerous_actions", []) if a}
 
 # Ngưỡng tự tin: dưới mức này trợ lý sẽ HỎI LẠI thay vì làm bừa. Đây là 2
 # ngưỡng RIÊNG của tầng NLU (tinh tế hơn CONFIDENCE_THRESHOLD đơn giản trong
 # executor.py / config.json), có 4 mức: ok / low_confidence / need_confirm /
 # unknown. Chỉnh 2 số dưới nếu trợ lý hỏi lại quá nhiều hoặc làm bừa quá nhiều.
-CONFIDENCE_ACCEPT = float(_CONFIG_ACCEPT) if _CONFIG_ACCEPT is not None else 0.45   # >= : thực thi ngay
-CONFIDENCE_ASK = float(_CONFIG_ASK) if _CONFIG_ASK is not None else 0.25            # >= : hỏi lại cho chắc
+CONFIDENCE_ACCEPT, CONFIDENCE_ASK = _read_thresholds(_CFG)
+
+
+def refresh_thresholds(cfg: dict | None = None) -> tuple[float, float]:
+    """Nạp lại 2 ngưỡng tự tin + danh sách hành động nguy hiểm từ config.
+
+    v7.2: trước đây lệnh ``nap lai`` / ``--config`` chỉ cập nhật executor, còn
+    ngưỡng của tầng NLU vẫn đóng băng từ lúc import -> người dùng đổi
+    ``confidence_accept`` trong config.json rồi "nap lai" nhưng trợ lý vẫn hỏi
+    lại y hệt. Hàm này đồng bộ lại cả hai phía.
+    """
+    global CONFIDENCE_ACCEPT, CONFIDENCE_ASK, DANGEROUS_TARGETS
+    cfg = _load_cfg_quietly() if cfg is None else cfg
+    CONFIDENCE_ACCEPT, CONFIDENCE_ASK = _read_thresholds(cfg)
+    dangerous = {str(a) for a in (cfg or {}).get("dangerous_actions", []) if a}
+    DANGEROUS_TARGETS = dangerous or {"shutdown", "restart", "logout", "sleep"}
+    return CONFIDENCE_ACCEPT, CONFIDENCE_ASK
+
 
 # Những hành động gây hậu quả nặng -> luôn hỏi xác nhận. Lấy từ
 # config.json["dangerous_actions"] để đồng bộ với executor.py; nếu vì lý do
@@ -481,6 +546,8 @@ if __name__ == "__main__":
         for s in ["mo chrome roi phat nhac tru tinh", "tat may di", "bat gg len"]:
             safe_print(f"\n  Bạn: {s}")
             for r in nlu.understand(s):
-                safe_print(f"    -> [{r['status']}] {r['intent']} | {r['target']} | {r['confidence']}")
+                safe_print(
+                    f"    -> [{r['status']}] {r['intent']} | {r['target']} | {r['confidence']}"
+                )
     except Exception as e:
         safe_print(f"\n(Bỏ qua phần cần model: {e})")

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 
@@ -37,9 +36,12 @@ def test_load_config_raises_on_invalid_json(tmp_path):
     path.write_text("{not valid json", encoding="utf-8")
     try:
         config.load_config(str(path))
-        assert False, "phải ném lỗi khi JSON không hợp lệ"
     except RuntimeError:
         pass
+    else:
+        # raise AssertionError thay vi `assert False`: cau lenh assert bi loai
+        # khi chay `python -O`, khi do test nay LUON "xanh" du loi khong xay ra.
+        raise AssertionError("phải ném lỗi khi JSON không hợp lệ")
 
 
 def test_save_config_preserves_unicode(tmp_path):

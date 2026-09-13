@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 run_tests.py - Bo chay kiem thu KHONG can pytest cai san (v6).
 Cach dung:
@@ -8,13 +7,34 @@ Cach dung:
     python3 run_tests.py -v         # verbose (in traceback ngay)
 """
 from __future__ import annotations
-import contextlib, importlib, importlib.util, inspect, io
-import os, pathlib, re, sys, tempfile, traceback, types
+
+import contextlib
+import importlib
+import importlib.util
+import inspect
+import io
+import os
+import pathlib
+import re
+import sys
+import tempfile
+import traceback
+import types
 
 # --- Thu pytest that truoc ---
+# v7.2 - SUA LOI NGHIEM TRONG (lam CI "xanh gia"): ban cu dung
+#     sys.exit(os.system(sys.executable + " -m pytest " + ...))
+# os.system() tra ve WAIT STATUS (exit_code << 8), kh phai exit code that:
+# pytest fail => os.system tra 256 => sys.exit(256) bi cat mask thanh 0
+# => CI bao THANH CONG du TOAN BO test do. O Windows thi duong dan
+# sys.executable co dau cach (C:\Program Files\...) bi tach roi lenh.
+# Dung subprocess.call([list]) de lay dung exit code va kh lo quoting.
 try:
     import pytest as _rp  # noqa
-    sys.exit(os.system(sys.executable + " -m pytest " + " ".join(sys.argv[1:])))
+
+    import subprocess
+
+    sys.exit(subprocess.call([sys.executable, "-m", "pytest", *sys.argv[1:]]))
 except ImportError:
     pass
 
@@ -23,7 +43,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 _MISSING = object()
 
-class _Skip(Exception): pass
+# _Skip la TIN HIEU DIEU HUONG (de runner bo qua test), khong phai loi ma nguoi
+# dung gap phai -> giu ten ngan, khong them duoi "Error" cho day dong.
+class _Skip(Exception): pass  # noqa: N818
 
 class _Approx:
     def __init__(self, expected, rel=1e-6, abs_tol=None):
@@ -40,7 +62,9 @@ def _raises(exc_type, match=None):
         if match and not re.search(match, str(e)):
             raise AssertionError("Msg %r !~ %r" % (str(e), match)) from e
     except Exception as e:
-        raise AssertionError("Expected %s, got %s: %s" % (exc_type.__name__, type(e).__name__, e)) from e
+        raise AssertionError(
+            "Expected %s, got %s: %s" % (exc_type.__name__, type(e).__name__, e)
+        ) from e
     else:
         raise AssertionError("Expected %s but no exception" % exc_type.__name__)
 
@@ -99,7 +123,7 @@ class _Tee:
     def flush(self): self._r.flush()
     def fileno(self): return self._r.fileno()
     @property
-    def encoding(self): return getattr(self._r, 'encoding', 'utf-8')
+    def encoding(self): return getattr(self._r, "encoding", "utf-8")
 
 # --- Monkeypatch ---
 class _Monkeypatch:
@@ -112,11 +136,11 @@ class _Monkeypatch:
             # 2-arg form: setattr('builtins.print', fn)
             dotted = obj_or_dotted
             value = name_or_value
-            last_dot = dotted.rfind('.')
+            last_dot = dotted.rfind(".")
             if last_dot == -1:
                 raise ValueError("No dot in %r" % dotted)
             mod_name, attr = dotted[:last_dot], dotted[last_dot+1:]
-            if mod_name == 'builtins':
+            if mod_name == "builtins":
                 import builtins
                 obj = builtins
             else:
@@ -149,7 +173,7 @@ class _Monkeypatch:
             if raising: raise
     def setenv(self, name, value, prepend=None):
         old = os.environ.get(name, _MISSING)
-        os.environ[name] = (value + prepend + os.environ.get(name,'')) if prepend else value
+        os.environ[name] = (value + prepend + os.environ.get(name,"")) if prepend else value
         self._patches.append((os.environ, name, old))
     def undo(self):
         for item in reversed(self._patches):
@@ -186,25 +210,25 @@ def _load_module(path):
     return mod
 
 def _collect_fixtures(mod):
-    return {n: o for n,o in vars(mod).items() if callable(o) and getattr(o,'__is_fixture__',False)}
+    return {n: o for n,o in vars(mod).items() if callable(o) and getattr(o,"__is_fixture__",False)}
 
 _MOD_CACHE: dict = {}
 
 def _resolve(name, fixtures, mp, capsys, tmp_path):
-    if name == 'monkeypatch': return mp
-    if name == 'capsys': return capsys
-    if name == 'tmp_path': return tmp_path
+    if name == "monkeypatch": return mp
+    if name == "capsys": return capsys
+    if name == "tmp_path": return tmp_path
     if name in _MOD_CACHE: return _MOD_CACHE[name]
     if name in fixtures:
         fn = fixtures[name]
         v = fn()
-        if getattr(fn,'__fscope__','function') == 'module': _MOD_CACHE[name] = v
+        if getattr(fn,"__fscope__","function") == "module": _MOD_CACHE[name] = v
         return v
     return None
 
 def run(keyword=None, verbose=False):
-    test_dir = pathlib.Path(__file__).parent / 'tests'
-    files = sorted(test_dir.glob('test_*.py'))
+    test_dir = pathlib.Path(__file__).parent / "tests"
+    files = sorted(test_dir.glob("test_*.py"))
     total = passed = failed = skipped = 0
     failures = []
 
@@ -218,7 +242,7 @@ def run(keyword=None, verbose=False):
             failed += 1; continue
 
         fixtures = _collect_fixtures(mod)
-        fns = [(n,o) for n,o in vars(mod).items() if n.startswith('test_') and callable(o)]
+        fns = [(n,o) for n,o in vars(mod).items() if n.startswith("test_") and callable(o)]
         if not fns: continue
 
         print("\n" + "=" * 58)
@@ -229,13 +253,13 @@ def run(keyword=None, verbose=False):
             if keyword and keyword.lower() not in name.lower(): continue
 
             cases = [(name, fn, {})]
-            if hasattr(fn, '__parametrize__'):
+            if hasattr(fn, "__parametrize__"):
                 arg_names, arg_values = fn.__parametrize__
                 cases = []
                 for vals in arg_values:
                     if not isinstance(vals, (list, tuple)): vals = (vals,)
                     pkw = dict(zip(arg_names, vals))
-                    cid = '-'.join(str(v)[:18] for v in vals)
+                    cid = "-".join(str(v)[:18] for v in vals)
                     cases.append(("%s[%s]" % (name, cid), fn, pkw))
 
             for case_name, test_fn, extra_kw in cases:
@@ -287,10 +311,10 @@ def run(keyword=None, verbose=False):
             print("\n--- %s ---\n%s" % (fname, tb))
     return failed
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument('-k', dest='keyword', default=None)
-    ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument("-k", dest="keyword", default=None)
+    ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     sys.exit(run(keyword=a.keyword, verbose=a.verbose))

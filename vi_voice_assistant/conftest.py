@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Đảm bảo pytest tìm thấy các module gốc của dự án khi chạy từ thư mục khác."""
 import os
 import sys
