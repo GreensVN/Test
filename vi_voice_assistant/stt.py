@@ -282,68 +282,94 @@ def _record_audiodata_sd(timeout: float = 6.0, phrase_limit: float = 8.0):
     return _sr.AudioData(audio.tobytes(), SAMPLE_RATE, 2)
 
 
-def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
-    if not is_available():
-        if _SR_AVAILABLE:
-            safe_print("[STT] Đã có SpeechRecognition nhưng thiếu thư viện thu âm.")
-            safe_print("      Cài bằng:  pip install sounddevice numpy")
+def _report_missing_stt() -> None:
+    """Hướng dẫn cài đặt khi máy chưa đủ thư viện STT (không ném lỗi - gõ tay vẫn dùng được)."""
+    if _SR_AVAILABLE:
+        safe_print("[STT] Đã có SpeechRecognition nhưng thiếu thư viện thu âm.")
+        safe_print("      Cài bằng:  pip install sounddevice numpy")
+    else:
+        safe_print("[STT] Chưa cài thư viện nhận diện giọng nói -> dùng gõ phím.")
+        safe_print("      Cài bằng:  pip install SpeechRecognition sounddevice numpy")
+
+
+def _capture_audio(timeout: float, phrase_limit: float = 8.0):
+    """Thu âm từ micro -> trả về (audio, đã_hết_cách).
+
+    audio là `sr.AudioData` hoặc None. Khi None + đã_hết_cách=True, lời khuyên
+    đã được in ra sẵn và caller chỉ việc quay về gõ tay.
+
+    Tách khỏi listen_once() (v7.2) vì hàm cũ trộn 3 việc - chọn backend, thu
+    âm, gọi dịch vụ - nên có tới 15 nhánh; sửa một backend là phải đọc hết.
+    """
+    if _SD_AVAILABLE:
+        try:
+            audio = _record_audiodata_sd(timeout=timeout, phrase_limit=phrase_limit)
+            if audio is None:
+                safe_print(f"[STT] Không nghe thấy gì trong {timeout:.0f}s, quay về gõ tay.")
+                return None, True
+            return audio, False
+        except Exception as e:
+            safe_print(f"[STT] Thu âm bằng sounddevice lỗi: {e}")
+            logger.warning("sounddevice lỗi: %s", e)
+            # chưa hết cách: còn backend _sr.Microphone bên dưới
+
+    try:
+        recognizer = _sr.Recognizer()
+        with _sr.Microphone() as source:
+            safe_print("[STT] Đang nghe... (nói vào micro)")
+            recognizer.adjust_for_ambient_noise(source, duration=0.4)
+            return recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit), False
+    except AttributeError as e:
+        safe_print(f"[STT] Không thu âm được: {e}")
+        safe_print("      KHẮC PHỤC:  pip install sounddevice numpy")
+        logger.warning("Thiếu backend thu âm: %s", e)
+    except OSError as e:
+        safe_print(f"[STT] Không tìm thấy micro: {e}")
+        logger.warning("Không tìm thấy micro: %s", e)
+    except Exception as e:
+        msg = str(e)
+        if "PyAudio" in msg:
+            # Dự án dùng sounddevice, KHÔNG cần PyAudio. Nói rõ để người dùng
+            # thôi đi tìm cách cài PyAudio (lỗi rất hay gặp trên Linux).
+            safe_print("[STT] Thiếu PyAudio — nhưng dự án này KHÔNG cần nó.")
+            safe_print("      KHẮC PHỤC:  pip install sounddevice numpy")
         else:
-            safe_print("[STT] Chưa cài thư viện nhận diện giọng nói -> dùng gõ phím.")
-            safe_print("      Cài bằng:  pip install SpeechRecognition sounddevice numpy")
+            safe_print(f"[STT] Lỗi khi ghi âm: {msg}")
+        logger.warning("Lỗi khi ghi âm: %s", msg)
+    return None, True
+
+
+def _recognize(recognizer, audio, language: str) -> str:
+    """Gửi audio tới Google Web Speech API, trả về chuỗi rỗng khi không nhận được."""
+    try:
+        text = recognizer.recognize_google(audio, language=language)
+        safe_print(f"[STT] Nhận diện được: {text}")
+        return text
+    except _sr.UnknownValueError:
+        safe_print("[STT] Không nghe rõ, bạn thử nói lại nhé.")
+        return ""
+    except _sr.RequestError as e:
+        # Mất mạng / dịch vụ hỏng: phân biệt rõ với "nói không rõ" để người
+        # dùng biết quay về gõ tay là do kết nối, không phải do phát âm.
+        safe_print(f"[STT] Lỗi kết nối dịch vụ STT: {e}")
+        logger.warning("Lỗi kết nối STT: %s", e)
+        return ""
+
+
+def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
+    """Nghe một câu qua micro và trả về văn bản. Trả về "" nếu không nghe được."""
+    if not is_available():
+        _report_missing_stt()
         return ""
 
     if _SR_AVAILABLE:
         recognizer = _sr.Recognizer()
-        audio = None
-
-        if _SD_AVAILABLE:
-            try:
-                audio = _record_audiodata_sd(timeout=timeout, phrase_limit=8.0)
-                if audio is None:
-                    safe_print(f"[STT] Không nghe thấy gì trong {timeout:.0f}s, quay về gõ tay.")
-                    return ""
-            except Exception as e:
-                safe_print(f"[STT] Thu âm bằng sounddevice lỗi: {e}")
-                logger.warning("sounddevice lỗi: %s", e)
-                audio = None
-
+        audio, _gave_up = _capture_audio(timeout)
         if audio is None:
-            try:
-                with _sr.Microphone() as source:
-                    safe_print("[STT] Đang nghe... (nói vào micro)")
-                    recognizer.adjust_for_ambient_noise(source, duration=0.4)
-                    audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=8)
-            except AttributeError as e:
-                safe_print(f"[STT] Không thu âm được: {e}")
-                safe_print("      KHẮC PHỤC:  pip install sounddevice numpy")
-                logger.warning("Thiếu backend thu âm: %s", e)
-                return ""
-            except OSError as e:
-                safe_print(f"[STT] Không tìm thấy micro: {e}")
-                logger.warning("Không tìm thấy micro: %s", e)
-                return ""
-            except Exception as e:
-                msg = str(e)
-                if "PyAudio" in msg:
-                    safe_print("[STT] Thiếu PyAudio — nhưng dự án này KHÔNG cần nó.")
-                    safe_print("      KHẮC PHỤC:  pip install sounddevice numpy")
-                else:
-                    safe_print(f"[STT] Lỗi khi ghi âm: {msg}")
-                logger.warning("Lỗi khi ghi âm: %s", msg)
-                return ""
-
-        try:
-            text = recognizer.recognize_google(audio, language=language)
-            safe_print(f"[STT] Nhận diện được: {text}")
-            return text
-        except _sr.UnknownValueError:
-            safe_print("[STT] Không nghe rõ, bạn thử nói lại nhé.")
             return ""
-        except _sr.RequestError as e:
-            safe_print(f"[STT] Lỗi kết nối dịch vụ STT: {e}")
-            logger.warning("Lỗi kết nối STT: %s", e)
-            return ""
+        return _recognize(recognizer, audio, language)
 
+    # Không có SpeechRecognition -> chỉ còn đường PhoWhisper offline.
     try:
         return _default_stt().listen()
     except Exception as e:

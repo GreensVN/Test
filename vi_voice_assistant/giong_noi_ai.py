@@ -553,8 +553,35 @@ def kiem_tra():
 # ============================================================================
 # CLI
 # ============================================================================
-def main():
-    setup_console()
+def _cli_thu(args) -> None:
+    """`thu [text] [--giong TEN] [--luu FILE.wav]` - đọc thử một câu."""
+    if args.luu:
+        if synth_to_file(args.text, args.luu, voice=args.giong):
+            safe_print(f"[XONG] Đã lưu: {args.luu}")
+        return
+    if not speak(args.text, voice=args.giong):
+        safe_print("[!] Không đọc được. Chạy:  python giong_noi_ai.py kiem-tra")
+
+
+def _cli_nhan_ban(args) -> None:
+    """`nhan-ban MAU.wav [text] [--luu FILE.wav]` - nhân bản giọng từ audio mẫu."""
+    nhan_ban_giong(args.mau_wav, args.text, out_path=args.luu)
+
+
+# Bang lenh CLI (v7.2): them lenh = them 1 dong o day + 1 subparser, khong phai
+# chen them nhanh elif vao chuoi if/elif nhu ban cu.
+_CLI_COMMANDS = {
+    "giay-phep": lambda args: in_giay_phep(),
+    "kiem-tra": lambda args: kiem_tra(),
+    "tai": lambda args: download_voice(force=args.force),
+    "chuan-bi-data": lambda args: chuan_bi_data(),
+    "huong-dan-train": lambda args: huong_dan_train(),
+    "nhan-ban": _cli_nhan_ban,
+    "thu": _cli_thu,
+}
+
+
+def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Giọng nói AI tiếng Việt — VieNeu-TTS-v3-Turbo (Apache 2.0)"
     )
@@ -579,32 +606,20 @@ def main():
     p_clone.add_argument("text", nargs="?",
                          default="Đây là giọng được nhân bản tức thì.")
     p_clone.add_argument("--luu", default=None, help="lưu ra file wav thay vì phát")
+    return p
 
+
+def main():
+    setup_console()
+    p = _build_argparser()
     args = p.parse_args()
 
-    if args.cmd == "giay-phep":
-        in_giay_phep()
-    elif args.cmd == "kiem-tra":
-        kiem_tra()
-    elif args.cmd == "tai":
-        download_voice(force=args.force)
-    elif args.cmd == "chuan-bi-data":
-        chuan_bi_data()
-    elif args.cmd == "huong-dan-train":
-        huong_dan_train()
-    elif args.cmd == "nhan-ban":
-        nhan_ban_giong(args.mau_wav, args.text, out_path=args.luu)
-    elif args.cmd == "thu":
-        if args.luu:
-            ok = synth_to_file(args.text, args.luu, voice=args.giong)
-            if ok:
-                safe_print(f"[XONG] Đã lưu: {args.luu}")
-        else:
-            if not speak(args.text, voice=args.giong):
-                safe_print("[!] Không đọc được. Chạy:  python giong_noi_ai.py kiem-tra")
-    else:
+    handler = _CLI_COMMANDS.get(args.cmd)
+    if handler is None:
         p.print_help()
         safe_print("\nBắt đầu ở đây:  python giong_noi_ai.py giay-phep")
+        return
+    handler(args)
 
 
 if __name__ == "__main__":

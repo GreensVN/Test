@@ -1,23 +1,30 @@
-# Trợ lý ảo tiếng Việt v7.1
+# Trợ lý ảo tiếng Việt v7.2
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
-> **v7.1 (2026-09-13)**: Nâng cấp toàn diện từ v6.4, fix tất cả lỗi regression sau merge 2 bản zip.
-> - Fix lỗi regex `bad character range \-( at position 11` trong `executor.py` và `text_utils.py`
-> - Fix tương thích `HOME`/`REMINDERS_PATH` khi bị monkeypatch bằng `str` trong tests
-> - Thêm wrapper `_popen()` để tương thích mock `Popen(lambda cmd: ...)` trong tests
-> - Nâng cấp `tts.py` (RLock, timeout, voice cache), `stt.py` (STT class, RMS fallback), `main.py` (--debug/--no-banner/--config/--engine/--history)
-> - Thêm `pyproject.toml`, `requirements.txt`, `logging_setup.py`, `platform_utils.py`
-> - 220 tests pass 100%
-> - Xem chi tiết trong **CHANGELOG.md** và **UPGRADE_REPORT_v7.md**
+> **v7.2 (2026-09-13)** - bản **trả nợ kỹ thuật**: 15 lỗi thật đã sửa, 347 cảnh
+> báo lint -> 0, 220 -> 251 test, và các hàm "20-30 nhánh" được tách thành bảng tra.
+> Điểm đáng chú ý nhất:
+> - **Bảo mật**: `executor._escape_osascript` escape sai thứ tự -> nội dung nhắc nhở
+>   thoát khỏi chuỗi và chạy thành mã AppleScript. Đã sửa thứ tự escape (+ test).
+> - **Đúng như quảng cáo**: `pip install .` không còn bắt cài scikit-learn/numpy;
+>   `run_tests.py` trả exit code thật (trước đây luôn 0 -> "220 pass" có thể là ảo giác).
+> - **Không làm gì sai khi không hiểu**: model lite có "bảo chứng từ điển", câu vô
+>   nghĩa bị hạ confidence về ~0% -> trợ lý hỏi lại thay vì thực thi bừa.
+> - **Bền dữ liệu**: `huy nhac`/lời nhắc mới được ghi xuống `reminders.json` ngay,
+>   mục quá hạn không "nổ" dồn khi bật máy; `nap lai` nạp lại cả ngưỡng tự tin của NLU.
+> - **Hành vi KHÔNG đổi**: đối chiếu tự động với bản v7.1 trên 188k câu
+>   (số + giờ + thực thể) = 0 khác biệt.
+>
+> Chi tiết từng lỗi: **CHANGELOG.md**; báo cáo các bản trước: **UPGRADE_REPORT_v7.md**.
 
-## Điểm nổi bật v7.1
+## Điểm nổi bật v7.2
 
 - **11 ý định**: mở web, mở app, mở file, điều khiển hệ thống, tìm kiếm, phát nhạc/video, nhắc nhở, thời tiết, xem giờ/ngày, tính toán, chit-chat.
 - **Không cần thư viện ngoài**: `lite_model.py` - Naive Bayes n-gram ký tự thuần Python, huấn luyện <1s, ~97-98% chính xác. Tự dùng scikit-learn hoặc PhoBERT nếu có.
 - **Thông minh đời thường**: gõ không dấu, teencode, sai chính tả nhẹ, nhiều lệnh trong 1 câu, nhớ ngữ cảnh ("đóng nó lại"), học từ phản hồi, hiểu số viết bằng chữ.
-- **An toàn v7.1**: 
+- **An toàn**: 
   - Không chạy chuỗi người dùng qua shell
   - Whitelist app/web/file trong `config.json`
   - Xác nhận trước hành động nguy hiểm
@@ -25,6 +32,7 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
   - `_INVALID_FILENAME_RE` fix: `r'[<>:"/\\|?*]'` + xử lý control chars riêng
   - `_popen()` wrapper tương thích mọi mock
   - `Path(HOME)` / `Path(REMINDERS_PATH)` wrapper cho cả `str` và `Path`
+  - Escape nháy kép/backslash theo đúng thứ tự cho AppleScript *và* PowerShell
 - **Nhắc nhở bền bỉ**: lưu `reminders.json` atomic (tempfile + replace), khôi phục khi mở lại, hiểu "3h30", "3 giờ rưỡi", "8 giờ kém 15", "11 giờ đêm".
 - **Giọng AI**: VieNeu-TTS v3-Turbo (Apache 2.0) 10 giọng + nhân bản tức thời từ 3-5s audio, fallback Piper.
 
@@ -45,7 +53,7 @@ python giong_noi_ai.py tai
 python giong_noi_ai.py thu "Xin chào Việt Nam"
 ```
 
-## Cách dùng v7.1
+## Cách dùng
 
 ```bash
 python main.py                              # hỏi-đáp
@@ -65,32 +73,31 @@ Lệnh trong phiên: `mic`, `voice`, `test`, `nhac nho`, `huy nhac [từ khoá]`
 
 Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 
-## Cấu trúc v7.1
+## Cấu trúc
 
-| File | Vai trò | v7.1 |
+| File | Vai trò | Thay đổi ở v7.2 |
 |---|---|---|
-| `main.py` | Vòng lặp chính + CLI | + --debug/--no-banner/--config/--engine/--history, signal handling |
-| `nlu_advanced.py` | Tầng hiểu ý | Giữ nguyên + type hints |
-| `intent_model.py` | Pipeline TF-IDF + entity | Giữ nguyên + type hints |
-| `lite_model.py` | Classifier thuần Python | Nâng cấp, không cần sklearn |
-| `executor.py` | Thực thi an toàn | **Fix major**: regex, Path wrapper, _popen |
-| `text_utils.py` | Xử lý text | **Fix major**: _KEEP_RE, _INVALID_FILENAME_RE |
-| `dataset.py` | ~1.530 câu mẫu | Giữ nguyên |
-| `config.json` | Whitelist | Giữ nguyên |
-| `stt.py` | Giọng nói vào | Nâng cấp: STT class, RMS fallback |
-| `tts.py` | Giọng nói ra | Nâng cấp: RLock, timeout, cache |
-| `platform_utils.py` | Utils đa nền tảng | Mới v7.1 |
-| `logging_setup.py` | Logging | Mới v7.1 |
-| `config.py` | Config loader | Mới v7.1 |
-| `pyproject.toml` | Metadata | Mới v7.1 |
-| `requirements.txt` | Deps | Mới v7.1 |
-| `run_tests.py` | Test runner | 220 tests, không cần pytest |
-| `tests/` | Unit tests | 220 tests |
+| `main.py` | Vòng lặp chính + CLI | Tách REPL thành bảng lệnh `_CONTROL_COMMANDS`/`_CONTROL_PREFIXES` + `ReplState`/`ReplContext` (test được từng lệnh) |
+| `nlu_advanced.py` | Tầng hiểu ý | `refresh_thresholds()`: `nap lai` đổi được ngưỡng; ngưỡng hỏng trong config không còn làm sập lúc import |
+| `intent_model.py` | Pipeline TF-IDF + entity | `parse_time_expression`/`extract_entity`/`_parse_number_run` tách thành bảng quy tắc + handler (hành vi giữ nguyên) |
+| `lite_model.py` | Classifier thuần Python | **`evidence_ratio()`** - câu không có từ đã biết bị hạ confidence; từ điển suy ra từ `_log_prob` nên file model cũ vẫn dùng được |
+| `executor.py` | Thực thi an toàn | Bảng `COMMANDS_/VOLUME_` theo nền tảng + handler riêng; `None` = "nền tảng không làm được" -> `[BỎ QUA]`; sửa escape osascript; reminders ghi đĩa |
+| `text_utils.py` | Xử lý text | Giữ nguyên |
+| `dataset.py` | ~1.530 câu mẫu | `_generate()` không còn chia cho 0 khi một danh sách mẫu câu bị để trống |
+| `config.json` / `config.py` | Whitelist + nạp cấu hình | `_validate_config()` hết là code chết: gọi tên khoá thiếu/khoá lạ, chặn map sai kiểu sớm |
+| `stt.py` | Giọng nói vào | `_capture_audio`/`_recognize` tách rõ, bỏ hard-code 44 byte WAV header |
+| `tts.py` | Giọng nói ra | `_engine_order()`/`_try_engine()`: engine sai tên có cảnh báo, engine chết tự chuyển |
+| `platform_utils.py` | Utils đa nền tảng | `setup_console()` khôi phục encoding cũ |
+| `logging_setup.py` | Logging | Lock thật (`threading`), hết race khi nhiều thread ghi log |
+| `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
+| `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
+| `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
+| `tests/` | 251 test | + `test_v72_regressions.py` (31 test hồi quy, mỗi test gắn một lỗi) |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py        # 220 pass, 0 fail - không cần cài gì
+python run_tests.py        # 251 pass, 0 fail - không cần cài gì
 pytest tests/ -v           # nếu đã cài pytest
 python -m unittest discover
 ```
@@ -111,7 +118,7 @@ python -m unittest discover
 Xem **UPGRADE_REPORT_v7.md** để biết chi tiết các lỗi đã fix và breaking changes.
 
 ```bash
-git log --oneline v6.4..v7.1
+git log --oneline v6.4..v7.2
 ```
 
 Tất cả lỗi regex và Path compatibility đã được fix, không còn regression.

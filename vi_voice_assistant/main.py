@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.1
+main.py - Trợ lý ảo tiếng Việt v7.2
 
 v7.1 nâng cấp (tiếp nối v7.0):
 - Thêm --debug, --no-banner, --config, --engine
@@ -30,7 +30,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.1"
+APP_VERSION = "7.2"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -339,11 +339,69 @@ def _warn_missing_optional_features(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Các lệnh điều khiển trong REPL (v7.2: tách khỏi main() - trước đây main()
-# chứa cả vòng lặp + 13 lệnh, độ phức tạp 55 nhánh, sửa một lệnh là phải đọc
-# hết 200 dòng. Mỗi lệnh giờ là một hàm nhỏ, độc lập và test được.)
+# Các lệnh điều khiển trong REPL
+# (v7.2: tách khỏi main() - trước đây main() chứa cả vòng lặp + 13 lệnh, độ
+# phức tạp 55 nhánh nên sửa một lệnh phải đọc hết 200 dòng. Mỗi lệnh giờ là một
+# hàm nhỏ đăng ký trong BẢNG tra; handle_control_command() chỉ còn vài nhánh.)
 # ---------------------------------------------------------------------------
-def _cmd_toggle_mic(state: ReplState) -> None:
+@dataclass
+class ReplContext:
+    """Mọi thứ một lệnh điều khiển cần biết về phiên hiện tại."""
+
+    nlu: NLU
+    state: ReplState
+    text: str
+    low: str
+
+
+_CONTROL_COMMANDS: dict = {}      # từ khoá đúng -> hàm xử lý
+_CONTROL_PREFIXES: list = []      # (các prefix, hàm xử lý) - cho lệnh có tham số
+
+
+def _control(*words: str):
+    """Decorator đăng ký một lệnh điều khiển theo đúng chuỗi từ khoá."""
+
+    def decorator(fn):
+        for word in words:
+            _CONTROL_COMMANDS[word] = fn
+        return fn
+
+    return decorator
+
+
+def _control_prefix(*words: str):
+    """Decorator đăng ký lệnh dạng '<từ khoá> <tham số>' (khớp tiền tố)."""
+
+    def decorator(fn):
+        _CONTROL_PREFIXES.append((words, fn))
+        return fn
+
+    return decorator
+
+
+def _format_reminder(item: dict) -> str:
+    """Một dòng liệt kê nhắc nhở, chịu được dữ liệu thiếu/hỏng (v7.2)."""
+    task = item.get("task", "?") or "?"
+    at = executor._reminder_at(item)
+    if at is None:
+        return f"{task} - ??:??"
+    return f"{task} - {at:%H:%M %d/%m}"
+
+
+@_control("help", "giup", "giúp", "?")
+def _cmd_help(ctx: ReplContext) -> None:
+    safe_print(BANNER)
+
+
+@_control("lich su", "lịch sử", "history")
+def _cmd_history(ctx: ReplContext) -> None:
+    print_history()
+
+
+@_control("mic")
+def _cmd_mic(ctx: ReplContext) -> None:
+    state = ctx.state
+    state.mic_mode = not state.mic_mode
     if not state.mic_mode:
         safe_print("[MIC] Tắt chế độ mic, quay về gõ tay.")
         return
@@ -360,7 +418,8 @@ def _cmd_toggle_mic(state: ReplState) -> None:
         state.mic_mode = False
 
 
-def _cmd_toggle_voice() -> None:
+@_control("voice")
+def _cmd_voice(ctx: ReplContext) -> None:
     try:
         import tts
 
@@ -372,16 +431,14 @@ def _cmd_toggle_voice() -> None:
         safe_print(f"[VOICE] Lỗi: {e}")
 
 
-def _format_reminder(item: dict) -> str:
-    """Một dòng liệt kê nhắc nhở, chịu được dữ liệu thiếu/hỏng (v7.2)."""
-    task = item.get("task", "?") or "?"
-    at = executor._reminder_at(item)
-    if at is None:
-        return f"{task} - ??:??"
-    return f"{task} - {at:%H:%M %d/%m}"
+@_control("test")
+def _cmd_test(ctx: ReplContext) -> None:
+    ctx.state.dry_run = not ctx.state.dry_run
+    safe_print(f"[TEST] Chỉ phân tích = {ctx.state.dry_run}")
 
 
-def _cmd_list_reminders() -> None:
+@_control("nhac nho", "nhắc nhở")
+def _cmd_list_reminders(ctx: ReplContext) -> None:
     if not ACTIVE_REMINDERS:
         safe_print("(Chưa có nhắc nhở nào đang chờ)")
         return
@@ -390,8 +447,9 @@ def _cmd_list_reminders() -> None:
     safe_print("   (Gõ 'huy nhac <từ khoá>' để huỷ, hoặc 'huy nhac' để huỷ tất cả)")
 
 
-def _cmd_cancel_reminder(text: str) -> None:
-    parts = text.split(None, 2)
+@_control_prefix("huy nhac", "huỷ nhắc", "hủy nhắc")
+def _cmd_cancel_reminder(ctx: ReplContext) -> None:
+    parts = ctx.text.split(None, 2)
     removed = executor.cancel_reminder(parts[2] if len(parts) > 2 else None)
     if not removed:
         safe_print("(Không tìm thấy nhắc nhở nào khớp để huỷ)")
@@ -400,7 +458,8 @@ def _cmd_cancel_reminder(text: str) -> None:
         safe_print(f"[ĐÃ HUỶ] {_format_reminder(r)}")
 
 
-def _cmd_reload_config() -> None:
+@_control("nap lai", "nạp lại", "reload")
+def _cmd_reload_config(ctx: ReplContext) -> None:
     try:
         cfg = executor.reload_config()
         safe_print(
@@ -421,14 +480,27 @@ def _cmd_reload_config() -> None:
         safe_print(f"[LỖI] Không nạp lại được config: {e}")
 
 
-def _cmd_teach(nlu: NLU, text: str) -> None:
-    body = text[4:]
+@_control("he thong", "hệ thống", "sysinfo")
+def _cmd_sysinfo(ctx: ReplContext) -> None:
+    print_sysinfo()
+
+
+@_control("quen", "quên", "reset")
+def _cmd_forget_context(ctx: ReplContext) -> None:
+    if ctx.nlu.context:
+        ctx.nlu.context.clear()
+    safe_print("[NGỮ CẢNH] Đã xoá trí nhớ hội thoại.")
+
+
+@_control_prefix("day ", "dạy ")
+def _cmd_teach(ctx: ReplContext) -> None:
+    body = ctx.text[4:]
     if "=" not in body:
         safe_print("Cú pháp:  day <câu nói> = <tên intent>")
         return
     try:
         sentence, intent = (p.strip() for p in body.split("=", 1))
-        safe_print(nlu.teach(sentence, intent))
+        safe_print(ctx.nlu.teach(sentence, intent))
     except Exception as e:
         safe_print(f"[LỖI] Không dạy được: {e}")
 
@@ -436,64 +508,27 @@ def _cmd_teach(nlu: NLU, text: str) -> None:
 def handle_control_command(text: str, nlu: NLU, state: ReplState) -> bool:
     """Xử lý một dòng lệnh điều khiển. Trả về True nếu dòng đó ĐÃ được tiêu.
 
-    Trả về qua biến logic chứ không `continue` để main() đọc gọn và để test có
-    thể gọi thẳng từng lệnh mà không cần chạy cả vòng REPL.
+    Lệnh thoát được nhận ra ngay tại đây (không đăng ký vào bảng) vì nó là
+    lệnh duy nhất cần báo hiệu "dừng vòng lặp" cho main().
     """
     low = text.lower()
-
     if low in ("thoat", "thoát", "exit", "quit", "q"):
         safe_print("Tạm biệt!")
         logger.info("Kết thúc phiên làm việc.")
         state.stop = True
         return True
 
-    if low in ("help", "giup", "giúp", "?"):
-        safe_print(BANNER)
+    ctx = ReplContext(nlu=nlu, state=state, text=text, low=low)
+
+    handler = _CONTROL_COMMANDS.get(low)
+    if handler is not None:
+        handler(ctx)
         return True
 
-    if low in ("lich su", "lịch sử", "history"):
-        print_history()
-        return True
-
-    if low == "mic":
-        state.mic_mode = not state.mic_mode
-        _cmd_toggle_mic(state)
-        return True
-
-    if low == "voice":
-        _cmd_toggle_voice()
-        return True
-
-    if low == "test":
-        state.dry_run = not state.dry_run
-        safe_print(f"[TEST] Chỉ phân tích = {state.dry_run}")
-        return True
-
-    if low in ("nhac nho", "nhắc nhở"):
-        _cmd_list_reminders()
-        return True
-
-    if low.startswith(("huy nhac", "huỷ nhắc", "hủy nhắc")):
-        _cmd_cancel_reminder(text)
-        return True
-
-    if low in ("nap lai", "nạp lại", "reload"):
-        _cmd_reload_config()
-        return True
-
-    if low in ("he thong", "hệ thống", "sysinfo"):
-        print_sysinfo()
-        return True
-
-    if low in ("quen", "quên", "reset"):
-        if nlu.context:
-            nlu.context.clear()
-        safe_print("[NGỮ CẢNH] Đã xoá trí nhớ hội thoại.")
-        return True
-
-    if low.startswith(("day ", "dạy ")):
-        _cmd_teach(nlu, text)
-        return True
+    for prefixes, fn in _CONTROL_PREFIXES:
+        if low.startswith(prefixes):
+            fn(ctx)
+            return True
 
     return False
 

@@ -1,5 +1,5 @@
 """
-intent_model.py v7.0
+intent_model.py v7.2
 --------------------
 HUẤN LUYỆN MÔ HÌNH PHÂN LOẠI Ý ĐỊNH (TF-IDF + LogisticRegression / SVM,
 hoặc PhoBERT nếu đã fine-tune) và TRÍCH XUẤT THỰC THỂ (Entity Extraction).
@@ -27,6 +27,7 @@ import logging
 import math
 import os
 import re
+from dataclasses import dataclass
 
 # v6 - THAY ĐỔI QUAN TRỌNG: scikit-learn/joblib giờ là TUỲ CHỌN.
 # Trước đây 6 dòng import này nằm trần: máy nào chưa cài được scikit-learn
@@ -412,6 +413,37 @@ def _number_digit_value(token):
     return None
 
 
+# Bảng phân loại các từ-số KHÔNG phải chữ số, dạng CÓ DẤU. Dựng từ chính các
+# tập từ ở trên nên thêm/bớt từ chỉ cần sửa MỘT chỗ (bản cũ lặp lại danh sách
+# từ trong 7 nhánh if/elif, dễ lệch giữa 2 bản có dấu/không dấu).
+_NUMBER_KINDS_ACCENTED: dict[str, tuple] = {}
+for _w in _NUMBER_TENS_WORDS:
+    _NUMBER_KINDS_ACCENTED[_w] = ("tens", None)
+_NUMBER_KINDS_ACCENTED[_NUMBER_TEN_WORD] = ("ten", None)
+_NUMBER_KINDS_ACCENTED[_NUMBER_HUNDRED_WORD] = ("hundred", None)
+for _w, _v in _NUMBER_SCALE_WORDS.items():
+    _NUMBER_KINDS_ACCENTED[_w] = ("scale", _v)
+for _w in _NUMBER_ZERO_WORDS:
+    _NUMBER_KINDS_ACCENTED[_w] = ("zero", None)
+_NUMBER_KINDS_ACCENTED[_NUMBER_DECIMAL_WORD] = ("decimal", None)
+
+# Bảng cho token HOÀN TOÀN KHÔNG DẤU. "muoi" có loại riêng (ten_or_tens) vì nó
+# vừa là "mười" (10) vừa là "mươi" (x10) - tuỳ từ đứng trước.
+_NUMBER_KINDS_PLAIN: dict[str, tuple] = {
+    "muoi": ("ten_or_tens", None),
+    "chuc": ("tens", None),
+    "tram": ("hundred", None),
+    "nghin": ("scale", 1000),
+    "ngan": ("scale", 1000),
+    "trieu": ("scale", 10 ** 6),
+    "ty": ("scale", 10 ** 9),
+    "ti": ("scale", 10 ** 9),
+    "le": ("zero", None),
+    "linh": ("zero", None),
+    "phay": ("decimal", None),
+}
+
+
 def _classify_number_token(token, prev_token):
     """Phân loại 1 token trong cụm từ-số. Trả về None nếu không phải từ-số.
 
@@ -426,41 +458,18 @@ def _classify_number_token(token, prev_token):
     digit = _number_digit_value(token)
     if digit is not None:
         return ("digit", digit)
-    if token == _NUMBER_TEN_WORD:
-        return ("ten", None)
-    if token in _NUMBER_TENS_WORDS:
-        return ("tens", None)
-    if token == _NUMBER_HUNDRED_WORD:
-        return ("hundred", None)
-    if token in _NUMBER_SCALE_WORDS:
-        return ("scale", _NUMBER_SCALE_WORDS[token])
-    if token in _NUMBER_ZERO_WORDS:
-        return ("zero", None)
-    if token == _NUMBER_DECIMAL_WORD:
-        return ("decimal", None)
-    if strip_diacritics(token) == token:   # token hoàn toàn không dấu
-        if token == "muoi":
-            return ("ten_or_tens", None)
-        if token == "chuc":
-            return ("tens", None)
-        if token == "tram":
-            return ("hundred", None)
-        if token in ("nghin", "ngan"):
-            return ("scale", 1000)
-        if token == "trieu":
-            return ("scale", 10 ** 6)
-        if token in ("ty", "ti"):
-            return ("scale", 10 ** 9)
-        if token in ("le", "linh"):
-            return ("zero", None)
-        if token == "phay":
-            return ("decimal", None)
+    # Từ CÓ DẤU tra bảng có dấu trước; chỉ token hoàn toàn không dấu mới tra
+    # bảng không dấu - để "tâm" KHÔNG bị đọc thành "tám".
+    kind = _NUMBER_KINDS_ACCENTED.get(token)
+    if kind is not None:
+        return kind
+    if strip_diacritics(token) == token:
+        return _NUMBER_KINDS_PLAIN.get(token)
     return None
 
 
-def _parse_number_run(tokens, prev_token):
-    """Đọc 1 cụm từ-số -> int/float. Trả về None nếu cụm không hợp lệ (caller
-    sẽ giữ nguyên văn cụm đó, không thay thế bừa)."""
+def _classify_number_run(tokens, prev_token):
+    """Chuyển danh sách token thành danh sách (loại, giá trị); None nếu có từ lạ."""
     kinds = []
     prev = prev_token
     for token in tokens:
@@ -469,74 +478,155 @@ def _parse_number_run(tokens, prev_token):
             return None
         kinds.append(kind)
         prev = token
+    return kinds
 
-    total = 0            # tích luỹ các nhóm lớn (nghìn/triệu/tỷ)
-    current = 0          # giá trị đang dở trong nhóm hiện tại
-    last_digit = None    # chữ số đứng ngay trước (để "mươi"/"trăm" nhân lên)
-    fraction = []
-    is_fraction = False
-    seen = False
 
+# --- Máy đọc cụm từ-số: mỗi loại từ có MỘT quy tắc nhỏ, đăng ký trong bảng ---
+# (Bản v6 là chuỗi if/elif 7 nhánh lồng 4 lớp guard trong cùng một hàm - thêm
+# một cách nói tiếng Việt là phải chen thêm if vào giữa, rất dễ sai sót.)
+_RUN_INVALID = object()      # sentinel: handler báo cụm từ-số không hợp lệ
+
+
+def _run_state() -> dict:
+    return {"total": 0, "current": 0, "last_digit": None, "seen": False}
+
+
+def _run_digit(state: dict, value: int):
+    """Chữ số đứng một mình. "hai ba" (2 chữ số cạnh nhau) là cụm không hợp lệ."""
+    if state["last_digit"] is not None:
+        return _RUN_INVALID
+    state["current"] += value
+    state["last_digit"] = value
+    state["seen"] = True
+    return None
+
+
+def _run_ten(state: dict, _value=None):
+    """"mười": chỉ đứng một đầu được ("hai mười" không dùng -> từ chối cho chắc)."""
+    if state["last_digit"] is not None:
+        return _RUN_INVALID
+    state["current"] += 10
+    state["seen"] = True
+    return None
+
+
+def _run_tens(state: dict, _value=None):
+    """"mươi"/"chục"/"muoi": nhân chữ số đứng trước lên 10.
+
+    Lưu ý: "muoi" không dấu (ten_or_tens) xử lý GIỐNG HỆT "mươi" - đứng sau chữ
+    số thì là "mươi" (hai muoi = 20), đứng một mình thì là "mười" (muoi lam =
+    15); cả hai đều là quy tắc "có chữ số trước thì nhân, không thì +10".
+    """
+    last = state["last_digit"]
+    if last is not None:
+        state["current"] = state["current"] - last + last * 10
+        state["last_digit"] = None      # "mươi" đã tiêu thụ chữ số đứng trước
+    else:
+        state["current"] += 10
+    state["seen"] = True
+    return None
+
+
+def _run_hundred(state: dict, _value=None):
+    """"trăm": một trăm = 100, hai trăm = 200 (nhân chữ số trước lên 100)."""
+    last = state["last_digit"]
+    if last is not None:
+        state["current"] = state["current"] - last + last * 100
+        state["last_digit"] = None
+    else:
+        state["current"] += 100
+    state["seen"] = True
+    return None
+
+
+def _run_scale(state: dict, value):
+    """"nghìn/triệu/tỷ": chốt nhóm hiện tại rồi nhân lên đơn vị lớn."""
+    group = state["current"] if (state["current"] or state["last_digit"] is not None) else 1
+    state["total"] += group * value
+    state["current"] = 0
+    state["last_digit"] = None
+    state["seen"] = True
+    return None
+
+
+def _run_zero(state: dict, _value=None):
+    """"lẻ/linh": chữ số đứng SAU cộng thẳng vào (một trăm lẻ năm = 105).
+
+    Không đánh dấu `seen`: bản cũ cũng không - "lẻ" một mình không phải số.
+    """
+    state["last_digit"] = None
+    return None
+
+
+_NUMBER_RUN_RULES = {
+    "digit": _run_digit,
+    "ten": _run_ten,
+    "tens": _run_tens,
+    "ten_or_tens": _run_tens,   # "muoi" không dấu - xem _run_tens
+    "hundred": _run_hundred,
+    "scale": _run_scale,
+    "zero": _run_zero,
+}
+
+
+def _run_integer_value(kinds) -> int | None:
+    """Tổng phần NGUYÊN của cụm từ-số (không có "phẩy"), hoặc None nếu không hợp lệ.
+
+    0 là giá trị HỢP LỆ ("không"), nên hàm phân biệt rõ 0 với None.
+    """
+    state = _run_state()
     for kind, value in kinds:
-        if kind == "decimal":
-            if is_fraction:
-                return None
-            is_fraction = True
-        elif is_fraction:
-            if kind == "digit":
-                fraction.append(str(value))
-            elif kind == "ten":
-                fraction.extend(("1", "0"))   # "hai phẩy mười" = 2.10
-            elif kind == "zero":
-                fraction.append("0")
-            else:
-                return None
-        elif kind == "digit":
-            if last_digit is not None:
-                return None       # "hai ba" không hợp lệ trong tiếng Việt
-            current += value
-            last_digit = value
-            seen = True
-        elif kind == "ten":
-            if last_digit is not None:
-                return None       # "hai mười" không dùng -> từ chối cho chắc
-            current += 10
-            seen = True
-        elif kind in ("tens", "ten_or_tens"):
-            # "muoi" không dấu: sau chữ số là "mươi" (hai muoi = 20), đứng
-            # một mình là "mười" (muoi lam = 15).
-            if kind == "ten_or_tens" and last_digit is None:
-                current += 10
-            elif last_digit is not None:
-                current -= last_digit
-                current += last_digit * 10
-                last_digit = None
-            else:
-                current += 10
-            seen = True
-        elif kind == "hundred":
-            if last_digit is not None:
-                current -= last_digit
-                current += last_digit * 100
-                last_digit = None
-            else:
-                current += 100
-            seen = True
-        elif kind == "scale":
-            group = current if (current or last_digit is not None) else 1
-            total += group * value
-            current, last_digit = 0, None
-            seen = True
-        elif kind == "zero":
-            last_digit = None     # "lẻ năm": chữ số sau cộng thẳng vào
-
-    if not seen:
-        return None
-    result = total + current
-    if is_fraction:
-        if not fraction:
+        handler = _NUMBER_RUN_RULES.get(kind)
+        if handler is None:               # "decimal" lọt vào đây = cụm bất thường
             return None
-        result += int("".join(fraction)) / float(10 ** len(fraction))
+        if handler(state, value) is _RUN_INVALID:
+            return None
+    if not state["seen"]:
+        return None
+    return state["total"] + state["current"]
+
+
+def _run_fraction_value(kinds):
+    """Giá trị phần THẬP PHÂN sau "phẩy" (0.x), hoặc None nếu cụm không hợp lệ."""
+    digits = []
+    for kind, value in kinds:
+        if kind == "digit":
+            digits.append(str(value))
+        elif kind == "ten":
+            digits.extend(("1", "0"))       # "hai phẩy mười" = 2.10
+        elif kind == "zero":
+            digits.append("0")
+        else:
+            return None                       # "trăm"/"nghìn" sau phẩy -> vô nghĩa
+    if not digits:
+        return None                           # "hai phẩy" cụt
+    return int("".join(digits)) / float(10 ** len(digits))
+
+
+def _parse_number_run(tokens, prev_token):
+    """Đọc 1 cụm từ-số -> int/float. Trả về None nếu cụm không hợp lệ (caller
+    sẽ giữ nguyên văn cụm đó, không thay thế bừa).
+
+    v7.2: tách từ một hàm 25 nhánh thành bảng quy tắc + 3 hàm nhỏ (phần nguyên /
+    phần thập phân / ráp lại) để từng quy tắc tiếng Việt đọc và test được riêng.
+    """
+    kinds = _classify_number_run(tokens, prev_token)
+    if kinds is None:
+        return None
+
+    dot = next((i for i, (kind, _) in enumerate(kinds) if kind == "decimal"), None)
+    if dot is None:
+        whole, fraction = _run_integer_value(kinds), None
+    else:
+        # "phẩy" xuất hiện 2 lần ("hai phẩy ba phẩy tư") là cụm không hợp lệ
+        if any(kind == "decimal" for kind, _ in kinds[dot + 1:]):
+            return None
+        whole = _run_integer_value(kinds[:dot])
+        fraction = _run_fraction_value(kinds[dot + 1:])
+        if whole is None or fraction is None:
+            return None
+
+    result = whole if fraction is None else whole + fraction
     if isinstance(result, float) and result.is_integer():
         return int(result)
     return result
@@ -635,6 +725,176 @@ def _detect_period(t, u_segment, plain_input):
     return None
 
 
+def _result(**kwargs) -> dict:
+    """Kết quả parse_time_expression - LUÔN đủ khoá (v6) với giá trị mặc định 0."""
+    base = {"type": None, "minutes": 0, "hour": 0, "minute": 0, "day_offset": 0}
+    base.update(kwargs)
+    return base
+
+
+def _parse_half_hour(t: str, u: str, plain_input: bool) -> dict | None:
+    """"nửa tiếng / nửa giờ (nữa)" = 30 phút (v6.2).
+
+    "nửa" và "nữa" bỏ dấu đều là "nua": câu CÓ DẤU bắt buộc khớp đúng "nửa";
+    chỉ câu hoàn toàn không dấu mới khớp "nua tieng/gio".
+    """
+    if re.search(r"\bnửa\s+(?:tiếng|giờ)\b", t) or (
+            plain_input and re.search(r"\bnua\s+(?:tieng|gio)\b", u)):
+        return _result(type="delay", minutes=30)
+    return None
+
+
+def _delay_minutes(durations, u: str) -> float:
+    """Cộng dồn các mốc "X giây / phút / giờ" thành số phút (kể cả "rưỡi")."""
+    minutes = 0.0
+    for dur in durations:
+        value = int(dur.group(1))
+        unit = dur.group(2)
+        if unit == "giay":
+            minutes += value / 60.0
+        elif unit in ("tieng", "gio"):
+            minutes += value * 60
+        else:
+            minutes += value
+    # "1 tiếng rưỡi nữa" = 90 phút (v6.2)
+    if any(dur.group(2) in ("tieng", "gio") for dur in durations) and re.search(r"\bruoi\b", u):
+        minutes += 30
+    return minutes
+
+
+def _parse_delay(t: str, u: str, plain_input: bool) -> dict | None:
+    """Dạng đếm ngược: "sau/nữa X giây / phút / tiếng" (v6.2 viết lại)."""
+    durations = list(_DURATION_RE.finditer(u))
+    if not durations:
+        return None
+    # Dấu hiệu khoảng thời gian: kiểm tra trên bản CÓ DẤU khi có thể -
+    # tránh nhầm tên riêng "Sáu" (bỏ dấu -> "sau") với từ nối "sau".
+    if plain_input:
+        has_marker = bool(_DELAY_MARKER_PLAIN_RE.search(u))
+    else:
+        has_marker = bool(_DELAY_MARKER_ACCENTED_RE.search(t))
+    preceded_by_luc = bool(re.search(r"(?:lúc|luc)\s*$", u[: durations[0].start()]))
+    only_small_units = all(m.group(2) in ("phut", "giay") for m in durations)
+    # "lúc 3 giờ" / "3 giờ" trần là GIỜ ĐỒNG HỒ, không phải khoảng chờ;
+    # "5 phút" trần (vd "đặt hẹn giờ 5 phút") hiểu là đếm ngược (v6.2).
+    if not (has_marker or (only_small_units and not preceded_by_luc)):
+        return None
+    return _result(type="delay", minutes=round(_delay_minutes(durations, u), 4))
+
+
+# Bảng quy tắc đổi giờ 12-hour -> 24-hour theo BUỔI, thay cho chuỗi if/elif lồng
+# nhau (bản cũ 11 nhánh trong một hàm; thêm một cách nói buổi là phải chen elif).
+def _shift_afternoon(hour: int) -> int:
+    """"chiều"/"tối": 1..11 -> +12 (chiều 3h = 15h, tối 7h = 19h)."""
+    return hour + 12 if hour < 12 else hour
+
+
+def _shift_night(hour: int) -> int:
+    """"đêm"/"khuya".
+
+    v6.2: "1 giờ đêm" vẫn là 1h (chưa ngủ), "11 giờ đêm" = 23h, còn
+    "12 giờ đêm" = nửa đêm = 0h - trước đây cả hai câu đầu bị đổi thành 13h.
+    """
+    if 5 <= hour < 12:
+        return hour + 12
+    if hour == 12:
+        return 0
+    return hour
+
+
+def _shift_noon(hour: int) -> int:
+    """"trưa": 1..10 -> +12; 11 và 12 giữ nguyên ("11 giờ trưa" = 11h)."""
+    return hour + 12 if hour < 11 else hour
+
+
+def _shift_morning(hour: int) -> int:
+    """"sáng": "12 giờ sáng" = 0h, còn giữa giữ nguyên ("sáng 7h" = 7h)."""
+    return 0 if hour == 12 else hour
+
+
+_PERIOD_SHIFTERS: dict[str, object] = {
+    "chieu": _shift_afternoon, "toi": _shift_afternoon,
+    "dem": _shift_night, "khuya": _shift_night,
+    "trua": _shift_noon, "sang": _shift_morning,
+}
+
+
+def _apply_period(hour: int, minute: int, period: str | None) -> tuple[int, int]:
+    """Quy đổi (giờ, phút) theo buổi; chốt giờ trong 0-23 và phút trong 0-59.
+
+    v7.2: chuyển từ 4 cặp if/elif so chuỗi sang BẢNG TRA buổi -> hàm quy tắc,
+    mỗi quy tắc là một hàm 1 dòng dễ đọc/dễ test riêng.
+    """
+    shifter = _PERIOD_SHIFTERS.get(period) if period else None
+    if shifter is not None:
+        hour = shifter(hour)
+    return hour % 24, max(0, min(59, minute))
+
+
+def _find_period_around_time(t: str, u: str, plain_input: bool, time_end: int) -> str | None:
+    """Tìm buổi (sáng/trưa/chiều/tối/đêm/khuya) liên quan tới mốc giờ.
+
+    v6.2 - SỬA LỖI NGHIÊM TRỌNG: buổi chỉ được nhận diện trong phần SAU biểu
+    thức giờ (hoặc cụm "tối nay/mai" đứng trước giờ). Trước đây tìm trong TOÀN
+    CÂU bằng pattern "chieu|toi\\b" nên chữ "tôi" trong "nhắc tôi..." bị nhận
+    nhầm thành "tối" -> "nhắc tôi họp lúc 9 giờ" bị hẹn thành 21h thay vì 9h.
+    """
+    period = _detect_period(t, u[time_end:], plain_input)
+    if period is not None:
+        return period
+    compound = re.search(r"\b(sang|trua|chieu|toi|dem|khuya)\s+(?:nay|mai|hom)\b", u)
+    if not compound:
+        return None
+    candidate = compound.group(1)
+    if candidate == "toi":
+        # "tôi mai..." (đại từ) không được tính là "tối mai"
+        if plain_input:
+            before = u[: compound.start()].split()
+            if before and before[-1] in _PRONOUN_PRECEDERS:
+                return None
+        elif not re.search(r"\btối\b", t):
+            return None
+    return candidate
+
+
+def _parse_clock(t: str, u: str, plain_input: bool) -> dict | None:
+    """Dạng giờ cụ thể: "lúc X giờ [Y] [sáng/chiều]", "3h30", "3 giờ rưỡi"."""
+    m = re.search(r"(\d{1,2})\s*(?:gio|h)\s*(\d{1,2})?", u)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    has_minute_group = m.group(2) is not None
+    minute = int(m.group(2)) if has_minute_group else 0
+    # "3 giờ rưỡi" -> 3:30. Chỉ áp khi KHÔNG có phút tường minh, để "3 giờ 00"
+    # không bị chữ "rưỡi" lạc chỗ nào đó trong câu làm đổi thành 3:30.
+    if not has_minute_group and "ruoi" in u:
+        minute = 30
+    kem = re.search(r"kem\s*(\d{1,2})", u)
+    if kem:                                          # "8 giờ kém 15" = 7:45
+        hour -= 1
+        minute = 60 - int(kem.group(1))
+    period = _find_period_around_time(t, u, plain_input, m.end())
+    hour, minute = _apply_period(hour, minute, period)
+    return _result(
+        type="clock",
+        hour=hour,
+        minute=minute,
+        day_offset=1 if _TOMORROW_RE.search(u) else 0,
+    )
+
+
+def _parse_tomorrow_only(t: str, u: str, plain_input: bool) -> dict | None:
+    """Không kèm số giờ: chỉ "sáng mai", "trưa mai", "tối mai"..."""
+    if not _TOMORROW_RE.search(u):
+        return None
+    # v6.2: dùng _detect_period thay vì tìm chuỗi con - trước đây "toi"
+    # trong "nhắc tôi" cũng bị tính là buổi tối ("sáng mai nhắc tôi dậy"
+    # thành 19h thay vì 7h).
+    hour_by_period = {"trua": 12, "chieu": 15, "toi": 19, "dem": 19, "khuya": 23}
+    return _result(type="clock", hour=hour_by_period.get(_detect_period(t, u, plain_input), 7),
+                   day_offset=1)
+
+
 def parse_time_expression(text: str) -> dict:
     """
     Phân tích biểu thức thời gian tiếng Việt.
@@ -652,6 +912,10 @@ def parse_time_expression(text: str) -> dict:
         "30 giây nữa"           -> đếm ngược dưới 1 phút
         "7 giờ sáng mai"        -> đúng HÔM SAU (trước đây mất chữ "mai")
     và chạy được cả khi người dùng GÕ KHÔNG DẤU ("30 phut nua", "3 gio chieu").
+
+    v7.2: thân hàm được tách thành 4 máy phân tích nhỏ (nửa tiếng / đếm ngược /
+    giờ đồng hồ / chỉ buổi) - trước đây một hàm 28 nhánh, thêm một cách nói là
+    phải chen if/elif vào giữa đống logic đã có.
     """
     t = normalize_text(text)
     # v6.2: đổi từ-số thành chữ số TRƯỚC ("bảy giờ sáng" -> "7 giờ sáng",
@@ -659,116 +923,14 @@ def parse_time_expression(text: str) -> dict:
     t = replace_number_words(t)
     u = strip_diacritics(t)   # so khớp trên bản không dấu để bao được cả 2 kiểu gõ
     plain_input = (t == u)    # người dùng gõ hoàn toàn không dấu
-    none_result = {"type": None, "minutes": 0, "hour": 0, "minute": 0, "day_offset": 0}
 
-    # --- "nửa tiếng/giờ (nữa)" = 30 phút (v6.2) ---
-    # "nửa" và "nữa" bỏ dấu đều là "nua": câu CÓ DẤU bắt buộc khớp đúng
-    # "nửa"; chỉ câu hoàn toàn không dấu mới khớp "nua tieng/gio".
-    if re.search(r"\bnửa\s+(?:tiếng|giờ)\b", t) or (
-            plain_input and re.search(r"\bnua\s+(?:tieng|gio)\b", u)):
-        return {"type": "delay", "minutes": 30, "hour": 0, "minute": 0, "day_offset": 0}
-
-    # --- Dạng đếm ngược: "sau/nữa X giây / X phút / X tiếng" (v6.2 viết lại) ---
-    durations = list(_DURATION_RE.finditer(u))
-    if durations:
-        # Dấu hiệu khoảng thời gian: kiểm tra trên bản CÓ DẤU khi có thể -
-        # tránh nhầm tên riêng "Sáu" (bỏ dấu -> "sau") với từ nối "sau".
-        if plain_input:
-            has_marker = bool(_DELAY_MARKER_PLAIN_RE.search(u))
-        else:
-            has_marker = bool(_DELAY_MARKER_ACCENTED_RE.search(t))
-        preceded_by_luc = bool(re.search(r"(?:lúc|luc)\s*$", u[:durations[0].start()]))
-        only_small_units = all(m.group(2) in ("phut", "giay") for m in durations)
-        # "lúc 3 giờ" / "3 giờ" trần là GIỜ ĐỒNG HỒ, không phải khoảng chờ;
-        # "5 phút" trần (vd "đặt hẹn giờ 5 phút") hiểu là đếm ngược (v6.2).
-        if has_marker or (only_small_units and not preceded_by_luc):
-            minutes = 0.0
-            for dur in durations:
-                value = int(dur.group(1))
-                unit = dur.group(2)
-                if unit == "giay":
-                    minutes += value / 60.0
-                elif unit in ("tieng", "gio"):
-                    minutes += value * 60
-                else:
-                    minutes += value
-            # "1 tiếng rưỡi nữa" = 90 phút (v6.2)
-            if any(dur.group(2) in ("tieng", "gio") for dur in durations) \
-                    and re.search(r"\bruoi\b", u):
-                minutes += 30
-            return {"type": "delay", "minutes": round(minutes, 4), "hour": 0,
-                    "minute": 0, "day_offset": 0}
-
-    # --- Dạng giờ cụ thể: "lúc X giờ [Y] [sáng/trưa/chiều/tối]", "3h30" ---
-    m = re.search(r"(\d{1,2})\s*(?:gio|h)\s*(\d{1,2})?", u)
-    if m:
-        hour = int(m.group(1))
-        minute = int(m.group(2)) if m.group(2) else 0
-
-        if not m.group(2) and "ruoi" in u:
-            minute = 30                                  # "3 giờ rưỡi"
-        kem = re.search(r"kem\s*(\d{1,2})", u)
-        if kem:                                          # "8 giờ kém 15" = 7:45
-            hour -= 1
-            minute = 60 - int(kem.group(1))
-
-        # v6.2 - SỬA LỖI NGHIÊM TRỌNG: buổi (sáng/trưa/chiều/tối/đêm/khuya)
-        # chỉ được nhận diện trong phần SAU biểu thức giờ (hoặc cụm "tối nay/
-        # mai" đứng trước giờ). Trước đây tìm trong TOÀN CÂU bằng pattern
-        # "chieu|toi\b" nên chữ "tôi" trong "nhắc tôi..." bị nhận nhầm thành
-        # "tối" -> "nhắc tôi họp lúc 9 giờ" bị hẹn thành 21h thay vì 9h.
-        period = _detect_period(t, u[m.end():], plain_input)
-        if period is None:
-            compound = re.search(
-                r"\b(sang|trua|chieu|toi|dem|khuya)\s+(?:nay|mai|hom)\b", u)
-            if compound:
-                candidate = compound.group(1)
-                if candidate == "toi":
-                    # "tôi mai..." (đại từ) không được tính là "tối mai"
-                    if plain_input:
-                        before = u[:compound.start()].split()
-                        if before and before[-1] in _PRONOUN_PRECEDERS:
-                            candidate = None
-                    elif not re.search(r"\btối\b", t):
-                        candidate = None
-                period = candidate
-
-        if period in ("chieu", "toi"):
-            if hour < 12:
-                hour += 12
-        elif period in ("dem", "khuya"):
-            # v6.2: "1 giờ đêm" = 1h sáng (không phải 13h); "12 giờ đêm" = 0h
-            # (nửa đêm, không phải 12h trưa); "11 giờ đêm" = 23h như cũ.
-            if 5 <= hour < 12:
-                hour += 12
-            elif hour == 12:
-                hour = 0
-        elif period == "trua":
-            if hour < 11:
-                hour += 12
-        elif period == "sang":
-            if hour == 12:                               # "12 giờ sáng" = 0h
-                hour = 0
-
-        return {
-            "type": "clock",
-            "hour": hour % 24,
-            "minute": max(0, min(59, minute)),
-            "minutes": 0,
-            "day_offset": 1 if _TOMORROW_RE.search(u) else 0,
-        }
-
-    # --- Không kèm số: "sáng mai", "trưa mai", "tối mai" ---
-    if _TOMORROW_RE.search(u):
-        # v6.2: dùng _detect_period thay vì tìm chuỗi con - trước đây "toi"
-        # trong "nhắc tôi" cũng bị tính là buổi tối ("sáng mai nhắc tôi dậy"
-        # thành 19h thay vì 7h).
-        period = _detect_period(t, u, plain_input)
-        hour = {"trua": 12, "chieu": 15, "toi": 19, "dem": 19,
-                "khuya": 23}.get(period, 7)
-        return {"type": "clock", "hour": hour, "minute": 0, "minutes": 0, "day_offset": 1}
-
-    return none_result
+    return (
+        _parse_half_hour(t, u, plain_input)
+        or _parse_delay(t, u, plain_input)
+        or _parse_clock(t, u, plain_input)
+        or _parse_tomorrow_only(t, u, plain_input)
+        or _result()
+    )
 
 
 # Từ toán tử tiếng Việt -> ký hiệu số học.
@@ -888,6 +1050,172 @@ def parse_math_expression(text: str):
     return expr_display, result
 
 
+# --- Cụm regex cho từng intent (biên dịch 1 lần, v7.2) ---
+# Trước đây các pattern này nằm CHÊNH VẾNH trong extract_entity() và được truyền
+# dưới dạng CHUỖI cho re.sub() -> mỗi câu nói lại phải tra cache biên dịch.
+_WEATHER_HEAD_RE = re.compile(
+    r"^.*(?:thời tiết|thoi tiet|dự báo|du bao|nhiệt độ|nhiet do|trời|troi)\s*"
+)
+_WEATHER_LOC_PREFIX_RE = re.compile(
+    r"^(?:ở|o|tại|tai|của|cua|khu vực|khu vuc|ngoài|ngoai)\s+"
+)
+_WEATHER_TAIL_RE = re.compile(
+    r"\s*(?:hôm nay|hom nay|ngày mai|ngay mai|sáng nay|sang nay|chiều nay|chieu nay|"
+    r"tối nay|toi nay|đêm nay|dem nay|bây giờ|bay gio|như thế nào|nhu the nao|"
+    r"thế nào|the nao|ra sao|có mưa không|co mua khong|mưa không|mua khong|"
+    r"nắng không|nang khong|lạnh không|lanh khong|nóng không|nong khong|"
+    r"bao nhiêu độ|bao nhieu do|bao nhiêu|bao nhieu|thế|the|nhỉ|nhi|vậy|vay)\s*$"
+)
+_REMINDER_LEAD_RE = re.compile(
+    r"^(nhắc tôi|nhac toi|nhắc mình|nhac minh|đặt nhắc nhở|dat nhac nho|"
+    r"tạo lời nhắc|tao loi nhac|nhớ nhắc tôi|nho nhac toi|hẹn giờ|hen gio|"
+    r"đặt báo thức|dat bao thuc|báo thức|bao thuc|"
+    r"đặt đồng hồ đếm ngược|dat dong ho dem nguoc)\s*"
+)
+_REMINDER_TIME_RE = re.compile(
+    r"(?:lúc|luc|vào|vao)?\s*" + _NUMBER_WORD_RUN
+    + r"\s*(?:giờ|gio|phút|phut|tiếng|tieng|giây|giay)\b"
+    + r"(?:\s+" + _NUMBER_WORD_RUN + r")?"
+    + r"(?:\s+(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem|khuya))?"
+    r"(?:\s+(?:nay|mai|hôm|hom))?"      # "6 giờ sáng mai" - 2 từ đuôi
+    r"(?:\s+(?:nữa|nua|sau|rưỡi|ruoi))?"
+    r"(?:\s*k(?:ém|em)\s*" + _NUMBER_WORD_RUN + r")?"
+)
+_REMINDER_TIME_DIGIT_RE = re.compile(
+    r"(lúc\s*)?\d+\s*(giờ|phút|tiếng)\s*(\d+)?\s*"
+    r"(sáng|trưa|chiều|tối|nữa|sau|mai)?"
+)
+_REMINDER_TAIL_RES = (
+    re.compile(r"^(sau|nữa|vào)\s+"),
+    re.compile(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$"),
+)
+_DATE_WORDS_RE = re.compile(r"ngày|thứ|tháng|năm|lịch")
+
+
+def _weather_location(raw: str) -> str:
+    """Tách ĐỊA ĐIỂM từ câu hỏi thời tiết (v6 - viết lại cách tách).
+
+    Cách cũ "trừ đi mọi từ trong danh sách" có 2 lỗi nặng:
+      1. Danh sách chỉ có bản CÓ DẤU, nên câu gõ thiếu dấu ("thoi tiet da
+         nang hom nay") không lọc được từ nào -> địa điểm = NGUYÊN CẢ CÂU.
+      2. Nếu sửa thành lọc không dấu thì lại xoá nhầm chính tên địa điểm:
+         "nắng" và "Nẵng" bỏ dấu là MỘT (Đà Nẵng sẽ biến mất!).
+    Giải pháp: cắt theo CẤU TRÚC câu - lấy phần sau "thời tiết/ở/tại" rồi bóc
+    dần phần đuôi chỉ thời gian / cách hỏi ở cuối câu.
+    """
+    loc = _WEATHER_LOC_PREFIX_RE.sub("", _WEATHER_HEAD_RE.sub("", raw)).strip()
+    # Bóc lặp tối đa 4 lần: "hôm nay" + "thế nào" + "nhỉ" xếp chồng ở cuối câu.
+    for _ in range(4):
+        shorter = _WEATHER_TAIL_RE.sub("", loc).strip()
+        if shorter == loc:
+            break
+        loc = shorter
+    location = " ".join(w for w in loc.split() if w not in STOP_WORDS_ALL).strip()
+    return location or "hôm nay"
+
+
+def _reminder_task(raw: str) -> str:
+    """Nội dung công việc của lời nhắc, sau khi bỏ động từ đầu + mốc giờ."""
+    task = _REMINDER_LEAD_RE.sub("", raw).strip()
+    # v6.2: bóc mốc giờ viết bằng CHỮ SỐ hoặc TỪ-SỐ (kể cả "kém X" ở đuôi,
+    # trước đây "hẹn 8 giờ kém 15" để sót lại "kém 15" trong nội dung).
+    task = _REMINDER_TIME_RE.sub("", task).strip()
+    task = _REMINDER_TIME_DIGIT_RE.sub("", task).strip()
+    for pattern in _REMINDER_TAIL_RES:
+        task = pattern.sub("", task).strip()
+    return task or "báo thức"
+
+
+def _system_action(raw: str, raw_no_dia: str) -> str:
+    """system_control -> hành động chuẩn (shutdown/lock/volume_up...)."""
+    for pattern, action in SYSTEM_KEYWORDS:
+        if _match_any_pattern(pattern, raw, raw_no_dia):
+            return action
+    return "unknown"
+
+
+@dataclass(frozen=True)
+class _EntityContext:
+    """Ba bản của cùng một câu, đưa vào các handler trích xuất thực thể.
+
+    Tách thành đối tượng riêng để mỗi handler chỉ nhận ĐÚNG thứ nó cần và bảng
+    dispatch không phải truyền 3 tham số theo vị trí.
+    """
+    raw: str                 # đã normalize (thường hoá) - dùng để so khớp
+    raw_no_dia: str          # bản không dấu - cho câu gõ không dấu
+    original: str            # GIỮ NGUYÊN hoa/thường - dùng cho URL / đường dẫn
+
+    @classmethod
+    def build(cls, text: str) -> "_EntityContext":
+        raw = normalize_text(text)
+        return cls(raw=raw, raw_no_dia=strip_diacritics(raw), original=(text or "").strip())
+
+
+def _entity_chitchat(ctx: _EntityContext) -> str:
+    """Trò chuyện vặt: giữ nguyên câu để chọn câu trả lời phù hợp."""
+    return ctx.raw
+
+
+def _entity_calculate(ctx: _EntityContext) -> str:
+    expr, _ = parse_math_expression(ctx.raw)
+    return expr or ctx.raw
+
+
+def _entity_search_web(ctx: _EntityContext) -> str:
+    """Tìm kiếm: bóc cụm "tìm kiếm... trên google"."""
+    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX) or ctx.raw
+
+
+def _entity_play_media(ctx: _EntityContext) -> str:
+    return _strip_affixes(ctx.raw, MEDIA_PREFIX, MEDIA_SUFFIX) or "nhạc"
+
+
+def _entity_open_website(ctx: _EntityContext) -> str:
+    # Bản GIỮ NGUYÊN hoa/thường: URL phân biệt hoa/thường (video ID trên YouTube
+    # "...watch?v=dQw4w9WgXcQ"), nên không được lấy từ `raw` đã bị hạ chữ thường.
+    url_match = _URL_ENTITY_RE.search(ctx.original)
+    if url_match:
+        return url_match.group(1)
+    return _entity_default(ctx)
+
+
+def _entity_open_file(ctx: _EntityContext) -> str:
+    path_match = _PATH_ENTITY_RE.search(ctx.original)
+    if path_match:
+        return path_match.group(1)
+    return _entity_default(ctx)
+
+
+def _entity_get_datetime(ctx: _EntityContext) -> str:
+    return "date" if _DATE_WORDS_RE.search(ctx.raw) else "time"
+
+
+def _entity_system_control(ctx: _EntityContext) -> str:
+    return _system_action(ctx.raw, ctx.raw_no_dia)
+
+
+def _entity_default(ctx: _EntityContext) -> str:
+    """Mặc định: bỏ stop-words, phần còn lại là tên đối tượng."""
+    tokens = [w for w in ctx.raw.split() if w not in STOP_WORDS_ALL]
+    return " ".join(tokens).strip() or "unknown"
+
+
+# intent -> hàm trích xuất. Intent mới chỉ cần thêm một hàm + một dòng ở đây,
+# không phải chen thêm if/elif vào giữa một hàm 20 nhánh như bản v6.
+_ENTITY_HANDLERS = {
+    "system_control": _entity_system_control,
+    "get_datetime": _entity_get_datetime,
+    "chitchat": _entity_chitchat,
+    "calculate": _entity_calculate,
+    "get_weather": lambda ctx: _weather_location(ctx.raw),
+    "search_web": _entity_search_web,
+    "play_media": _entity_play_media,
+    "set_reminder": lambda ctx: _reminder_task(ctx.raw),
+    "open_website": _entity_open_website,
+    "open_file": _entity_open_file,
+}
+
+
 def extract_entity(text: str, intent: str) -> str:
     """
     Trích xuất tên đối tượng (target) tương ứng với từng intent. Khoan dung
@@ -900,127 +1228,23 @@ def extract_entity(text: str, intent: str) -> str:
         "mở github.com/abc/xyz"       -> "github.com/abc/xyz"  (giữ trọn đường dẫn)
         "Tìm giá vàng trên google"     -> "giá vàng"
         "Nhắc tôi họp lúc 3 giờ chiều" -> "họp"
+
+    v7.2: mỗi intent có handler RIÊNG đăng ký trong _ENTITY_HANDLERS.
     """
-    raw = normalize_text(text)
+    ctx = _EntityContext.build(text)
 
     # v6: nếu câu chứa URL THẬT thì luôn trả về URL nguyên vẹn (giữ hoa/thường
     # và các ký tự ? = & #) BẤT KỂ intent model nhận ra là gì. Trước đây nhánh
     # bảo toàn URL chỉ chạy khi intent đã đúng là open_website/open_file, nên
     # một khi phân loại lệch (vd "mở youtube.com/watch?v=..." bị nhận thành
     # play_media) thì liên kết vẫn bị băm nát ở tầng trích xuất.
-    _original_case = (text or "").strip()
     if intent in ("open_website", "play_media", "open_file", "search_web"):
-        _url_m = _URL_ENTITY_RE.search(_original_case)
-        if _url_m:
-            return _url_m.group(1)
-    raw_no_dia = strip_diacritics(raw)
-
-    # --- Lệnh hệ thống -> map về hành động chuẩn ---
-    if intent == "system_control":
-        for pattern, action in SYSTEM_KEYWORDS:
-            if _match_any_pattern(pattern, raw, raw_no_dia):
-                return action
-        return "unknown"
-
-    # --- Hỏi giờ / ngày ---
-    if intent == "get_datetime":
-        if re.search(r"ngày|thứ|tháng|năm|lịch", raw):
-            return "date"
-        return "time"
-
-    # --- Trò chuyện vặt: giữ nguyên câu để chọn câu trả lời phù hợp ---
-    if intent == "chitchat":
-        return raw
-
-    # --- Tính toán: trả về biểu thức đã nhận dạng được ---
-    if intent == "calculate":
-        expr, _ = parse_math_expression(raw)
-        return expr or raw
-
-    # --- Thời tiết: lấy địa điểm nếu có ---
-    if intent == "get_weather":
-        # v6 - VIẾT LẠI CÁCH TÁCH ĐỊA ĐIỂM.
-        # Cách cũ "trừ đi mọi từ trong danh sách" có 2 lỗi nặng:
-        #   1. Danh sách chỉ có bản CÓ DẤU, nên câu gõ thiếu dấu ("thoi tiet da
-        #      nang hom nay") không lọc được từ nào -> địa điểm = NGUYÊN CẢ CÂU.
-        #   2. Nếu sửa thành lọc không dấu thì lại xoá nhầm chính tên địa điểm:
-        #      "nắng" và "Nẵng" bỏ dấu là MỘT (Đà Nẵng sẽ biến mất!).
-        # Giải pháp: cắt theo CẤU TRÚC câu - lấy phần sau "thời tiết/ở/tại" rồi
-        # bóc dần phần đuôi chỉ thời gian / cách hỏi ở cuối câu.
-        loc = re.sub(r"^.*(?:thời tiết|thoi tiet|dự báo|du bao|nhiệt độ|nhiet do|trời|troi)\s*",
-                     "", raw)
-        loc = re.sub(r"^(?:ở|o|tại|tai|của|cua|khu vực|khu vuc|ngoài|ngoai)\s+", "", loc).strip()
-        tail = (r"\s*(?:hôm nay|hom nay|ngày mai|ngay mai|sáng nay|sang nay|chiều nay|chieu nay|"
-                r"tối nay|toi nay|đêm nay|dem nay|bây giờ|bay gio|như thế nào|nhu the nao|"
-                r"thế nào|the nao|ra sao|có mưa không|co mua khong|mưa không|mua khong|"
-                r"nắng không|nang khong|lạnh không|lanh khong|nóng không|nong khong|"
-                r"bao nhiêu độ|bao nhieu do|bao nhiêu|bao nhieu|thế|the|nhỉ|nhi|vậy|vay)\s*$")
-        for _ in range(4):
-            shorter = re.sub(tail, "", loc).strip()
-            if shorter == loc:
-                break
-            loc = shorter
-        location = " ".join(w for w in loc.split() if w not in STOP_WORDS_ALL).strip()
-        return location or "hôm nay"
-
-    # --- Tìm kiếm: bóc cụm "tìm kiếm... trên google" ---
-    if intent == "search_web":
-        query = _strip_affixes(raw, SEARCH_PREFIX, SEARCH_SUFFIX)
-        return query or raw
-
-    # --- Phát nhạc / video ---
-    if intent == "play_media":
-        query = _strip_affixes(raw, MEDIA_PREFIX, MEDIA_SUFFIX)
-        return query or "nhạc"
-
-    # --- Nhắc nhở: lấy nội dung công việc (bỏ phần thời gian) ---
-    if intent == "set_reminder":
-        task = raw
-        # v6.2: nhận diện cả động từ đầu câu KHÔNG DẤU ("nhac toi...", "hen gio...")
-        task = re.sub(r"^(nhắc tôi|nhac toi|nhắc mình|nhac minh|đặt nhắc nhở|dat nhac nho|"
-                      r"tạo lời nhắc|tao loi nhac|nhớ nhắc tôi|nho nhac toi|hẹn giờ|hen gio|"
-                      r"đặt báo thức|dat bao thuc|báo thức|bao thuc|"
-                      r"đặt đồng hồ đếm ngược|dat dong ho dem nguoc)\s*", "", task).strip()
-        # v6.2: bóc mốc giờ viết bằng CHỮ SỐ hoặc TỪ-SỐ (kể cả "kém X" ở đuôi,
-        # trước đây "hẹn 8 giờ kém 15" để sót lại "kém 15" trong nội dung).
-        task = re.sub(
-            r"(?:lúc|luc|vào|vao)?\s*" + _NUMBER_WORD_RUN
-            + r"\s*(?:giờ|gio|phút|phut|tiếng|tieng|giây|giay)\b"
-            + r"(?:\s+" + _NUMBER_WORD_RUN + r")?"
-            + r"(?:\s+(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem|khuya))?"
-            + r"(?:\s+(?:nay|mai|hôm|hom))?"   # "6 giờ sáng mai" - 2 từ đuôi
-            + r"(?:\s+(?:nữa|nua|sau|rưỡi|ruoi))?"
-            + r"(?:\s*k(?:ém|em)\s*" + _NUMBER_WORD_RUN + r")?",
-            "", task).strip()
-        task = re.sub(r"(lúc\s*)?\d+\s*(giờ|phút|tiếng)\s*(\d+)?\s*"
-                      r"(sáng|trưa|chiều|tối|nữa|sau|mai)?", "", task).strip()
-        task = re.sub(r"^(sau|nữa|vào)\s+", "", task).strip()
-        task = re.sub(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$", "", task).strip()
-        return task or "báo thức"
-
-    # Bản GIỮ NGUYÊN hoa/thường của câu gốc (chỉ bỏ khoảng trắng thừa 2 đầu),
-    # dùng RIÊNG cho việc tách URL/đường dẫn phía dưới. `raw` ở trên đã bị hạ
-    # chữ thường (phục vụ so khớp/phân loại) nên KHÔNG dùng cho việc này -
-    # nếu không, các phần phân biệt hoa/thường trong URL thật (vd video ID
-    # trên YouTube: "...watch?v=dQw4w9WgXcQ") hoặc tên file trên hệ thống
-    # phân biệt hoa/thường (Linux/macOS) sẽ bị biến dạng và trỏ sai đối tượng.
-    raw_original_case = (text or "").strip()
-
-    # --- Câu có sẵn URL hoặc đường dẫn file ---
-    if intent == "open_website":
-        url_match = _URL_ENTITY_RE.search(raw_original_case)
+        url_match = _URL_ENTITY_RE.search(ctx.original)
         if url_match:
             return url_match.group(1)
 
-    if intent == "open_file":
-        path_match = _PATH_ENTITY_RE.search(raw_original_case)
-        if path_match:
-            return path_match.group(1)
-
-    # --- Mặc định: bỏ stop-words, phần còn lại là tên đối tượng ---
-    tokens = [w for w in raw.split() if w not in STOP_WORDS_ALL]
-    target = " ".join(tokens).strip()
-    return target or "unknown"
+    handler = _ENTITY_HANDLERS.get(intent) or _entity_default
+    return handler(ctx)
 
 
 # ============================================================================

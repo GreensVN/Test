@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.0
+nlu_advanced.py v7.2
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 

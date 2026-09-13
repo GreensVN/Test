@@ -1,5 +1,5 @@
 # ============================================================
-# Trợ lý ảo tiếng Việt v7.0 - Requirements
+# Trợ lý ảo tiếng Việt v7.2 - Requirements
 # Chạy ngay không cần cài gì (dùng LiteModel thuần Python)
 # Cài thêm để nâng cao độ chính xác / giọng nói
 # ============================================================

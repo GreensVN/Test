@@ -221,6 +221,53 @@ def _speak_gtts(text: str) -> bool:
         return False
 
 
+def _engine_order() -> list:
+    """Danh sách hàm engine sẽ thử, theo biến ENGINE hiện tại.
+
+    Các engine được LẤY THEO TÊN trong module-global lúc gọi (không dựng một
+    tuple cố định ở đầu file) - nhờ vậy test có thể monkeypatch từng engine,
+    và người dùng chèn thêm engine mới mà không phải sửa speak().
+    """
+    explicit = {
+        "piper": [_speak_piper],
+        "nc": [_speak_nc],
+        "pyttsx3": [_speak_pyttsx3],
+        "sapi": [_speak_sapi],
+        "gtts": [_speak_gtts],
+        "print": [],  # chỉ in chữ, không đọc
+    }
+    if ENGINE in explicit:
+        return explicit[ENGINE]
+
+    if ENGINE != "auto":
+        # v7.2: tên engine sai trước đây bị hiểu nhầm là "auto" HOÀN TOÀN ÂM
+        # THẦM - người dùng gõ --engine pipper vẫn thấy trợ lý chạy bình
+        # thường nên không bao giờ biết mình viết sai. Ghi log kèm danh sách
+        # hợp lệ để dễ chẩn đoán.
+        logger.warning(
+            "ENGINE=%r không hợp lệ -> dùng 'auto'. Hợp lệ: %s",
+            ENGINE,
+            ", ".join(sorted([*explicit, "auto"])),
+        )
+
+    if _resolved_engine is not None:
+        return [_resolved_engine]
+    return [_speak_piper, _speak_pyttsx3, _speak_sapi, _speak_macos, _speak_gtts]
+
+
+def _try_engine(fn, text: str) -> bool:
+    """Gọi một engine, coi mọi lỗi = 'engine này không đọc được' (không ném tiếp).
+
+    TTS là tính năng PHỤ: lỗi pyttsx3/Windows SAPI không được phép làm chết lệnh
+    mà người dùng vừa ra.
+    """
+    try:
+        return bool(fn(text))
+    except Exception as e:
+        logger.debug("Engine %s lỗi: %s", getattr(fn, "__name__", str(fn)), e)
+        return False
+
+
 def speak(text: str, show: bool = True) -> None:
     global _resolved_engine
 
@@ -233,56 +280,28 @@ def speak(text: str, show: bool = True) -> None:
     if _speak_cache(text):
         return
 
-    # Xác định order
-    order_map = {
-        "piper": [_speak_piper],
-        "nc": [_speak_nc],
-        "pyttsx3": [_speak_pyttsx3],
-        "sapi": [_speak_sapi],
-        "gtts": [_speak_gtts],
-        "print": [],
-    }
-    order = order_map.get(ENGINE)
-
-    if order is None:  # auto
-        if ENGINE not in order_map:
-            # v7.2: tên engine sai trước đây bị hiểu nhầm là "auto" hoàn toàn âm thầm
-            # - người dùng gõ --engine pipper vẫn thấy trợ lý "chạy bình thường" nên không bao
-            # giờ biết mình viết sai. Ghi log kèm danh sách engine hợp lệ để dễ chẩn đoán.
-            logger.warning(
-                "ENGINE=%r không hợp lệ -> dùng 'auto'. Hợp lệ: %s",
-                ENGINE,
-                ", ".join(sorted([*order_map, "auto"])),
-            )
-        if _resolved_engine is not None:
-            order = [_resolved_engine]
-        else:
-            order = [_speak_piper, _speak_pyttsx3, _speak_sapi, _speak_macos, _speak_gtts]
-
     with _speak_lock:
-        for fn in order:
-            try:
-                if fn(text):
-                    _resolved_engine = fn
-                    return
-            except Exception as e:
-                logger.debug("Engine %s lỗi: %s", getattr(fn, "__name__", str(fn)), e)
-                continue
+        for fn in _engine_order():
+            if _try_engine(fn, text):
+                _resolved_engine = fn
+                return
 
-        # Fallback nếu engine đã resolve bị hỏng
+        # Engine đã "chốt" (lưu từ lần trước) vừa hỏng giữa chừng - vd micro bị
+        # rút, dịch vụ SAPI bị tắt. Thử lại các engine khác TRƯỚC KHI bỏ trống.
         if ENGINE == "auto" and _resolved_engine is not None:
             broken = _resolved_engine
-            for fn in (_speak_piper, _speak_pyttsx3, _speak_sapi, _speak_macos, _speak_gtts):
+            for fn in (
+                _speak_piper,
+                _speak_pyttsx3,
+                _speak_sapi,
+                _speak_macos,
+                _speak_gtts,
+            ):
                 if fn is broken:
                     continue
-                try:
-                    if fn(text):
-                        _resolved_engine = fn
-                        return
-                except Exception as engine_error:
-                    logger.debug("Engine dự phòng %s cũng lỗi: %s",
-                                 getattr(fn, "__name__", fn), engine_error)
-                    continue
+                if _try_engine(fn, text):
+                    _resolved_engine = fn
+                    return
             _resolved_engine = None
 
 

@@ -1,5 +1,5 @@
 """
-executor.py v7.1
+executor.py v7.2
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -536,213 +536,266 @@ def _system_control_wsl(target: str) -> bool:
     return False
 
 
+# ============================================================================
+# Bảng lệnh hệ thống theo nền tảng (v7.2: đưa lên module-level)
+# ---------------------------------------------------------------------------
+# Trước đây toàn bộ các dict này được TẠO LẠI bên trong mỗi lần gọi
+# action_system_control() và bị nhúng trong một hàm 21 nhánh, nên: (a) mỗi lệnh
+# phải dựng lại ~30 mục, (b) muốn biết Linux chạy lệnh nào phải đọc hết hàm,
+# (c) không test/monkeypatch riêng từng nền tảng được.
+# ============================================================================
+COMMANDS_WINDOWS: dict[str, list[str]] = {
+    "shutdown": ["shutdown", "/s", "/t", "5"],
+    "restart": ["shutdown", "/r", "/t", "5"],
+    "logout": ["shutdown", "/l"],
+    "lock": ["rundll32.exe", "user32.dll,LockWorkStation"],
+    "sleep": ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+}
+VOLUME_KEYS_WINDOWS = {"mute": 173, "unmute": 173, "volume_down": 174, "volume_up": 175}
+
+COMMANDS_MACOS: dict[str, list[str]] = {
+    "shutdown": ["osascript", "-e", 'tell app "System Events" to shut down'],
+    "restart": ["osascript", "-e", 'tell app "System Events" to restart'],
+    "logout": ["osascript", "-e", 'tell app "System Events" to log out'],
+    "lock": [
+        "osascript",
+        "-e",
+        'tell application "System Events" to keystroke "q" using {control down, command down}',
+    ],
+    "sleep": ["pmset", "sleepnow"],
+}
+VOLUME_MACOS: dict[str, list[str]] = {
+    "mute": ["osascript", "-e", "set volume output muted true"],
+    "unmute": ["osascript", "-e", "set volume output muted false"],
+    "volume_up": [
+        "osascript",
+        "-e",
+        "set volume output volume ((output volume of (get volume settings)) + 10)",
+    ],
+    "volume_down": [
+        "osascript",
+        "-e",
+        "set volume output volume ((output volume of (get volume settings)) - 10)",
+    ],
+}
+
+COMMANDS_LINUX: dict[str, list[list[str]]] = {
+    "shutdown": [["systemctl", "poweroff"], ["shutdown", "-h", "now"]],
+    "restart": [["systemctl", "reboot"], ["shutdown", "-r", "now"]],
+    "logout": [
+        ["loginctl", "terminate-user", os.environ.get("USER", "")],
+        ["gnome-session-quit", "--logout", "--no-prompt"],
+    ],
+    "lock": [
+        ["loginctl", "lock-session"],
+        ["xdg-screensaver", "lock"],
+        ["gnome-screensaver-command", "-l"],
+        ["qdbus", "org.freedesktop.ScreenSaver", "/ScreenSaver", "Lock"],
+        ["dm-tool", "lock"],
+    ],
+    "sleep": [["systemctl", "suspend"]],
+}
+VOLUME_LINUX: dict[str, list[list[str]]] = {
+    "mute": [
+        ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1"],
+        ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"],
+        ["amixer", "set", "Master", "mute"],
+    ],
+    "unmute": [
+        ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
+        ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"],
+        ["amixer", "set", "Master", "unmute"],
+    ],
+    "volume_up": [
+        ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%+"],
+        ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
+        ["amixer", "set", "Master", "10%+"],
+    ],
+    "volume_down": [
+        ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%-"],
+        ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
+        ["amixer", "set", "Master", "10%-"],
+    ],
+}
+SCREENSHOT_LINUX_TOOLS = ["gnome-screenshot", "spectacle", "scrot", "grim", "import"]
+
+
+def _screenshot_path() -> Path:
+    """Đường dẫn file ảnh chụp màn hình: ~/Pictures/screenshot_<thoi-gian>.png
+
+    Đặt tên file theo timestamp để KHÔNG ghi đè ảnh cũ - người dùng chụp liên
+    tục khi lập trình báo cáo lỗi rất dễ có nhiều tấm trong cùng phút.
+    """
+    pictures_dir = Path(HOME) / "Pictures"
+    pictures_dir.mkdir(parents=True, exist_ok=True)
+    return pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+
+
+def _send_virtual_key(target: str) -> None:
+    """Bấm phím âm lượng ảo qua PowerShell (dùng cho Windows và WSL)."""
+    key = VOLUME_KEYS_WINDOWS[target]
+    repeat = 5 if target in ("volume_up", "volume_down") else 1
+    ps = (
+        "$w = New-Object -ComObject WScript.Shell; "
+        f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
+    )
+    _popen(["powershell", "-NoProfile", "-Command", ps])
+
+
+def _windows_screenshot() -> bool:
+    path = _screenshot_path()
+    safe_path = _escape_powershell_single_quoted(str(path))
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+        "$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+        "$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height; "
+        "$g = [System.Drawing.Graphics]::FromImage($bmp); "
+        "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
+        f"$bmp.Save('{safe_path}')"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=15)
+    safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
+    logger.info("Đã chụp màn hình: %s", path)
+    return True
+
+
+def _system_control_windows(target: str) -> bool | None:
+    """None = nền tảng này không biết lệnh 'target' (caller sẽ báo BỎ QUA)."""
+    if target in COMMANDS_WINDOWS:
+        safe_print(f"[THỰC THI] {' '.join(COMMANDS_WINDOWS[target])}")
+        logger.info("Lệnh hệ thống (Windows): %s", target)
+        _popen(COMMANDS_WINDOWS[target])
+        return True
+
+    if target in VOLUME_KEYS_WINDOWS:
+        if _volume_via_pycaw(target):
+            safe_print(f"[THỰC THI] Điều chỉnh âm thanh (pycaw, chính xác): {target}")
+            logger.info("Điều chỉnh âm thanh qua pycaw: %s", target)
+            return True
+
+        _send_virtual_key(target)
+        safe_print(f"[THỰC THI] Điều chỉnh âm thanh (phím ảo): {target}")
+        if target == "unmute":
+            safe_print(
+                "[LƯU Ý] Cài thêm `pip install pycaw comtypes` để 'unmute' "
+                "chính xác tuyệt đối thay vì chỉ bật/tắt luân phiên."
+            )
+        logger.info("Điều chỉnh âm thanh qua phím ảo: %s", target)
+        return True
+
+    if target == "screenshot":
+        return _windows_screenshot()
+    return None
+
+
+def _system_control_macos(target: str) -> bool | None:
+    if target in COMMANDS_MACOS:
+        safe_print(f"[THỰC THI] Lệnh hệ thống (macOS): {target}")
+        logger.info("Lệnh hệ thống (macOS): %s", target)
+        _popen(COMMANDS_MACOS[target])
+        return True
+
+    if target in VOLUME_MACOS:
+        safe_print(f"[THỰC THI] Điều chỉnh âm thanh (macOS): {target}")
+        logger.info("Điều chỉnh âm thanh (macOS): %s", target)
+        _popen(VOLUME_MACOS[target])
+        return True
+
+    if target == "screenshot":
+        path = _screenshot_path()
+        _popen(["screencapture", str(path)])
+        safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
+        return True
+    return None
+
+
+def _linux_screenshot() -> bool:
+    path = _screenshot_path()
+    candidates = []
+    for tool in SCREENSHOT_LINUX_TOOLS:
+        if tool == "gnome-screenshot":
+            candidates.append([tool, "-f", str(path)])
+        elif tool == "spectacle":
+            candidates.append([tool, "-bn", "-o", str(path)])
+        elif tool == "import":
+            candidates.append([tool, "-window", "root", str(path)])
+        else:  # scrot / grim chỉ nhận đường dẫn thẳng
+            candidates.append([tool, str(path)])
+    if _run_first_available(candidates):
+        safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
+        return True
+    safe_print(
+        "[LỖI] Không tìm thấy công cụ chụp màn hình (đã thử "
+        f"{', '.join(SCREENSHOT_LINUX_TOOLS)})."
+    )
+    return False
+
+
+def _system_control_linux(target: str) -> bool | None:
+    if is_wsl():
+        return _system_control_wsl(target)
+
+    if target in COMMANDS_LINUX:
+        if _run_first_available(COMMANDS_LINUX[target]):
+            safe_print(f"[THỰC THI] Lệnh hệ thống (Linux): {target}")
+            return True
+        safe_print(
+            f"[LỖI] Không tìm thấy công cụ phù hợp cho '{target}' trên Linux "
+            f"(đã thử systemctl/shutdown/loginctl...)."
+        )
+        logger.warning("Không tìm thấy lệnh Linux khả dụng cho: %s", target)
+        return False
+
+    if target in VOLUME_LINUX:
+        if _run_first_available(VOLUME_LINUX[target]):
+            safe_print(f"[THỰC THI] Điều chỉnh âm thanh (Linux): {target}")
+            return True
+        safe_print(
+            "[LỖI] Không tìm thấy công cụ chỉnh âm lượng (đã thử wpctl, pactl, amixer) "
+            "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc "
+            "ALSA utils (amixer - gói alsa-utils, có ở gần mọi bản Linux để bàn)."
+        )
+        logger.warning("Không tìm thấy công cụ âm lượng Linux khả dụng cho: %s", target)
+        return False
+
+    if target == "screenshot":
+        return _linux_screenshot()
+    return None
+
+
+_SYSTEM_HANDLERS = {
+    "Windows": _system_control_windows,
+    "Darwin": _system_control_macos,
+    "Linux": _system_control_linux,
+}
+
+
 def action_system_control(target: str) -> bool:
+    """Thực hiện một lệnh hệ thống (tắt máy, khoá, âm lượng, screenshot...).
+
+    Trả về False (kèm thông báo dễ hiểu) khi người dùng huỷ, máy thiếu công cụ,
+    hoặc nền tảng không hỗ trợ lệnh đó - KHÔNG bao giờ ném lỗi ra ngoài vì một
+    lệnh hệ thống hỏng không được làm chết phiên trò chuyện.
+    """
     if target in DANGEROUS_ACTIONS:
         if not _confirm(f"Bạn chắc chắn muốn '{target}'?"):
             safe_print("Đã huỷ lệnh.")
             logger.info("Người dùng huỷ lệnh nguy hiểm: %s", target)
             return False
 
-    commands_windows = {
-        "shutdown": ["shutdown", "/s", "/t", "5"],
-        "restart": ["shutdown", "/r", "/t", "5"],
-        "logout": ["shutdown", "/l"],
-        "lock": ["rundll32.exe", "user32.dll,LockWorkStation"],
-        "sleep": ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
-    }
-    volume_keys = {"mute": 173, "unmute": 173, "volume_down": 174, "volume_up": 175}
-
-    commands_macos = {
-        "shutdown": ["osascript", "-e", 'tell app "System Events" to shut down'],
-        "restart": ["osascript", "-e", 'tell app "System Events" to restart'],
-        "logout": ["osascript", "-e", 'tell app "System Events" to log out'],
-        "lock": [
-            "osascript",
-            "-e",
-            'tell application "System Events" to keystroke "q" using {control down, command down}',
-        ],
-        "sleep": ["pmset", "sleepnow"],
-    }
-    volume_macos = {
-        "mute": ["osascript", "-e", "set volume output muted true"],
-        "unmute": ["osascript", "-e", "set volume output muted false"],
-        "volume_up": [
-            "osascript",
-            "-e",
-            "set volume output volume ((output volume of (get volume settings)) + 10)",
-        ],
-        "volume_down": [
-            "osascript",
-            "-e",
-            "set volume output volume ((output volume of (get volume settings)) - 10)",
-        ],
-    }
-
-    commands_linux = {
-        "shutdown": [["systemctl", "poweroff"], ["shutdown", "-h", "now"]],
-        "restart": [["systemctl", "reboot"], ["shutdown", "-r", "now"]],
-        "logout": [
-            ["loginctl", "terminate-user", os.environ.get("USER", "")],
-            ["gnome-session-quit", "--logout", "--no-prompt"],
-        ],
-        "lock": [
-            ["loginctl", "lock-session"],
-            ["xdg-screensaver", "lock"],
-            ["gnome-screensaver-command", "-l"],
-            ["qdbus", "org.freedesktop.ScreenSaver", "/ScreenSaver", "Lock"],
-            ["dm-tool", "lock"],
-        ],
-        "sleep": [["systemctl", "suspend"]],
-    }
-    volume_linux = {
-        "mute": [
-            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1"],
-            ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"],
-            ["amixer", "set", "Master", "mute"],
-        ],
-        "unmute": [
-            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
-            ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"],
-            ["amixer", "set", "Master", "unmute"],
-        ],
-        "volume_up": [
-            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%+"],
-            ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
-            ["amixer", "set", "Master", "10%+"],
-        ],
-        "volume_down": [
-            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%-"],
-            ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
-            ["amixer", "set", "Master", "10%-"],
-        ],
-    }
-
+    handler = _SYSTEM_HANDLERS.get(SYSTEM)
     try:
-        if SYSTEM == "Windows":
-            if target in commands_windows:
-                safe_print(f"[THỰC THI] {' '.join(commands_windows[target])}")
-                logger.info("Lệnh hệ thống (Windows): %s", target)
-                _popen(commands_windows[target])
-                return True
-
-            if target in volume_keys:
-                if _volume_via_pycaw(target):
-                    safe_print(f"[THỰC THI] Điều chỉnh âm thanh (pycaw, chính xác): {target}")
-                    logger.info("Điều chỉnh âm thanh qua pycaw: %s", target)
-                    return True
-
-                key = volume_keys[target]
-                repeat = 5 if target in ("volume_up", "volume_down") else 1
-                ps = (
-                    "$w = New-Object -ComObject WScript.Shell; "
-                    f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
-                )
-                _popen(["powershell", "-NoProfile", "-Command", ps])
-                safe_print(f"[THỰC THI] Điều chỉnh âm thanh (phím ảo): {target}")
-                if target == "unmute":
-                    safe_print(
-                        "[LƯU Ý] Cài thêm `pip install pycaw comtypes` để 'unmute' "
-                        "chính xác tuyệt đối thay vì chỉ bật/tắt luân phiên."
-                    )
-                logger.info("Điều chỉnh âm thanh qua phím ảo: %s", target)
-                return True
-
-            if target == "screenshot":
-                pictures_dir = Path(HOME) / "Pictures"
-                Path(pictures_dir).mkdir(parents=True, exist_ok=True)
-                path = pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
-                safe_path = _escape_powershell_single_quoted(str(path))
-                ps = (
-                    "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-                    "$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
-                    "$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height; "
-                    "$g = [System.Drawing.Graphics]::FromImage($bmp); "
-                    "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
-                    f"$bmp.Save('{safe_path}')"
-                )
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps], check=True, timeout=15
-                )
-                safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
-                logger.info("Đã chụp màn hình: %s", path)
-                return True
-
-        elif SYSTEM == "Darwin":
-            if target in commands_macos:
-                safe_print(f"[THỰC THI] Lệnh hệ thống (macOS): {target}")
-                logger.info("Lệnh hệ thống (macOS): %s", target)
-                _popen(commands_macos[target])
-                return True
-
-            if target in volume_macos:
-                safe_print(f"[THỰC THI] Điều chỉnh âm thanh (macOS): {target}")
-                logger.info("Điều chỉnh âm thanh (macOS): %s", target)
-                _popen(volume_macos[target])
-                return True
-
-            if target == "screenshot":
-                pictures_dir = Path(HOME) / "Pictures"
-                Path(pictures_dir).mkdir(parents=True, exist_ok=True)
-                path = pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
-                _popen(["screencapture", str(path)])
-                safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
-                return True
-
-        else:  # Linux
-            if is_wsl():
-                return _system_control_wsl(target)
-
-            if target in commands_linux:
-                if _run_first_available(commands_linux[target]):
-                    safe_print(f"[THỰC THI] Lệnh hệ thống (Linux): {target}")
-                    return True
-                safe_print(
-                    f"[LỖI] Không tìm thấy công cụ phù hợp cho '{target}' trên Linux "
-                    f"(đã thử systemctl/shutdown/loginctl...)."
-                )
-                logger.warning("Không tìm thấy lệnh Linux khả dụng cho: %s", target)
-                return False
-
-            if target in volume_linux:
-                if _run_first_available(volume_linux[target]):
-                    safe_print(f"[THỰC THI] Điều chỉnh âm thanh (Linux): {target}")
-                    return True
-                safe_print(
-                    "[LỖI] Không tìm thấy công cụ chỉnh âm lượng (đã thử wpctl, pactl, amixer) "
-                    "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc "
-                    "ALSA utils (amixer - gói alsa-utils, có ở gần mọi bản Linux để bàn)."
-                )
-                logger.warning("Không tìm thấy công cụ âm lượng Linux khả dụng cho: %s", target)
-                return False
-
-            if target == "screenshot":
-                pictures_dir = Path(HOME) / "Pictures"
-                Path(pictures_dir).mkdir(parents=True, exist_ok=True)
-                path = pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
-                if _run_first_available(
-                    [
-                        ["gnome-screenshot", "-f", str(path)],
-                        ["spectacle", "-bn", "-o", str(path)],
-                        ["scrot", str(path)],
-                        ["grim", str(path)],
-                        ["import", "-window", "root", str(path)],
-                    ]
-                ):
-                    safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
-                    return True
-                safe_print(
-                    "[LỖI] Không tìm thấy công cụ chụp màn hình (đã thử "
-                    "gnome-screenshot, spectacle, scrot, grim, import)."
-                )
-                return False
-
-        safe_print(f"[BỎ QUA] Không hỗ trợ lệnh hệ thống '{target}' trên {SYSTEM}.")
-        logger.warning("Không hỗ trợ lệnh hệ thống '%s' trên %s", target, SYSTEM)
-        return False
+        outcome = handler(target) if handler is not None else None
     except Exception as e:
         safe_print(f"[LỖI] Không thực thi được lệnh hệ thống: {e}")
         logger.error("Không thực thi được lệnh hệ thống '%s': %s", target, e)
         return False
+
+    if outcome is None:
+        safe_print(f"[BỎ QUA] Không hỗ trợ lệnh hệ thống '{target}' trên {SYSTEM}.")
+        logger.warning("Không hỗ trợ lệnh hệ thống '%s' trên %s", target, SYSTEM)
+        return False
+    return bool(outcome)
 
 
 # ============================================================================

@@ -1,12 +1,15 @@
-# Trợ lý ảo tiếng Việt v7.0
+# Trợ lý ảo tiếng Việt v7.2
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 220 pass](https://img.shields.io/badge/tests-220%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 251 pass](https://img.shields.io/badge/tests-251%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
 
-**v7.0** là bản nâng cấp toàn diện từ v6.4, fix tất cả lỗi regression sau khi merge 2 bản zip.
+**v7.2** là bản trả nợ kỹ thuật: 15 lỗi thật đã sửa (trong đó có 1 lỗi chèn mã
+AppleScript qua nội dung nhắc nhở), 347 cảnh báo lint -> 0, và các hàm "20-30
+nhánh" được tách thành bảng tra - **hành vi giữ nguyên, có đối chứng tự động**
+trên 188k câu. Xem [CHANGELOG](vi_voice_assistant/CHANGELOG.md).
 
 ## Cài đặt nhanh
 
@@ -23,7 +26,22 @@ pip install -e ".[full]"
 vi-assistant
 ```
 
-## Tính năng v7.0
+## Tính năng
+
+### v7.2 - sửa lỗi & chất lượng code
+- Không còn "thực thi bừa câu vô nghĩa": model lite có **bảo chứng từ điển**
+  (`evidence_ratio`) - câu rác bị hạ confidence xuống ~0% và REPL hỏi lại
+- Escape AppleScript/Powershell đúng thứ tự; lời nhắc lưu/xoá ra đĩa (atomic),
+  `restore_reminders` bỏ mục quá hạn
+- `config.json` sửa tay sai kiểu không còn làm sập chương trình lúc import;
+  validation gọi tên ĐÚNG khoá bị thiếu/bị gõ sai
+- Lệnh `nap lai` nạp lại cả ngưỡng tự tin của tầng NLU (trước đây chỉ executor)
+- `run_tests.py` trả exit code thật; CI bỏ `pytest || run_tests.py` (nguồn
+  "CI xanh giả"), thêm bước ruff + Python 3.13 + job "chỉ stdlib"
+- 347 -> 0 cảnh báo ruff; các hàm C901 (REPL dispatcher, system control theo
+  nền tảng, parse giờ/entity/số) tách thành bảng tra + handler
+
+### v7.0 - nền tảng
 
 - 11 ý định: web, app, file, system, search, media, reminder, weather, datetime, calculate, chitchat
 - Không cần lib ngoài: LiteModel thuần Python ~97-98% chính xác
@@ -36,7 +54,7 @@ vi-assistant
 
 ```
 vi_voice_assistant/
-├── main.py              # CLI chính v7.0
+├── main.py              # CLI chính v7.2
 ├── executor.py          # Thực thi an toàn (fix major v7.0)
 ├── text_utils.py        # Xử lý text (fix major v7.0)
 ├── nlu_advanced.py      # Tầng NLU
@@ -47,7 +65,7 @@ vi_voice_assistant/
 ├── logging_setup.py     # Logging (mới v7.0)
 ├── config.py            # Config loader (mới v7.0)
 ├── giong_noi_ai.py      # Giọng AI VieNeu
-├── tests/               # 220 tests
+├── tests/               # 251 tests
 ├── run_tests.py         # Test runner không cần pytest
 └── README.md / CHANGELOG.md / UPGRADE_REPORT_v7.md
 ```
@@ -56,7 +74,7 @@ vi_voice_assistant/
 
 ```bash
 python vi_voice_assistant/run_tests.py
-# Ket qua: 220 pass, 0 fail, 0 skip
+# Ket qua: 251 pass, 0 fail, 0 skip
 ```
 
 ## Tài liệu
@@ -79,6 +97,8 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
+- v7.2 (2026-09-13): 15 lỗi thật + 347 lint -> 0, 251 tests pass, refactor C901
+- v7.1 (2026-09-13): Dọn cấu trúc dự án, đồng bộ docs/version, typing hiện đại
 - v7.0 (2026-09-13): Fix regex, Path, Popen, 220 tests pass
 - v6.4: VieNeu TTS
 - v6.3: WSL support

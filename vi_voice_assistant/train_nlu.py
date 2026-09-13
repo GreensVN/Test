@@ -1,5 +1,5 @@
 """
-train_nlu.py v7.0
+train_nlu.py v7.2
 ----------------
 v7.0 nâng cấp:
 - Thêm type hints, pathlib, logging
@@ -233,6 +233,38 @@ PARAM_GRID = {
 # ============================================================================
 # 4. HUẤN LUYỆN + ĐÁNH GIÁ + PHÂN TÍCH LỖI
 # ============================================================================
+def _log_distribution(log, texts: list[str], labels: list[str]) -> None:
+    """In bảng phân bố số câu theo từng intent (kèm biểu đồ ký tự #)."""
+    dist = Counter(labels)
+    log(f"\nTỔNG: {len(texts)} câu / {len(dist)} nhóm ý định")
+    top = max(dist.values())
+    for intent, count in dist.most_common():
+        log(f"  {intent:<16} {count:>5}  {'#' * max(1, count * 40 // top)}")
+
+
+def _log_confusion_matrix(log, labels: list[str], y_test, y_pred) -> None:
+    """Ma trận nhầm lẫn; canh cột theo ten intent ngan 6 ky tu."""
+    log("[8] MA TRẬN NHẦM LẪN (hàng = đúng, cột = máy đoán)")
+    names = sorted(set(labels))
+    matrix = confusion_matrix(y_test, y_pred, labels=names)
+    log("    " + "".join(f"{n[:6]:>8}" for n in names))
+    for name, row in zip(names, matrix):
+        log(f"{name[:16]:<16}" + "".join(f"{v:>8}" for v in row))
+
+
+def _log_wrong_predictions(log, x_test, y_test, y_pred, limit: int = 25) -> None:
+    """Liệt kê tối đa `limit` câu bị đoán sai - gợi ý bổ sung dataset."""
+    log("\n[9] CÁC CÂU BỊ ĐOÁN SAI (bổ sung thêm câu tương tự vào dataset sẽ tốt hơn)")
+    wrong = [(t, y, p) for t, y, p in zip(x_test, y_test, y_pred) if y != p]
+    if not wrong:
+        log("    Không có câu nào sai. Tuyệt vời!")
+        return
+    for text, truth, pred in wrong[:limit]:
+        log(f"    {text[:52]:<54} đúng={truth:<14} đoán={pred}")
+    if len(wrong) > limit:
+        log(f"    ... và {len(wrong) - limit} câu khác")
+
+
 def train(fast: bool = False, use_augment: bool = True):
     _require_sklearn()
     lines = []   # nội dung báo cáo
@@ -258,11 +290,7 @@ def train(fast: bool = False, use_augment: bool = True):
     # Chuẩn hoá giống hệt lúc chạy thực tế
     texts = [smart_normalize(t) for t in texts]
 
-    dist = Counter(labels)
-    log(f"\nTỔNG: {len(texts)} câu / {len(dist)} nhóm ý định")
-    for intent, count in dist.most_common():
-        bar = "#" * max(1, count * 40 // max(dist.values()))
-        log(f"  {intent:<16} {count:>5}  {bar}")
+    _log_distribution(log, texts, labels)
 
     # --- Tách train / test ---
     X_train, X_test, y_train, y_test = train_test_split(
@@ -299,24 +327,9 @@ def train(fast: bool = False, use_augment: bool = True):
     log("\n[7] BÁO CÁO TRÊN TẬP TEST")
     log(classification_report(y_test, y_pred, zero_division=0))
 
-    # --- Ma trận nhầm lẫn ---
-    log("[8] MA TRẬN NHẦM LẪN (hàng = đúng, cột = máy đoán)")
-    names = sorted(set(labels))
-    matrix = confusion_matrix(y_test, y_pred, labels=names)
-    header = "    " + "".join(f"{n[:6]:>8}" for n in names)
-    log(header)
-    for name, row in zip(names, matrix):
-        log(f"{name[:16]:<16}" + "".join(f"{v:>8}" for v in row))
-
-    # --- Phân tích lỗi: câu nào bị đoán sai ---
-    log("\n[9] CÁC CÂU BỊ ĐOÁN SAI (bổ sung thêm câu tương tự vào dataset sẽ tốt hơn)")
-    wrong = [(t, y, p) for t, y, p in zip(X_test, y_test, y_pred) if y != p]
-    if not wrong:
-        log("    Không có câu nào sai. Tuyệt vời!")
-    for text, truth, pred in wrong[:25]:
-        log(f"    {text[:52]:<54} đúng={truth:<14} đoán={pred}")
-    if len(wrong) > 25:
-        log(f"    ... và {len(wrong) - 25} câu khác")
+    # --- Ma trận nhầm lẫn + phân tích lỗi (tach ra ham de train() doc duoc ngon) ---
+    _log_confusion_matrix(log, labels, y_test, y_pred)
+    _log_wrong_predictions(log, X_test, y_test, y_pred)
 
     # --- Huấn luyện lại trên TOÀN BỘ dữ liệu rồi lưu ---
     log("\n[10] Huấn luyện lại trên toàn bộ dữ liệu và lưu model...")

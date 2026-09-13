@@ -76,6 +76,7 @@ class LiteIntentModel:
         self._log_prior: dict[str, float] = {}
         self._log_prob: dict[str, dict[str, float]] = {}
         self._log_default: dict[str, float] = {}
+        self._vocab: set[str] = set()
 
     # -- huấn luyện --
     def fit(self, texts: list[str], labels: list[str], calibrate: bool = True) -> LiteIntentModel:
@@ -108,6 +109,7 @@ class LiteIntentModel:
         alpha = self.alpha
 
         self.classes_ = sorted(counts)
+        self._vocab = set(vocab)      # dung tinh "bao chung tu dien" luc du doan
         self._log_prior = {}
         self._log_prob = {}
         self._log_default = {}
@@ -174,6 +176,44 @@ class LiteIntentModel:
         total = sum(exps.values()) or 1.0
         return {label: value / total for label, value in exps.items()}
 
+    def _ensure_vocab(self) -> set[str]:
+        """Tập hợp mọi feature đã biết. Suy ra từ chính `_log_prob` nên file
+        model cũ (không lưu từ điển) vẫn dùng được, và dung lượng file không đổi.
+        """
+        if not self._vocab:
+            vocab: set[str] = set()
+            for table in self._log_prob.values():
+                vocab.update(table)
+            self._vocab = vocab
+        return self._vocab
+
+    def vocabulary_size(self) -> int:
+        """Số feature đã thấy lúc huấn luyện (0 nếu model chưa fit)."""
+        return len(self._ensure_vocab())
+
+    def evidence_ratio(self, text: str) -> float:
+        """Tỷ lệ feature của câu nằm TRONG từ điển huấn luyện: "bảo chứng" rằng
+        mô hình thực sự nhận ra chữ, chứ không đoán mò.
+
+        Lý do có con số này: softmax với temperature nhỏ (0.08) khuếch đại rất
+        mạnh khoảng cách log-prob, nên một câu VÔ NGHĨA ("asdfgh jklzxbv") vẫn
+        nhận được confidence ~0.5 và được trợ lý thực thi bừa. Tỷ lệ từ lạ thì
+        ngược lại: câu tiếng Việt thật gần như luôn có từ đã biết, câu linh tinh
+        thì không. Char-ngram chỉ tính 25% trọng số - nó giúp chịu lỗi chính tả
+        chứ không chứng minh đã hiểu nội dung.
+        """
+        feats = featurize(text)
+        if not feats:
+            return 0.0
+        vocab = self._ensure_vocab()
+        words = [f for f in feats if f.startswith("w:")]
+        chars = [f for f in feats if f.startswith("c:")]
+        word_hits = sum(1 for f in words if f in vocab)
+        char_hits = sum(1 for f in chars if f in vocab)
+        word_part = word_hits / float(len(words) or 1)
+        char_part = char_hits / float(len(chars) or 1)
+        return max(0.0, min(1.0, 0.75 * word_part + 0.25 * char_part))
+
     def predict_proba_dict(self, text: str) -> dict[str, float]:
         if not self.classes_:
             return {}
@@ -184,16 +224,24 @@ class LiteIntentModel:
         if not probs:
             return "chitchat", 0.0
         label = max(probs, key=lambda k: probs[k])
-        return label, probs[label]
+        return label, probs[label] * self.evidence_ratio(text)
 
     def predict(self, texts: list[str]) -> list[str]:
         return [self.predict_one(t)[0] for t in texts]
 
     def predict_proba(self, texts: list[str]) -> list[list[float]]:
+        """Xác suất theo từng lớp, đã NHÂN "bảo chứng từ điển" (evidence_ratio).
+
+        Vì vậy mỗi hàng KHÔNG nhất thiết cộng đủ 1: đây là mức ĐÁNG TIN CẬY của
+        câu trả lời chứ không phải phân phối xác suất thô. Tầng NLU dùng chính
+        con số này để quyết định "làm luôn" hay "hỏi lại"; `predict_proba_dict()`
+        vẫn trả về softmax nguyên bản cho ai cần phân phối thật.
+        """
         rows = []
         for text in texts:
             probs = self.predict_proba_dict(text)
-            rows.append([probs.get(label, 0.0) for label in self.classes_])
+            evidence = self.evidence_ratio(text)
+            rows.append([probs.get(label, 0.0) * evidence for label in self.classes_])
         return rows
 
     def score(self, texts: list[str], labels: list[str]) -> float:

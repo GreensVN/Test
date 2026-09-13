@@ -320,34 +320,43 @@ def _validate_config(cfg: dict[str, Any]) -> None:
             "nó sẽ bị BỎ QUA. Kiểm tra lại chính tả tên khoá.", ", ".join(sorted(unknown))
         )
 
-    # Ngưỡng tự tin: sai là fail cứng (rất khó gỡ nếu để lọt).
-    for k in ("confidence_threshold", "confidence_accept", "confidence_ask"):
-        if k in cfg:
-            try:
-                v = float(cfg[k])
-            except (TypeError, ValueError) as e:
-                raise RuntimeError(f"Giá trị {k} không hợp lệ: {e}") from e
-            if not 0.0 <= v <= 1.0:
-                raise RuntimeError(f"{k} phải trong [0,1], nhận {v}")
+    _check_thresholds(cfg)
+    _check_maps(cfg)
 
-    # Map phải là dict str->str, nếu không executor.py sẽ crash lúc dùng.
-    for k in MAP_KEYS:
-        value = cfg.get(k)
+
+def _check_thresholds(cfg: dict[str, Any]) -> None:
+    """Ba ngưỡng tự tin phải là số trong [0,1] - sai thì báo lỗi ngay (v7.2)."""
+    for key in ("confidence_threshold", "confidence_accept", "confidence_ask"):
+        if key not in cfg:
+            continue
+        try:
+            value = float(cfg[key])
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Giá trị {key} không hợp lệ: {e}") from e
+        if not 0.0 <= value <= 1.0:
+            raise RuntimeError(f"{key} phải trong [0,1], nhận {value}")
+
+
+def _check_maps(cfg: dict[str, Any]) -> None:
+    """Mọi map phải là dict chuỗi->chuỗi; executor.py giả định vậy lúc chạy lệnh.
+
+    Lưu ý: không đặt nháy kép cùng loại BÊN TRONG biểu thức f-string - cú pháp
+    đó chỉ hợp lệ từ Python 3.12 trong khi dự án hỗ trợ từ 3.9.
+    """
+    for key in MAP_KEYS:
+        value = cfg.get(key)
         if value is None:
             continue
         if not isinstance(value, dict):
             raise RuntimeError(
-                f'"{k}" phải là JSON object {{"ten": "gia tri"}}, '
+                f'"{key}" phải là JSON object {{"ten": "gia tri"}}, '
                 f"nhưng đang là {type(value).__name__}."
             )
-        bad = [str(key) for key, val in value.items() if not isinstance(val, str)]
+        bad = sorted(str(k) for k, v in value.items() if not isinstance(v, str))
         if bad:
-            # Lưu ý khi sửa dòng dưới: không được đặt nháy kép cùng loại BÊN
-            # TRONG biểu thức f-string - cú pháp đó chỉ hợp lệ từ Python 3.12,
-            # mà dự án hỗ trợ từ 3.9 (sẽ SyntaxError trên Python phổ biến).
-            bad_list = ", ".join(sorted(bad)[:5])
             raise RuntimeError(
-                f'"{k}" có giá trị KHÔNG phải chuỗi cho các khoá: {bad_list}. '
+                f'"{key}" có giá trị KHÔNG phải chuỗi cho các khoá: '
+                f"{', '.join(bad[:5])}. "
                 'Mọi giá trị phải là chuỗi, ví dụ: "chrome": "chrome.exe".'
             )
 

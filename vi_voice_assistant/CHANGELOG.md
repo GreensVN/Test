@@ -1,5 +1,93 @@
 # CHANGELOG
 
+## v7.2 (2026-09-13) - Trả nợ kỹ thuật: 347 cảnh báo lint -> 0, 15 lỗi thật đã sửa
+
+### Tổng quan
+- Mục tiêu bản này KHÔNG phải tính năng mới: dọn toàn bộ nợ kỹ thuật tích tụ qua
+  các bản merge (lint, hàm 20-30 nhánh, code chết, tài liệu nói khác code).
+- 347 cảnh báo ruff -> **0**; số test 220 -> **251**; hành vi giữ nguyên có kiểm chứng.
+
+### Lỗi thật đã sửa (mỗi lỗi có test hồi quy trong `tests/test_v72_regressions.py`)
+1. **run_tests.py luôn thoát 0** dù có test fail - runner tự viết nuốt mã lỗi, nên
+   "220 pass" trên CI có thể là ảo giác. Nay uỷ quyền cho pytest khi có sẵn và trả exit code thật.
+2. **train_nlu.py import scikit-learn cứng** - máy chưa cài thư viện ML không chạy
+   được dù README quảng cáo "chạy ngay không cần cài gì" -> sklearn/joblib thành tuỳ
+   chọn, gọi `_require_sklearn()` ngay trước khi cần.
+3. **executor._escape_osascript escape SAI THỨ TỰ** - thay `\"` trước rồi `\`, nên
+   backslash vừa chèn bị nhân đôi và nháy kép thoát ra ngoài chuỗi => nội dung nhắc
+   nhở do người dùng gõ chạy thành MÃ AppleScript. Đổi thứ tự escape (lỗi bảo mật).
+4. **`huy nhac` chỉ xoá trong RAM** - lời nhắc đã huỷ "hồi sinh" ở lần bật máy sau,
+   và lời nhắc đang chờ biến mất khi tắt máy. `cancel_reminder` + `_save_reminders`
+   Nay ghi đĩa atomic; `restore_reminders` bỏ mục quá hạn (không "nổ" dồn khi mở máy).
+5. **ngưỡng tự tin đọc NGOÀI try/except lúc import** (`nlu_advanced`) - một giá trị
+   sửa tay sai trong config.json ném ValueError/TypeError ngay `import nlu_advanced`
+   và làm chết cả main.py, kể cả phần không liên quan tới ML. Nay: cảnh báo + mặc định an toàn.
+6. **lệnh `nap lai` không đổi được ngưỡng** - tầng NLU đóng băng từ lúc import, executor
+   mới được nạp lại -> người dùng sửa `confidence_accept` rồi nạp lại vẫn thấy hành vi cũ.
+   Thêm `refresh_thresholds()` đồng bộ cả hai phía.
+7. **tts: engine chết bị nuốt im lặng / tên engine sai bị hiểu là auto** - `--engine pipper`
+   chạy "bình thường" nên không ai biết mình viết sai. Nay ghi log cảnh báo kèm danh sách
+   hợp lệ, và chốt lại engine sống được (`_resolved_engine`) khi engine đang dùng hỏng giữa chừng.
+8. **stt hard-code 44 byte header WAV** - chỉ đúng với PCM canonical; nếu `wave` ghi
+   chunk mở rộng thì dữ liệu âm thanh lệch -> nhận diện sai im lặng. Nay đọc độ dài
+   header thật; thiếu sounddevice cũng báo rõ thay vì giả vờ "không nghe thấy gì".
+9. **config._validate_config là CODE CHẾT** - hàm tính `missing` rồi `pass`, docstring
+   vẫn ghi "raise nếu sai nghiêm trọng". Nay: gọi tên từng khoá thiếu/khoá LẠ (gõ sai
+   chính tả), raise sớm khi `website_map`/`app_map_*` sai kiểu (tránh AttributeError
+   giữa lệnh), và bỏ mô tả "cache TTL" chưa từng tồn tại.
+10. **logging_setup dùng lock giả** (không phải `threading.Lock` thật) -> race khi nhiều
+    thread cùng ghi log (bộ đếm lời nhắc + REPL + TTS đều đa luồng).
+11. **lite_model / hash md5** - `hashlib.md5(..., usedforsecurity=False)` để chạy được
+    trên Python dựng theo FIPS (md5 chỉ dùng làm fingerprint, không dùng bảo mật).
+12. **dataset._generate chia cho 0** - người dùng tự sửa `dataset.py` mà để trống một
+    danh sách MẪU CÂU thì `% n` (n=0) ném ZeroDivisionError NGAY lúc import `dataset`,
+    giết luôn cả trợ lý lẫn toàn bộ test với traceback không liên quan gì tới config.
+13. **platform_utils.setup_console không khôi phục encoding cũ** - trạng thái console bị
+    đổi vĩnh viễn cho tiến trình con; Nay có cờ revert.
+14. **main.py thiếu `--engine nc`** - module `giong_nc.py` đã có sẵn engine "nc" nhưng
+    CLI không cho chọn.
+15. **CÂU VÔ NGHĨA VẪN ĐƯỢC THỰC THI** - "asdfgh jklzxbv" được model lite chấm tự tin
+    0.50, CAO HƠN ngưỡng `CONFIDENCE_ACCEPT` (0.45), nên trợ lý lẽ ra đã gọi hàm thật
+    theo một câu hoàn toàn vô nghĩa. Nguyên nhân: softmax với temperature 0.08 khuếch
+    đại khoảng cách log-prob, "không có bằng chứng" vẫn thành "tương đối chắc chắn".
+    Nay mỗi câu dự đoán phải qua **bảo chứng từ điển** `evidence_ratio()` (tỷ lệ feature
+    nằm trong từ điển huấn luyện, char-ngram chỉ tính 25%): câu rác -> 0%, REPL hỏi lại;
+    câu tiếng Việt thật -> không đổi. Không cần file model mới (từ điển suy ra từ
+    `_log_prob`), và `predict_proba_dict()` vẫn trả phân phối softmax nguyên bản.
+
+### Kiến trúc / chất lượng code
+- **347 -> 0 cảnh báo ruff** (E, F, W, C90, I, N, UP, S, B, A, C4, TCH, TID, Q, RUF);
+  mỗi dòng `ignore` trong `pyproject.toml` có chú thích lý do + `per-file-ignores`.
+- **Tách các hàm quá phức tạp** (C901 > 10) thành bảng tra + hàm một nhiệm vụ, xoá dần
+  các chuỗi if/elif theo nền tảng/theo lệnh:
+  - `main.main()`: REPL dispatcher -> `_CONTROL_COMMANDS` (từ khoá -> handler) +
+    `_CONTROL_PREFIXES` (lệnh có tham số) + `ReplState`/`ReplContext` test được từng lệnh.
+  - `executor.action_system_control()`: bảng `COMMANDS_WINDOWS/MACOS/LINUX`,
+    `VOLUME_*`, handler riêng theo nền tảng; `None` = "nền tảng này không làm được"
+    -> in `[BỎ QUA]` thay vì nói dối "đã thực thi".
+  - `intent_model`: `parse_time_expression` (28 nhánh) thành 4 máy phân tích + bảng
+    quy tắc đổi giờ theo buổi; `extract_entity` (20 nhánh) thành `_ENTITY_HANDLERS`;
+    `_parse_number_run` (25 nhánh) thành bảng quy tắc `_NUMBER_RUN_RULES`.
+  - `tts.speak`, `stt.listen_once`, `config._validate_config`, `train_nlu.train`,
+    `giong_noi_ai.main` cũng được tách tương tự.
+- **Kiểm chứng tương đương hành vi** bằng đối chiếu tự động với bản v7.1 (module cũ nạp
+  song song): 70.668 cụm từ-số x 3 hàm, 96.737 câu thời gian, 1.618 câu x 13 intent
+  trích xuất thực thể => **0 khác biệt**. Các hàm refactor không đổi hành vi, chỉ đổi cấu trúc.
+
+### Đóng gói & CI
+- `dependencies = []`: `pip install .` không còn bắt cài scikit-learn/numpy (chuyển vào
+  `[full]`/`[ml]`) - khớp với cam kết "chạy ngay không cần cài gì"; bỏ 2 marker
+  `python_version < "3.9"` mâu thuẫn với `requires-python >= 3.9`.
+- CI: bỏ bước `pytest ... || python run_tests.py` (dấu `||` biến CI ĐỎ thành XANH);
+  mỗi bộ test một bước riêng; thêm bước **ruff**; thêm **Python 3.13** (pyproject đã
+  quảng cáo nhưng chưa từng được kiểm tra); thêm job "không cài tuỳ chọn" để giữ hợp
+  đồng "chỉ cần stdlib".
+
+### Tests
+- 220 -> **251 test**; file mới `tests/test_v72_regressions.py` (31 test) - mỗi test
+  gắn với một lỗi ở trên, có chú thích mô tả triệu chứng trước khi sửa.
+
+
 ## v7.0 (2026-09-13) - Nâng cấp toàn diện & fix regression sau merge
 
 ### Tổng quan
