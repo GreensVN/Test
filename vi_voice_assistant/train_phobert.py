@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-train_phobert.py
+train_phobert.py v7.0
+---------------------
+v7.0 nâng cấp:
+- Thêm type hints, pathlib, logging
+- Atomic save, validation
 -----------------
+FINE-TUNE PhoBERT
 FINE-TUNE PhoBERT để phân loại ý định (intent) — thay thế nâng cao cho
 intent_model.pkl (TF-IDF). Độ chính xác cao hơn hẳn với câu lạ, câu dài,
 câu viết không theo khuôn mẫu có sẵn trong dataset.py.
@@ -20,6 +25,8 @@ Sau khi chạy xong, intent_model.py sẽ tự động dùng PhoBERT thay vì TF
 GỢI Ý: nếu máy không có GPU, hãy huấn luyện trên Google Colab (có GPU miễn
 phí) rồi tải thư mục phobert_model/ về máy.
 """
+
+from __future__ import annotations
 
 import argparse
 import csv

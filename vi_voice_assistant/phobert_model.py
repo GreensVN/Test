@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-phobert_model.py
+phobert_model.py v7.0
+---------------------
+v7.0 nâng cấp:
+- Thêm type hints, pathlib, logging
+- Dùng Path thay cho os.path
+- Atomic save, validation
 -----------------
+Bộ phân loại ý định (intent) dùng PhoBERT
 Bộ phân loại ý định (intent) dùng PhoBERT — lựa chọn NÂNG CAO thay cho
 TF-IDF trong intent_model.py, hiểu câu tốt hơn nhiều (kể cả câu dài, câu lạ,
 câu chưa từng thấy) vì PhoBERT đã học sẵn tiếng Việt trên khối dữ liệu khổng lồ.
@@ -18,6 +24,8 @@ Lưu ý: mọi import torch/transformers được đặt BÊN TRONG hàm/phươn
 (không đặt ở đầu file) để file này và intent_model.py vẫn import được
 bình thường ngay cả khi máy CHƯA cài torch/transformers.
 """
+
+from __future__ import annotations
 
 import json
 import os

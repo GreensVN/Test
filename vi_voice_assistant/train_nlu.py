@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-train_nlu.py
+train_nlu.py v7.0
+----------------
+v7.0 nâng cấp:
+- Thêm type hints, pathlib, logging
+- Atomic save, validation
 ------------
+FILE HUẤN LUYỆN
 FILE HUẤN LUYỆN "HIỂU Ý CON NGƯỜI" (bản nâng cao)
 
 Khác gì so với intent_model.py?
@@ -24,6 +29,8 @@ Cách chạy:
 
 Kết quả: ghi đè intent_model.pkl -> main.py dùng được ngay, không cần sửa gì.
 """
+
+from __future__ import annotations
 
 import argparse
 import csv
