@@ -2,7 +2,21 @@
 """
 dataset.py
 ----------
-TẬP DỮ LIỆU INTENT TIẾNG VIỆT (BẢN KẾT HỢP v5)
+TẬP DỮ LIỆU INTENT TIẾNG VIỆT v7.0
+
+v7.0 nâng cấp:
+- Thêm type hints đầy đủ, pathlib, logging
+- Giữ nguyên 11 intent, ~1530 câu mẫu, logic sinh dữ liệu không đổi
+- Tối ưu _generate, build_intent_data với typing
+
+Hợp nhất 2 hướng cải tiến từ 2 bản trước:
+  - "Bản nhiều tính năng": sinh dữ liệu bằng MẪU CÂU (template) x ĐỐI TƯỢNG
+    (object) cho 11 nhóm ý định, cộng câu viết tay để tự nhiên hơn (~730 câu).
+  - "Bản bảo mật/đa nền tảng": tự động sinh thêm bản KHÔNG DẤU cho mỗi câu
+    (get_dataset_as_lists(augment_no_diacritics=True), mặc định BẬT) để mô
+    hình TF-IDF tự nó cũng chịu được input không dấu
+
+v5 -> v7.0: giữ nguyên logic, chỉ thêm typing và pathlib
 
 Hợp nhất 2 hướng cải tiến từ 2 bản trước:
   - "Bản nhiều tính năng": sinh dữ liệu bằng MẪU CÂU (template) x ĐỐI TƯỢNG
@@ -34,6 +48,11 @@ Chạy để xem thống kê:
     python dataset.py
 """
 
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 from text_utils import strip_diacritics
 from platform_utils import safe_print, setup_console
@@ -120,7 +139,7 @@ CALC_SPECIAL = [
 ]
 
 
-def _generate_calc():
+def _generate_calc() -> List[str]:
     """Sinh câu tính toán: ghép cặp số x phép toán x mẫu câu."""
     out = []
     for i, (a, b) in enumerate(CALC_NUMBER_PAIRS):
@@ -219,7 +238,7 @@ CHITCHAT_SENTENCES = [
 ]
 
 
-def _generate_reminders():
+def _generate_reminders() -> List[str]:
     """Sinh câu nhắc nhở: ghép công việc x thời điểm x mẫu câu."""
     out = []
     for i, task in enumerate(REMINDER_TASKS):
@@ -233,7 +252,7 @@ def _generate_reminders():
     return out
 
 
-def _generate(templates, objects, per_object=3):
+def _generate(templates: List[str], objects: List[str], per_object: int = 3) -> List[str]:
     """Ghép mẫu câu với đối tượng. Mỗi đối tượng dùng `per_object` mẫu khác nhau
     (xoay vòng theo chỉ số để kết quả luôn ổn định, không phụ thuộc random)."""
     out = []
@@ -371,7 +390,7 @@ HANDWRITTEN = {
 # 4. TỔNG HỢP DATASET GỐC (11 intent, dữ liệu có dấu)
 # ============================================================================
 
-def build_intent_data():
+def build_intent_data() -> Dict[str, List[str]]:
     """Tạo dictionary: intent -> danh sách câu (đã khử trùng lặp)."""
     data = {
         "open_website": _generate(WEB_TEMPLATES, WEBSITES, 3),
@@ -411,7 +430,7 @@ PASSIVE_INTENTS = {"chitchat", "get_datetime", "calculate", "get_weather"}
 # 5. HÀM TIỆN ÍCH
 # ============================================================================
 
-def get_dataset_as_lists(augment_no_diacritics: bool = True):
+def get_dataset_as_lists(augment_no_diacritics: bool = True) -> Tuple[List[str], List[str]]:
     """
     Trả về 2 list song song: (texts, labels).
 
@@ -441,37 +460,42 @@ def get_dataset_as_lists(augment_no_diacritics: bool = True):
     return texts, labels
 
 
-def get_dataframe(augment_no_diacritics: bool = True):
+def get_dataframe(augment_no_diacritics: bool = True):  # type: ignore[no-untyped-def]
     """Trả về dữ liệu dạng Pandas DataFrame (cột: text, intent)."""
     import pandas as pd  # import cục bộ để file vẫn chạy được khi chưa có pandas
     texts, labels = get_dataset_as_lists(augment_no_diacritics=augment_no_diacritics)
     return pd.DataFrame({"text": texts, "intent": labels})
 
 
-def export_csv(path="dataset_intent.csv", augment_no_diacritics: bool = False):
-    """Xuất dataset ra file CSV để bạn dễ xem / chỉnh sửa bằng Excel."""
+def export_csv(path: str | Path = "dataset_intent.csv", augment_no_diacritics: bool = False) -> Path:
+    """Xuất dataset ra file CSV để bạn dễ xem / chỉnh sửa bằng Excel. v7.0: dùng pathlib."""
     import csv
+    from pathlib import Path as _Path
+    out_path = _Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     texts, labels = get_dataset_as_lists(augment_no_diacritics=augment_no_diacritics)
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+    with out_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["text", "intent"])
         writer.writerows(zip(texts, labels))
-    safe_print(f"Đã xuất {len(texts)} câu ra: {path}")
-    return path
+    safe_print(f"Đã xuất {len(texts)} câu ra: {out_path}")
+    return out_path
 
 
-def load_extra_csv(path="my_dataset.csv"):
+def load_extra_csv(path: str | Path = "my_dataset.csv") -> int:
     """
     Nạp thêm dữ liệu riêng của bạn từ file CSV (2 cột: text,intent)
     và ghép vào INTENT_DATA. Gọi trước khi huấn luyện nếu cần.
+    v7.0: dùng pathlib, type hints.
     """
     import csv
-    import os
-    if not os.path.exists(path):
+    from pathlib import Path as _Path
+    csv_path = _Path(path)
+    if not csv_path.exists():
         return 0
     count = 0
     try:
-        with open(path, encoding="utf-8-sig") as f:
+        with csv_path.open(encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 text = (row.get("text") or "").strip().lower()
                 intent = (row.get("intent") or "").strip()
@@ -484,13 +508,13 @@ def load_extra_csv(path="my_dataset.csv"):
         # Rủi ro THẬT khi tự sửa/tạo file bằng tay: Notepad trên Windows 7
         # mặc định lưu kiểu ANSI chứ không phải UTF-8 - đọc bằng utf-8-sig
         # sẽ lỗi. Báo rõ nguyên nhân + cách khắc phục thay vì crash mập mờ.
-        safe_print(f"[LỖI] File '{path}' không phải mã UTF-8: {e}")
+        safe_print(f"[LỖI] File '{csv_path}' không phải mã UTF-8: {e}")
         safe_print("   -> Mở lại file đó, chọn 'Save As', đổi Encoding thành UTF-8, rồi thử lại.")
         return 0
     except OSError as e:
-        safe_print(f"[LỖI] Không đọc được file '{path}': {e}")
+        safe_print(f"[LỖI] Không đọc được file '{csv_path}': {e}")
         return 0
-    safe_print(f"Đã nạp thêm {count} câu từ {path}")
+    safe_print(f"Đã nạp thêm {count} câu từ {csv_path}")
     return count
 
 

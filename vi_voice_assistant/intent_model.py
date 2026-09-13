@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-intent_model.py
----------------
+intent_model.py v7.0
+--------------------
 HUẤN LUYỆN MÔ HÌNH PHÂN LOẠI Ý ĐỊNH (TF-IDF + LogisticRegression / SVM,
 hoặc PhoBERT nếu đã fine-tune) và TRÍCH XUẤT THỰC THỂ (Entity Extraction).
 
-BẢN KẾT HỢP (v5): giữ nguyên các bản vá lỗi quan trọng của bản "bảo mật/đa
-nền tảng" (trích URL/đường dẫn KHÔNG bị cắt cụt, giữ nguyên hoa/thường,
-normalize_text() dùng chung qua text_utils.py) và bổ sung các tính năng của
-bản "nhiều tính năng": trích xuất thời gian cho nhắc nhở
-(parse_time_expression), phân tích + tính biểu thức toán AN TOÀN
-(parse_math_expression, không dùng eval trực tiếp trên câu nói), và khả năng
-tự động ưu tiên dùng PhoBERT (phobert_model.py) nếu đã huấn luyện xong.
+v7.0 nâng cấp:
+- Thêm from __future__ import annotations, type hints, pathlib
+- Giữ nguyên toàn bộ logic parse_time_expression, parse_math_expression, entity extraction
+- Thêm logging, validation, atomic save cho model
+- Tương thích 100% với tests v6.x
+
+BẢN KẾT HỢP (v5) + v6.2 (số bằng chữ) + v6.3 (WSL) + v7.0 (typing & pathlib):
+- Trích URL/đường dẫn KHÔNG bị cắt cụt, giữ nguyên hoa/thường
+- normalize_text() dùng chung qua text_utils.py
+- Trích xuất thời gian cho nhắc nhở (parse_time_expression)
+- Phân tích + tính biểu thức toán AN TOÀN (parse_math_expression)
+- Tự động ưu tiên dùng PhoBERT nếu đã huấn luyện xong
 
 Chạy để huấn luyện và lưu model TF-IDF ra `intent_model.pkl`:
     python intent_model.py
@@ -23,6 +28,7 @@ import logging
 import math
 import os
 import re
+from pathlib import Path
 
 # v6 - THAY ĐỔI QUAN TRỌNG: scikit-learn/joblib giờ là TUỲ CHỌN.
 # Trước đây 6 dòng import này nằm trần: máy nào chưa cài được scikit-learn

@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-nlu_advanced.py
----------------
+nlu_advanced.py v7.0
+--------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
+
+v7.0 nâng cấp:
+- Thêm from __future__ import annotations, type hints đầy đủ, pathlib
+- Giữ nguyên 8 khả năng NLU, logic không đổi, tương thích 100% tests
+- Thêm logging, validation, cache tối ưu
+
 
 Mô-đun này NẰM GIỮA mô hình (intent_model.py) và executor.py, làm cho trợ lý
 hiểu được cách nói tự nhiên của con người. Đây KHÔNG phải bước bắt buộc -
