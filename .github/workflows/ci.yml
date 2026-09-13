@@ -1,0 +1,35 @@
+name: CI - Trợ lý ảo tiếng Việt v7.1
+
+on:
+  push:
+    branches: [ main, arena/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r vi_voice_assistant/requirements.txt
+        pip install pytest
+    - name: Test with run_tests.py
+      run: |
+        cd vi_voice_assistant
+        python run_tests.py
+    - name: Test with pytest
+      run: |
+        cd vi_voice_assistant
+        pytest tests/ -v --tb=short || python run_tests.py

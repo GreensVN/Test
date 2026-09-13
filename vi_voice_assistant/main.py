@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-main.py - Trợ lý ảo tiếng Việt v7.0
+main.py - Trợ lý ảo tiếng Việt v7.1
 
-v7.0 nâng cấp:
+v7.1 nâng cấp (tiếp nối v7.0):
 - Thêm --debug, --no-banner, --config, --engine
 - Signal handling (Ctrl+C) gọn gàng
 - Thêm history (lưu lịch sử lệnh)
@@ -31,7 +31,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.0"
+APP_VERSION = "7.1"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""

@@ -1,9 +1,9 @@
-# Trợ lý ảo tiếng Việt v7.0
+# Trợ lý ảo tiếng Việt v7.1
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
-> **v7.0 (2026-09-13)**: Nâng cấp toàn diện từ v6.4, fix tất cả lỗi regression sau merge 2 bản zip.
+> **v7.1 (2026-09-13)**: Nâng cấp toàn diện từ v6.4, fix tất cả lỗi regression sau merge 2 bản zip.
 > - Fix lỗi regex `bad character range \-( at position 11` trong `executor.py` và `text_utils.py`
 > - Fix tương thích `HOME`/`REMINDERS_PATH` khi bị monkeypatch bằng `str` trong tests
 > - Thêm wrapper `_popen()` để tương thích mock `Popen(lambda cmd: ...)` trong tests
@@ -12,12 +12,12 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 > - 220 tests pass 100%
 > - Xem chi tiết trong **CHANGELOG.md** và **UPGRADE_REPORT_v7.md**
 
-## Điểm nổi bật v7.0
+## Điểm nổi bật v7.1
 
 - **11 ý định**: mở web, mở app, mở file, điều khiển hệ thống, tìm kiếm, phát nhạc/video, nhắc nhở, thời tiết, xem giờ/ngày, tính toán, chit-chat.
 - **Không cần thư viện ngoài**: `lite_model.py` - Naive Bayes n-gram ký tự thuần Python, huấn luyện <1s, ~97-98% chính xác. Tự dùng scikit-learn hoặc PhoBERT nếu có.
 - **Thông minh đời thường**: gõ không dấu, teencode, sai chính tả nhẹ, nhiều lệnh trong 1 câu, nhớ ngữ cảnh ("đóng nó lại"), học từ phản hồi, hiểu số viết bằng chữ.
-- **An toàn v7.0**: 
+- **An toàn v7.1**: 
   - Không chạy chuỗi người dùng qua shell
   - Whitelist app/web/file trong `config.json`
   - Xác nhận trước hành động nguy hiểm
@@ -45,7 +45,7 @@ python giong_noi_ai.py tai
 python giong_noi_ai.py thu "Xin chào Việt Nam"
 ```
 
-## Cách dùng v7.0
+## Cách dùng v7.1
 
 ```bash
 python main.py                              # hỏi-đáp
@@ -65,9 +65,9 @@ Lệnh trong phiên: `mic`, `voice`, `test`, `nhac nho`, `huy nhac [từ khoá]`
 
 Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 
-## Cấu trúc v7.0
+## Cấu trúc v7.1
 
-| File | Vai trò | v7.0 |
+| File | Vai trò | v7.1 |
 |---|---|---|
 | `main.py` | Vòng lặp chính + CLI | + --debug/--no-banner/--config/--engine/--history, signal handling |
 | `nlu_advanced.py` | Tầng hiểu ý | Giữ nguyên + type hints |
@@ -79,11 +79,11 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 | `config.json` | Whitelist | Giữ nguyên |
 | `stt.py` | Giọng nói vào | Nâng cấp: STT class, RMS fallback |
 | `tts.py` | Giọng nói ra | Nâng cấp: RLock, timeout, cache |
-| `platform_utils.py` | Utils đa nền tảng | Mới v7.0 |
-| `logging_setup.py` | Logging | Mới v7.0 |
-| `config.py` | Config loader | Mới v7.0 |
-| `pyproject.toml` | Metadata | Mới v7.0 |
-| `requirements.txt` | Deps | Mới v7.0 |
+| `platform_utils.py` | Utils đa nền tảng | Mới v7.1 |
+| `logging_setup.py` | Logging | Mới v7.1 |
+| `config.py` | Config loader | Mới v7.1 |
+| `pyproject.toml` | Metadata | Mới v7.1 |
+| `requirements.txt` | Deps | Mới v7.1 |
 | `run_tests.py` | Test runner | 220 tests, không cần pytest |
 | `tests/` | Unit tests | 220 tests |
 
@@ -111,7 +111,7 @@ python -m unittest discover
 Xem **UPGRADE_REPORT_v7.md** để biết chi tiết các lỗi đã fix và breaking changes.
 
 ```bash
-git log --oneline v6.4..v7.0
+git log --oneline v6.4..v7.1
 ```
 
 Tất cả lỗi regex và Path compatibility đã được fix, không còn regression.

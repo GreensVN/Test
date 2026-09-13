@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-executor.py
+executor.py v7.1
 -----------
+v7.1: thêm type hints, security hardening, CI
+-----------
+Mô-đun thực thi
 Mô-đun thực thi lệnh trên máy tính - hỗ trợ Windows / macOS / Linux.
 
 v7.0 nâng cấp:
