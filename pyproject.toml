@@ -1,0 +1,132 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vi-voice-assistant"
+version = "7.0.0"
+description = "Trợ lý ảo tiếng Việt - hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng"
+readme = "vi_voice_assistant/README.md"
+license = { text = "MIT" }
+authors = [{ name = "GreensVN", email = "greens@example.com" }]
+keywords = ["vietnamese", "voice-assistant", "nlu", "tts", "stt", "intent-classification"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Natural Language :: Vietnamese",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+dependencies = [
+    # Core - không bắt buộc nhưng khuyến nghị
+    # Lite model chạy không cần gì, nhưng để có TF-IDF tốt hơn:
+    "scikit-learn>=1.3.0; python_version < '3.9'",
+    "scikit-learn>=1.5.0; python_version >= '3.9'",
+    "joblib>=1.3.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "rapidfuzz>=3.0.0",
+    "pyttsx3>=2.90",
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+]
+tts = [
+    "pyttsx3>=2.90",
+    "gTTS>=2.5.0",
+    "playsound==1.2.2; sys_platform == 'win32'",
+]
+stt = [
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+]
+stt-offline = [
+    "transformers>=4.37.0",
+    "torch>=2.0.0",
+    "sounddevice>=0.4.6",
+]
+ai-voice = [
+    "vieneu>=3.2.0; python_version >= '3.10'",
+]
+ai-voice-clone = [
+    "vieneu>=3.2.0; python_version >= '3.10'",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+]
+nc-voice = [
+    "transformers>=4.37.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+all = [
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "rapidfuzz>=3.9.0",
+    "pyttsx3>=2.90",
+    "gTTS>=2.5.0",
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "pandas>=2.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/GreensVN/Test"
+Repository = "https://github.com/GreensVN/Test"
+Issues = "https://github.com/GreensVN/Test/issues"
+Changelog = "https://github.com/GreensVN/Test/blob/main/vi_voice_assistant/CHANGELOG.md"
+
+[project.scripts]
+vi-assistant = "vi_voice_assistant.main:main"
+tro-ly-ao = "vi_voice_assistant.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vi_voice_assistant*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+exclude = ["__pycache__", "voice_cache", "giong_ai", "logs", "phobert_model"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "S", "B", "A", "C4", "TCH", "TID", "Q", "RUF"]
+ignore = [
+    "S101",  # assert used
+    "S603",  # subprocess without shell=True is actually safe, but ruff warns
+    "S607",  # partial executable path
+]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["vi_voice_assistant/tests"]
+addopts = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["vi_voice_assistant"]
+omit = ["*/tests/*", "*/__pycache__/*"]

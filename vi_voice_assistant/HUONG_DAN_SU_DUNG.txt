@@ -1,0 +1,565 @@
+================================================================================
+          TRỢ LÝ ẢO TIẾNG VIỆT – INTENT RECOGNITION + ACTION EXECUTION
+                    HƯỚNG DẪN SỬ DỤNG & HUẤN LUYỆN
+                (BẢN v6.3 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3)
+================================================================================
+
+NGÔN NGỮ : Python 3.8+ (Windows 7: BẮT BUỘC Python 3.8.x - xem mục VIII)
+HỆ ĐIỀU HÀNH: Windows 7 SP1 / 8 / 8.1 / 10 / 11, macOS, Linux (kể cả WSL)
+DATASET  : ~779 câu tiếng Việt có dấu (~1558 câu kèm biến thể không dấu) / 11 nhóm ý định
+
+--------------------------------------------------------------------------------
+0. BẢN NÀY LÀ GÌ?
+--------------------------------------------------------------------------------
+Đây là bản GHÉP của 2 nhánh phát triển trước đó, mỗi nhánh mạnh ở một khía cạnh
+khác nhau, để không phải đánh đổi cái này lấy cái kia:
+
+  NHÁNH "NHIỀU TÍNH NĂNG" mạnh về:
+    - 11 nhóm ý định (thêm search_web, play_media, set_reminder, get_weather,
+      get_datetime, calculate, chitchat bên cạnh 4 nhóm gốc).
+    - Tầng hiểu ý thông minh (nlu_advanced.py): gõ không dấu, viết tắt, sai
+      chính tả, nhiều lệnh 1 câu, ngữ cảnh hội thoại, học từ phản hồi.
+    - PhoBERT tuỳ chọn (chính xác hơn TF-IDF), giọng nói có kho cache offline,
+      STT bằng PhoWhisper.
+
+  NHÁNH "BẢO MẬT & ĐA NỀN TẢNG" mạnh về:
+    - Vá lỗi command injection: KHÔNG còn chạy thẳng văn bản người dùng qua
+      shell=True; chỉ mở app có trong whitelist (config.json).
+    - Thực sự chạy được trên cả Windows / macOS / Linux (không chỉ giả vờ hỗ
+      trợ), gồm cả mở app và điều khiển hệ thống (tắt máy, âm lượng...).
+    - Sửa lỗi trích xuất URL/đường dẫn bị cắt cụt hoặc mất hoa/thường.
+    - Hỗ trợ Windows 7, ép console UTF-8 để không sập khi in tiếng Việt.
+    - 73 unit test, cấu hình tách ra config.json.
+
+BẢN KẾT HỢP giữ TOÀN BỘ các điểm mạnh trên. Xem mục "0-D. CÁC QUYẾT ĐỊNH KHI
+GHÉP" bên dưới để biết những chỗ 2 nhánh xung đột đã được xử lý thế nào.
+
+--------------------------------------------------------------------------------
+0-D. CÁC QUYẾT ĐỊNH KHI GHÉP (đọc mục này nếu bạn đã quen 1 trong 2 bản trước)
+--------------------------------------------------------------------------------
+1. NHÃN "unknown" (nhánh bảo mật) ĐƯỢC GỘP VÀO "chitchat" (nhánh nhiều tính
+   năng): cả hai đều đóng đúng 1 vai trò - "câu ngoài phạm vi điều khiển máy,
+   không thực thi lệnh nào, chỉ trả lời hoặc báo chưa hiểu". Để 2 nhãn riêng
+   biệt cho cùng 1 khái niệm sẽ tạo dữ liệu huấn luyện gần như giống hệt nhau
+   dưới 2 tên khác nhau, làm NHIỄU bộ phân loại thay vì giúp ích. Toàn bộ câu
+   mẫu "unknown" cũ đã được xem lại: câu nào thật ra khớp 1 intent hành động
+   (vd "giá vàng hôm nay bao nhiêu" -> search_web, "hôm nay trời thế nào" ->
+   get_weather) đã được chuyển đúng chỗ; câu nào thực sự ngoài phạm vi mới giữ
+   trong chitchat. execute_command() vẫn áp dụng "confidence_threshold" cho
+   MỌI intent như cũ - đây chính là lưới an toàn thay cho nhãn "unknown" khi
+   gọi trực tiếp predict_intent()/execute_command() không qua NLU().
+
+2. 2 TẦNG NGƯỠNG ĐỘ TỰ TIN cùng tồn tại, phục vụ 2 cách dùng khác nhau:
+     - config.json["confidence_threshold"] (executor.py): 1 ngưỡng đơn giản,
+       dùng khi bạn tích hợp STT riêng và gọi thẳng predict_intent() rồi
+       execute_command() (mục V.4).
+     - CONFIDENCE_ACCEPT / CONFIDENCE_ASK (nlu_advanced.py): 2 ngưỡng tinh vi
+       hơn, cho ra 4 trạng thái (ok/low_confidence/need_confirm/unknown), dùng
+       khi bạn qua tầng NLU() (main.py mặc định dùng đường này).
+
+3. PHONG CÁCH PHẢN HỒI chia làm 2 nhóm trong executor.py:
+     - 4 intent "hành động hệ thống" (open_website, open_app, open_file,
+       system_control): giữ nguyên phong cách "nhật ký" [THỰC THI]/[TỪ CHỐI]/
+       [LỖI] của nhánh bảo mật - không tự động đọc bằng giọng nói, để hành vi
+       nhạy cảm (mở app, tắt máy...) luôn có log rõ ràng, dễ test tự động.
+     - 7 intent "phản hồi hội thoại" (search_web, play_media, set_reminder,
+       get_weather, get_datetime, calculate, chitchat): dùng respond(), có
+       thể ĐỌC bằng giọng nói nếu bật SPEAK_ENABLED (executor.SPEAK_ENABLED,
+       main.py bật qua --speak hoặc gõ "voice").
+
+4. GIỚI HẠN CÒN LẠI (biết trước):
+     - (ĐÃ SỬA ở v6.2) Tách nhiều lệnh khi gõ KHÔNG DẤU: "mo chrome roi phat
+       nhac" nay được tách đúng thành 2 lệnh.
+     - (ĐÃ SỬA ở v6.2) calculate / nhắc nhở hiểu số viết bằng CHỮ: "mười lăm
+       cộng hai mươi bảy" = 42, "nhắc tôi họp lúc bảy giờ sáng" = 7:00.
+     - Mô hình đôi khi nhầm open_app/open_website/play_media với những câu mơ
+       hồ kiểu "mở X nghe/xem" khi X vừa giống bài hát vừa giống trang web
+       (vd "mo youtube nghe nhac"). Thêm câu mẫu phân biệt rõ hơn vào
+       dataset.py cho các trường hợp này sẽ cải thiện thêm.
+     - Xem thêm các giới hạn riêng của Windows 7 ở mục VIII bên dưới.
+
+--------------------------------------------------------------------------------
+0-E. NÂNG CẤP Ở BẢN v6 (08/2026) - ĐỌC TRƯỚC NẾU BẠN ĐANG DÙNG v5
+--------------------------------------------------------------------------------
+1. CHẠY ĐƯỢC NGAY CẢ KHI KHÔNG CÀI scikit-learn:
+   - Mới: lite_model.py - bộ phân loại Naive Bayes n-gram ký tự viết bằng
+     Python thuần, huấn luyện < 1 giây, độ chính xác ~97-98% trên tập kiểm
+     tra; tự động thay thế pipeline TF-IDF khi máy thiếu scikit-learn
+     (trước đây thiếu sklearn là chương trình SẬP ngay lúc khởi động).
+   - scikit-learn/joblib chuyển thành TUỲ CHỌN (xem requirements.txt).
+   - Kiểm tra đang dùng loại model nào:  python main.py --version
+
+2. BẢO MẬT:
+   - Chặn "bom luỹ thừa" (9**9**9) trong lệnh tính toán - trước đây câu này
+     TREO CỨNG chương trình.
+   - "mở file" TỪ CHỐI mọi file có thể chạy được (.exe, .bat, .ps1, .sh...).
+   - Chặn đường dẫn chứa ".." (path traversal).
+
+3. URL/ĐƯỜNG DẪN:
+   - URL giữ nguyên hoa/thường và dấu ? = & # xuyên suốt tầng hiểu ý, kể cả
+     khi model nhận nhầm intent. Vd: "mở youtube.com/watch?v=abc123" giờ mở
+     đúng liên kết, trước đây bị băm thành "youtube.com/watch v abc123".
+
+4. NHẮC NHỞ:
+   - Tự LƯU ra reminders.json và KHÔI PHỤC khi mở lại chương trình (trước
+     đây thoát app là mất sạch, không hề báo).
+   - Lệnh mới: "huy nhac <từ khoá>" (huỷ theo từ khoá) / "huy nhac" (tất cả).
+   - Hiểu thêm: "3h30", "3 giờ rưỡi", "8 giờ kém 15", "11 giờ đêm" (23h),
+     "30 giây nữa", và nhớ được chữ "mai" ("7 giờ sáng mai" -> hẹn ngày mai).
+   - Gõ không dấu vẫn hiểu giờ ("30 phut nua").
+
+5. THỜI TIẾT: viết lại cách tách địa điểm - câu không dấu ("thoi tiet da
+   nang hom nay") giờ trả về đúng "da nang" thay vì nguyên cả câu; đồng thời
+   không còn xoá nhầm chữ "Nẵng" trong "Đà Nẵng".
+
+6. CẤU HÌNH:
+   - 2 ngưỡng confidence_accept / confidence_ask chuyển vào config.json
+     (trước đây viết cứng trong mã nguồn - sửa config không có tác dụng gì).
+   - Lệnh mới: "nap lai" - nạp lại config.json ngay khi đang chạy.
+
+7. DÒNG LỆNH (mới):
+     python main.py --once "mở youtube"      # chạy 1 lệnh rồi thoát
+     python main.py --once "mấy giờ" --json  # xuất JSON cho script khác
+     python main.py --version                # phiên bản + loại model
+   Mã thoát: 0 = thành công, 1 = lệnh lỗi, 2 = không hiểu.
+
+8. KIỂM THỬ: 170 test (tăng từ 73). Chạy bằng:
+     python run_tests.py          # KHÔNG cần cài pytest
+     pytest tests/ -v             # nếu đã cài pytest
+
+9. Sửa lẻ ở bản 6.1:
+   - tts.py: engine giọng nói đã chọn mà hỏng giữa phiên (vd pyttsx3 lỗi
+     "run loop already started") -> tự thử engine khác, trước đây im lặng bỏ cuộc.
+   - phobert_model.py: đường dẫn thư mục model giờ là TUYỆT ĐỐI - chạy từ thư
+     mục nào (Task Scheduler, shortcut...) cũng nhận ra PhoBERT đã huấn luyện.
+
+--------------------------------------------------------------------------------
+0-F. NÂNG CẤP Ở BẢN v6.2 (08/2026) - ĐỌC TRƯỚC NẾU BẠN ĐANG DÙNG v6.1
+--------------------------------------------------------------------------------
+1. SỬA LỖI GIỜ GIẤC NGHIÊM TRỌNG (phát hiện khi rà soát lại v6.1):
+   - "nhắc tôi họp lúc 9 giờ" từng bị hẹn thành 21h (!) vì chữ "tôi" (đại từ)
+     bị nhận nhầm thành buổi "tối" - giờ buổi chỉ được nhận diện trong phần
+     SAU biểu thức giờ (hoặc cụm "tối nay/mai" đứng trước giờ).
+   - "12 giờ đêm" = 0h (nửa đêm, trước đây thành 12h trưa); "1 giờ đêm" = 1h
+     sáng (trước đây thành 13h); hiểu thêm "khuya".
+   - Tên riêng "Sáu" không còn bị nhầm thành từ nối "sau": "nhắc tôi gọi cho
+     Sáu lúc 7 giờ" giờ hẹn đúng 7h thay vì "7 tiếng nữa".
+   - Phục hồi dấu không còn đổi nhầm từ không dấu vốn đã là từ thật (vd "hai
+     mươi" từng bị đổi thành "hải mươi" theo "hải phòng").
+   - Hiểu thêm: "nửa tiếng nữa" (30 phút), "1 tiếng rưỡi nữa" (90 phút), "đặt
+     hẹn giờ 5 phút" (đếm ngược không cần chữ "nữa/sau").
+
+2. SỐ VIẾT BẰNG CHỮ: tính toán và nhắc nhở giờ hiểu được "mười lăm cộng hai
+   mươi bảy" (= 42), "hai phẩy năm nhân bốn" (= 10), "nhắc tôi họp lúc bảy
+   giờ sáng", "đặt báo thức sáu giờ sáng mai"... (đây là giới hạn đã ghi nhận
+   ở mục 0-D của bản trước, nay đã khắc phục).
+
+3. TÁCH NHIỀU LỆNH KHI GÕ KHÔNG DẤU: "mo chrome roi phat nhac" giờ tách đúng
+   thành 2 lệnh (giới hạn mục 0-D khác, nay đã khắc phục).
+
+4. TÍNH TOÁN MỞ RỘNG: "chia cho", "nhân với", "cộng với", "trừ đi", căn bậc
+   ba ("căn bậc ba của 27" = 3), lập phương ("5 lập phương" = 125).
+
+5. Sửa lẻ:
+   - Nhận diện thêm tên miền .ai/.app/.xyz/.me/.tv/.info... ("mở claude.ai").
+   - Đường dẫn Windows dùng dấu / ("C:/Users/...") được nhận diện.
+   - Lệnh "day <câu> = <intent>" kiểm tra tên intent hợp lệ trước khi ghi
+     (tránh gõ nhầm làm nhiễu feedback.csv).
+   - ID nhắc nhở dùng hậu tố ngẫu nhiên (không còn trùng ID khi đặt 2 lời
+     nhắc trong cùng 1 giây).
+   - Sửa URL Notion mặc định bị hỏng trong config; sửa các ký tự tiếng Việt
+     bị hỏng mã hoá còn sót trong tài liệu/comment.
+
+6. KIỂM THỬ: 200 test (tăng từ 170 ở v6.1). Chạy bằng:
+     python run_tests.py          # KHÔNG cần cài pytest
+     pytest tests/ -v             # nếu đã cài pytest
+
+--------------------------------------------------------------------------------
+0-G. NÂNG CẤP Ở BẢN v6.3 (08/2026) - HỖ TRỢ HỆ ĐIỀU HÀNH
+--------------------------------------------------------------------------------
+1. WSL (Windows Subsystem for Linux) được hỗ trợ THẬT SỰ: chương trình tự
+   phát hiện WSL và chuyển tiếp lệnh sang Windows host - chi tiết ở mục
+   VIII-B bên dưới.
+2. Phân biệt Windows 10 / Windows 11 (trước đây gộp chung "Windows 10/11").
+3. Linux hiện đại hơn: âm lượng thử wpctl (PipeWire) trước pactl/amixer;
+   khoá màn hình thêm qdbus (KDE Plasma); chụp màn hình thêm spectacle (KDE),
+   grim (Wayland/Sway), import (ImageMagick).
+4. Lệnh mới:  python main.py --sysinfo   (hoặc gõ "he thong" trong phiên) -
+   in ra báo cáo khả năng của máy: tính năng nào chạy được, thiếu công cụ gì.
+5. KIỂM THỬ: 220 test (tăng từ 200 ở v6.2).
+
+--------------------------------------------------------------------------------
+I. 11 NHÓM Ý ĐỊNH VÀ VÍ DỤ
+--------------------------------------------------------------------------------
+ | Intent          | Ví dụ câu nói                    | Hành động
+-|-----------------|-----------------------------------|------------------
+1| open_website    | "bật google lên"                 | mở trình duyệt (whitelist + fuzzy)
+2| open_app        | "khởi chạy vs code"              | mở app (CHỈ trong whitelist)
+3| open_file       | "mở file báo cáo"                | mở file/thư mục
+4| system_control  | "tắt tiếng loa đi"                | lệnh hệ thống (đa nền tảng)
+5| search_web      | "tìm giá vàng trên google"        | Google Search
+6| play_media      | "phát nhạc trữ tình"              | YouTube search
+7| set_reminder    | "nhắc tôi họp lúc 3 giờ chiều"    | hẹn giờ + popup + đọc to
+8| get_weather     | "thời tiết đà nẵng thế nào"       | mở tìm kiếm thời tiết
+9| get_datetime    | "mấy giờ rồi"                      | đọc giờ/ngày
+10| calculate      | "15 cộng 27 bằng bao nhiêu"        | tính an toàn + đọc kết quả
+11| chitchat       | "xin chào"                          | trả lời hội thoại / báo chưa hiểu
+
+Lệnh hệ thống được chuẩn hoá thành: shutdown, restart, lock, sleep, logout,
+mute, unmute, volume_up, volume_down, screenshot.
+
+--------------------------------------------------------------------------------
+II. CẤU TRÚC THƯ MỤC
+--------------------------------------------------------------------------------
+vi_voice_assistant/
+  NỀN TẢNG DÙNG CHUNG
+  |- text_utils.py          : chuẩn hoá văn bản + bỏ dấu (dùng chung mọi module)
+  |- platform_utils.py      : phát hiện hệ điều hành + ép console UTF-8
+  |- logging_setup.py       : ghi log ra logs/assistant.log
+  |- config.py + config.json: cấu hình web/app/file map + ngưỡng (tự sinh)
+
+  DỮ LIỆU & HIỂU Ý
+  |- dataset.py             : ~760 câu mẫu (11 nhóm) + augment không dấu +
+  |                           hàm sinh dữ liệu + xuất/nhập CSV
+  |- intent_model.py        : huấn luyện (TF-IDF + LogisticRegression/SVM),
+  |                           trích xuất thực thể (giữ nguyên hoa/thường cho
+  |                           URL/đường dẫn), phân tích thời gian, phân tích
+  |                           biểu thức toán AN TOÀN (parse_math_expression);
+  |                           tự động dùng PhoBERT thay TF-IDF nếu đã huấn luyện
+  |- nlu_advanced.py         : tầng HIỂU Ý THÔNG MINH (tuỳ chọn) - gõ không
+  |                           dấu, viết tắt, sai chính tả, nhiều lệnh 1 câu,
+  |                           ngữ cảnh, hỏi lại, xác nhận lệnh nguy hiểm
+  |- train_nlu.py            : huấn luyện HIỂU Ý bản nâng cao (tăng cường dữ
+  |                           liệu + đặc trưng kép + GridSearch + phân tích lỗi)
+  |- phobert_model.py         : lớp PhoBertIntentClassifier - nạp & dự đoán
+  |                           bằng model PhoBERT đã fine-tune
+  |- train_phobert.py         : FINE-TUNE PhoBERT (cần torch + transformers)
+
+  THỰC THI & GIỌNG NÓI
+  |- executor.py            : execute_command() - thực thi 11 intent, whitelist
+  |                           bảo mật, đa nền tảng (Windows/macOS/Linux)
+  |- tts.py                 : đọc phản hồi bằng giọng nói (kho cache + 4 engine)
+  |- stt.py                 : nghe qua mic - SpeechRecognition (nhanh, cần
+  |                           mạng) hoặc PhoWhisper (offline, lớp STT đầy đủ)
+  |- train_tts.py            : tạo kho giọng sẵn / thu giọng riêng / chuẩn bị
+  |                           dataset VietTTS
+  |- main.py                : chương trình demo - CLI flags (--dry-run/--voice/
+  |                           --speak) + REPL đầy đủ (mic, day, nhac nho, quen)
+
+  KIỂM THỬ & KHÁC
+  |- tests/                 : 220 unit test (pytest) cho mọi module trên
+  |- requirements.txt       : thư viện cần cài (ghim bản cho Windows 7)
+  |- train_on_colab.ipynb   : notebook huấn luyện HIỂU Ý trên Google Colab
+  |- train_tts_colab.ipynb  : notebook huấn luyện GIỌNG NÓI trên Colab
+  |- HUONG_DAN_SU_DUNG.txt  : file bạn đang đọc
+
+  TỰ SINH RA KHI CHẠY (không có sẵn trong gói)
+  |- config.json            : cấu hình web/app/file map (tự tạo lần đầu chạy)
+  |- intent_model.pkl       : model TF-IDF sau khi huấn luyện
+  |- phobert_model/         : model PhoBERT sau khi chạy train_phobert.py
+  |- nlu_report.txt         : báo cáo chất lượng mô hình (từ train_nlu.py)
+  |- feedback.csv           : câu máy chưa hiểu + câu bạn dạy lại
+  |- voice_cache/           : kho giọng đã tạo sẵn (từ train_tts.py cache)
+  |- my_voice/              : giọng bạn tự thu (từ train_tts.py record)
+  |- logs/assistant.log     : nhật ký chạy chương trình
+
+--------------------------------------------------------------------------------
+III. CÀI ĐẶT
+--------------------------------------------------------------------------------
+Bước 1. Cài Python:
+        - Windows 8/8.1/10/11, macOS, Linux: Python 3.9 trở lên
+        - Windows 7 SP1: BẮT BUỘC Python 3.8.x - xem mục VIII "HỖ TRỢ WINDOWS 7"
+        (NHỚ tick ô "Add Python to PATH" khi cài)
+
+Bước 2. Giải nén, mở terminal tại thư mục vừa giải nén:
+        cd đường/dẫn/tới/vi_voice_assistant
+
+Bước 3. (Khuyến nghị) Tạo môi trường ảo:
+        python -m venv venv
+        venv\Scripts\activate        (Windows)
+        source venv/bin/activate     (macOS/Linux)
+
+Bước 4. Cài thư viện bắt buộc:
+        pip install -r requirements.txt
+
+        (Muốn dùng --speak/--voice/PhoBERT/chạy test, mở requirements.txt,
+         bỏ dấu # ở dòng tương ứng rồi cài lại, hoặc cài thẳng, ví dụ:
+         pip install pyttsx3 SpeechRecognition pyaudio pytest rapidfuzz)
+
+--------------------------------------------------------------------------------
+IV. CÁCH SỬ DỤNG
+--------------------------------------------------------------------------------
+1) HUẤN LUYỆN MÔ HÌNH (tạo file intent_model.pkl)
+        python intent_model.py
+   -> In báo cáo precision/recall/f1 (~95-97% trên tập test). Nếu quên bước
+   này, main.py cũng sẽ tự huấn luyện lần đầu.
+
+   MUỐN HUẤN LUYỆN KỸ HƠN (khuyến nghị, độ chính xác cao hơn với câu khó):
+        python train_nlu.py               # đầy đủ, 1-3 phút
+        python train_nlu.py --fast        # nhanh, bỏ GridSearch
+
+2) CHẠY DEMO
+        python main.py                    # gõ phím (mặc định)
+        python main.py --dry-run          # chỉ phân tích, không thực thi
+        python main.py --speak            # đọc phản hồi bằng giọng nói
+        python main.py --voice            # nói qua micro (SpeechRecognition)
+        python main.py --voice --speak    # hội thoại 2 chiều bằng giọng nói
+
+   LỆNH ĐIỀU KHIỂN TRONG DEMO:
+        mic          -> bật/tắt nghe qua micro
+        voice        -> bật/tắt đọc phản hồi bằng giọng nói
+        test         -> bật/tắt chế độ CHỈ PHÂN TÍCH (không thực thi) - nên
+                        bật khi thử lệnh "tắt máy" để không bị shutdown thật
+        nhac nho     -> xem danh sách nhắc nhở đang chờ
+        huy nhac [từ khoá] -> huỷ nhắc nhở (bỏ trống = huỷ tất cả)
+        nap lai      -> nạp lại config.json, không cần khởi động lại
+        he thong     -> báo cáo khả năng của máy (hệ điều hành, công cụ có sẵn)
+        day <câu> = <intent>  -> dạy trợ lý hiểu đúng câu đó
+        quen         -> xoá trí nhớ ngữ cảnh hội thoại
+        help / giup  -> hiện lại hướng dẫn
+        thoat        -> thoát
+
+3) KẾT QUẢ TRẢ VỀ (JSON chuẩn - GIỮ NGUYÊN schema cũ)
+        {
+          "intent": "open_website",
+          "target": "google",
+          "confidence": 0.9312
+        }
+
+   Riêng set_reminder có thêm khoá "time":
+        {"intent": "set_reminder", "target": "họp nhóm", "confidence": 0.88,
+         "time": {"type": "clock", "hour": 15, "minute": 0}}
+   time.type: "delay" (kèm minutes) hoặc "clock" (kèm hour, minute).
+
+   Riêng calculate có thêm khoá "result":
+        {"intent": "calculate", "target": "15 + 27", "confidence": 0.95, "result": 42}
+
+4) TÍCH HỢP VỚI PHẦN STT CỦA BẠN (không qua NLU/main.py)
+        from intent_model import load_model, predict_intent
+        from executor import execute_command
+
+        model = load_model()                 # nạp 1 lần khi khởi động
+        text = stt_result                    # văn bản từ Whisper/PhoWhisper/Google STT
+        result = predict_intent(text, model)
+        execute_command(result)
+
+5) NÂNG CẤP HIỂU Ý BẰNG PhoBERT (khuyến nghị nếu muốn chính xác hơn nữa)
+        pip install torch transformers
+        python train_phobert.py
+   -> tạo thư mục phobert_model/. Từ lần chạy main.py sau, hệ thống TỰ ĐỘNG
+   dùng PhoBERT thay vì TF-IDF. Máy yếu/không GPU: chạy trên Google Colab rồi
+   copy thư mục phobert_model/ về máy.
+
+6) CHẠY BỘ KIỂM THỬ
+        pip install pytest
+        pytest tests/ -v
+
+--------------------------------------------------------------------------------
+V. TÙY CHỈNH (RẤT QUAN TRỌNG)
+--------------------------------------------------------------------------------
+Chạy chương trình 1 lần để config.json tự được tạo, sau đó MỞ config.json
+(không cần sửa code Python) và chỉnh:
+
+  * "website_map"                          : thêm trang web của bạn
+  * "app_map_windows"/"app_map_macos"/      : thêm app - LƯU Ý bảo mật: CHỈ
+    "app_map_linux"                          app có trong danh sách này mới
+                                              mở được; chương trình TỰ CHỌN
+                                              đúng mục theo hệ điều hành đang
+                                              chạy
+  * "file_map"                             : trỏ tới file thật trên máy
+  * "confidence_threshold"                 : ngưỡng độ tự tin (mặc định 0.35)
+  * "dangerous_actions"                    : lệnh cần hỏi xác nhận (mặc định
+                                              shutdown/restart/logout)
+
+Muốn mô hình thông minh hơn: mở dataset.py, thêm câu mẫu vào HANDWRITTEN hoặc
+thêm đối tượng vào WEBSITES/APPS/FILES/..., rồi huấn luyện lại.
+
+CÁCH 2 - DÙNG FILE CSV RIÊNG (không cần sửa code):
+  1. python -c "import dataset; dataset.export_csv()"  -> dataset_intent.csv
+  2. Tạo my_dataset.csv (2 cột: text,intent)
+  3. Trong intent_model.py, thêm trước khi huấn luyện:
+        from dataset import load_extra_csv
+        load_extra_csv("my_dataset.csv")
+  4. Huấn luyện lại: python intent_model.py (hoặc train_nlu.py / train_phobert.py)
+
+CHỈNH NGƯỠNG NLU: mở nlu_advanced.py, sửa CONFIDENCE_ACCEPT (0.45) và
+CONFIDENCE_ASK (0.25). Hay hỏi lại quá -> hạ số xuống. Hay làm bừa -> tăng lên.
+
+ĐỔI SANG SVM: trong intent_model.py đổi train_model(algorithm="svm").
+
+--------------------------------------------------------------------------------
+VI. MÔ-ĐUN GIỌNG NÓI (tts.py) VÀ NHẬN DIỆN GIỌNG NÓI (stt.py)
+--------------------------------------------------------------------------------
+tts.py tự dò engine theo thứ tự ưu tiên:
+  0. Kho giọng sẵn (python train_tts.py cache) - nhanh nhất, offline
+  1. pyttsx3 (offline) -> pip install pyttsx3
+  2. Windows SAPI / macOS `say` - có sẵn, không cần cài
+  3. gTTS (giọng hay nhất, cần internet) -> pip install gTTS
+
+CHO MÁY HỌC NÓI - 3 MỨC ĐỘ (python train_tts.py ...):
+  cache   : tạo sẵn mp3 cho câu hay dùng (2 phút, khuyên làm ngay)
+  record  : thu giọng của chính bạn (30-60 phút) -> dataset LJSpeech
+  prepare : chuẩn bị dataset VietTTS để train trên Colab (cần GPU, nhiều giờ)
+  check   : kiểm tra giọng hiện tại
+
+stt.py có 2 lớp:
+  - is_available()/listen_once(): nhanh, dùng SpeechRecognition (cần mạng)
+  - class STT: đầy đủ, dùng PhoWhisper (offline sau lần tải đầu ~1GB), tự
+    phát hiện im lặng để dừng ghi âm, dự phòng Google STT nếu thiếu torch.
+
+--------------------------------------------------------------------------------
+VII. BẢO MẬT (ĐỌC KỸ NẾU BẠN TỰ MỞ RỘNG executor.py)
+--------------------------------------------------------------------------------
+- action_open_app() CHỈ mở app có trong whitelist (config.json); không suy
+  đoán/chạy thẳng văn bản người dùng nói. Muốn thêm app: sửa config.json.
+- Mọi subprocess dùng list-args, KHÔNG dùng shell=True, tránh command
+  injection (ký tự như & | ; ` $() trong câu nói không thể chạy lệnh khác).
+- action_open_file() chỉ chấp nhận target là đường dẫn trực tiếp nếu chỉ chứa
+  ký tự an toàn (regex _SAFE_PATH_RE); còn lại phải khớp file_map.
+- Lệnh nguy hiểm (dangerous_actions trong config.json) LUÔN hỏi xác nhận
+  (y/n) trước khi chạy, ở cả executor.py lẫn nlu_advanced.py.
+- parse_math_expression() dùng ast.parse() + kiểm tra whitelist node an toàn
+  (chỉ số + - * /), KHÔNG dùng eval() trực tiếp trên câu nói.
+
+--------------------------------------------------------------------------------
+VIII. HỖ TRỢ WINDOWS 7 (CHI TIẾT)
+--------------------------------------------------------------------------------
+1) CÀI ĐÚNG PYTHON 3.8.x (BẮT BUỘC): tải Python 3.8.10 (bản 3.8 cuối cùng có
+   trình cài đặt .exe) tại https://www.python.org/downloads/release/python-3810/
+   Từ Python 3.9 trở đi, trình cài đặt chính thức TỪ CHỐI chạy trên Windows 7.
+   Lưu ý: Python 3.8 đã hết vòng đời hỗ trợ bảo mật chính thức - đây là đánh
+   đổi bắt buộc nếu muốn chạy trên Windows 7.
+
+2) CÀI "Microsoft Visual C++ Redistributable 2015-2022 (x64)":
+   https://aka.ms/vs/17/release/vc_redist.x64.exe - nếu không, numpy/scipy/
+   scikit-learn (và rapidfuzz nếu cài thêm) có thể báo "DLL load failed" dù
+   `pip install` không báo lỗi gì. Đảm bảo Windows 7 đã cài SP1 + KB2999226.
+   Riêng rapidfuzz: nếu vẫn lỗi, chương trình TỰ ĐỘNG chuyển sang difflib có
+   sẵn trong Python - không cần làm gì thêm, chỉ kém chính xác hơn 1 chút.
+
+3) FONT & HIỂN THỊ TIẾNG VIỆT: `SetConsoleOutputCP(65001)` (ép console sang
+   UTF-8) đã ghi nhận trên một số máy Windows 7 làm HỎNG VĨNH VIỄN khả năng
+   ghi ra console cho cả phần còn lại của phiên chạy (khác Windows 10/11 chỉ
+   lỗi thoáng qua). Vì vậy, kể từ bản này, trên Windows 7 chương trình KHÔNG
+   tự đổi code page nữa - ưu tiên "chạy được, có thể mất dấu" hơn "có dấu
+   nhưng có thể im re không in được gì".
+
+   Hệ quả: trên Windows 7, chữ có dấu (ă, â, đ, ê, ô, ơ, ư...) có thể hiển
+   thị sai (dấu hỏi hoặc ký tự lạ) thay vì đúng dấu - đây là ĐÁNH ĐỔI CÓ CHỦ
+   ĐÍCH, không phải lỗi. Nếu muốn có dấu đầy đủ và chấp nhận rủi ro nói trên,
+   có 2 cách:
+     a) Đổi font CMD sang Consolas/Lucida Console (Raster Fonts mặc định của
+        Windows 7 không hiển thị được tiếng Việt có dấu dù encoding đúng),
+        RỒI tự bật lại UTF-8 bằng:  set VIVOICE_FORCE_UTF8_CONSOLE=1
+        trước khi chạy python (biến này ép dùng lại đường cũ, kể cả trên
+        Windows 7 - chỉ dùng nếu chấp nhận rủi ro treo/im lặng như trên).
+     b) Dùng terminal thay thế tự vẽ chữ (không qua conhost.exe của Windows,
+        nên ổn định hơn hẳn với UTF-8 trên Windows 7): ConEmu
+        (https://conemu.github.io) hoặc Cmder (https://cmder.app) - cài vào,
+        mở cmd.exe/venv qua đó thay vì Command Prompt gốc.
+
+4) GIỚI HẠN ĐÃ BIẾT: mục "camera" trong app_map_windows dùng URI kiểu Store
+   App (UWP), CHỈ có từ Windows 8 trở lên - trên Windows 7, chương trình tự
+   phát hiện và từ chối kèm giải thích rõ ràng. Sửa "camera" trong config.json
+   trỏ tới phần mềm webcam thật trên máy bạn nếu cần.
+
+5) TÓM TẮT LỆNH CÀI ĐẶT:
+        cd đường\dẫn\tới\vi_voice_assistant
+        python -m venv venv
+        venv\Scripts\activate
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        python intent_model.py
+        python main.py
+
+--------------------------------------------------------------------------------
+VIII-B. HỖ TRỢ WSL (Windows Subsystem for Linux) - MỚI Ở v6.3
+--------------------------------------------------------------------------------
+Khi chạy TRONG WSL, platform.system() báo "Linux" nhưng phần lớn lệnh Linux
+(systemctl, pactl, xdg-open...) KHÔNG hoạt động vì không có systemd thật,
+máy chủ âm thanh hay màn hình thật. Từ v6.3, chương trình TỰ PHÁT HIỆN WSL
+và chuyển tiếp sang Windows host qua cơ chế interop (WSL cho phép gọi thẳng
+file .exe của Windows):
+
+  - Lệnh hệ thống (tắt máy, khởi động lại, khoá, ngủ, đăng xuất)
+      -> shutdown.exe / rundll32.exe của Windows
+  - Âm lượng (mute / unmute / tăng / giảm)
+      -> phím ảo qua powershell.exe
+  - Chụp màn hình -> PowerShell (ảnh lưu vào thư mục Pictures của Windows)
+  - Mở web / mở file -> wslview (cài: sudo apt install wslu) hoặc explorer.exe
+  - Đọc giọng nói   -> SAPI của Windows host (qua powershell.exe)
+  - Mở app          -> vẫn dùng app_map_linux; app đồ hoạ cần WSLg (Windows 11)
+
+Nếu interop bị tắt, chương trình báo rõ "không gọi được lệnh Windows từ WSL"
+kèm gợi ý kiểm tra /etc/wsl.conf, thay vì âm thầm thất bại như trước.
+
+Kiểm tra máy đang hỗ trợ tính năng nào (mọi hệ điều hành):
+      python main.py --sysinfo
+
+--------------------------------------------------------------------------------
+IX. HUẤN LUYỆN TRÊN GOOGLE COLAB
+--------------------------------------------------------------------------------
+TẠI SAO DÙNG COLAB? Không cần cài đặt gì (đã có sklearn), có GPU miễn phí cho
+PhoBERT/TTS. LƯU Ý: Colab CHỈ dùng để HUẤN LUYỆN - phần thực thi lệnh (mở
+app, tắt máy) BẮT BUỘC chạy trên máy thật của bạn.
+
+CÁCH NHANH NHẤT: vào https://colab.research.google.com, tải lên
+train_on_colab.ipynb, chạy lần lượt từng cell, tải intent_model.pkl về, chép
+vào cùng thư mục main.py.
+
+Huấn luyện giọng nói riêng: mở train_tts_colab.ipynb (bật T4 GPU).
+
+VẤN ĐỀ PHIÊN BẢN scikit-learn: file .pkl nên được load bằng CÙNG phiên bản
+scikit-learn giữa Colab và máy bạn (import sklearn; print(sklearn.__version__)).
+Nếu ngại, cứ huấn luyện thẳng trên máy bằng python intent_model.py.
+
+--------------------------------------------------------------------------------
+X. XỬ LÝ LỖI THƯỜNG GẶP
+--------------------------------------------------------------------------------
+1. "ModuleNotFoundError: No module named 'sklearn'" (hoặc 'rapidfuzz')
+   -> pip install -r requirements.txt
+
+2. "ImportError: DLL load failed" (thường trên Windows 7)
+   -> Cài Visual C++ Redistributable - xem mục VIII.2. Riêng rapidfuzz: tự
+   động chuyển sang difflib, không cần làm gì thêm.
+
+3. Tiếng Việt lỗi font trong terminal
+   -> Windows: xem mục VIII.3. macOS/Linux: đảm bảo terminal dùng UTF-8.
+
+4. "Không tìm thấy đường dẫn" khi mở file
+   -> Sửa "file_map" trong config.json cho đúng đường dẫn thật.
+
+5. "[TỪ CHỐI] Chưa biết ứng dụng..." khi mở app
+   -> Hành vi CÓ CHỦ Ý (whitelist bảo mật). Thêm app vào "app_map_windows"/
+   "app_map_macos"/"app_map_linux" trong config.json.
+
+6. Máy bị tắt ngoài ý muốn khi test
+   -> Chạy với --dry-run hoặc gõ "test" trong demo. Lệnh nguy hiểm luôn hỏi
+   xác nhận (y/n). Nếu lỡ gõ tắt máy: mở terminal gõ `shutdown /a` (Windows).
+
+7. Nhắc nhở không kêu
+   -> Nhắc nhở chỉ sống khi main.py còn chạy. Muốn nhắc nhở sống lâu dài,
+   dùng Task Scheduler (Windows) / cron / launchd thay vì threading.Timer.
+
+8. Dự đoán sai ý định
+   -> Thêm câu mẫu vào dataset.py (mục V) rồi huấn luyện lại. Đọc nlu_report.txt
+   (sau khi chạy train_nlu.py) để biết chính xác nhóm nào cần thêm dữ liệu.
+
+9. "unmute" không có tác dụng dù đã "mute" (Windows)
+   -> pip install pycaw comtypes để điều khiển âm lượng CHÍNH XÁC qua Windows
+   Core Audio API thay vì phím ảo (vốn chỉ bật/tắt luân phiên).
+
+10. "PermissionError: [WinError 31] A device attached to the system is not
+    functioning" ngay khi vừa chạy main.py
+    -> Lỗi đã biết của console Windows (thường gặp khi chạy qua terminal của
+    trình soạn thảo dùng ConPTY, vd VS Code): sau khi đổi code page console
+    sang UTF-8, in MỘT LẦN một khối văn bản nhiều dòng (banner) có thể khiến
+    WriteConsoleW lỗi - xem https://github.com/python/cpython/issues/82052.
+    main.py đã dùng platform_utils.safe_print() (in từng dòng, tự dự phòng
+    bản không dấu nếu vẫn lỗi) để tránh việc này. Nếu bạn vẫn gặp lỗi này ở
+    chỗ khác (vd bạn tự thêm print() một khối văn bản dài), hãy thay bằng
+    safe_print() thay vì print().
+
+================================================================================
+Chúc bạn làm dự án thành công!
+================================================================================

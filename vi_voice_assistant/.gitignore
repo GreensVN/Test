@@ -1,0 +1,78 @@
+# Python v7.0
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# File sinh ra lúc chạy (model cache, nhắc nhở, log, phản hồi)
+*.pkl
+reminders.json
+feedback.csv
+my_dataset.csv
+nlu_report.txt
+.history.json
+logs/
+voice_cache/
+phobert_model/
+my_voice/
+giong_nhan_ban/
+
+# Môi trường ảo / notebook
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Zip gốc (đã merge)
+*.zip
+
+# ---------------------------------------------------------------------------
+# TRỌNG SỐ MÔ HÌNH AI — KHÔNG BAO GIỜ COMMIT
+# ---------------------------------------------------------------------------
+# Một số mô hình giọng nói mang giấy phép phi thương mại (CC BY-NC, CPML).
+# Đóng gói chúng vào repo MIT là phát hành sai giấy phép.
+# Để script tự tải về máy người dùng — khi đó họ là người chấp nhận
+# giấy phép, không phải bạn.
+giong_ai/
+giong_nc_model/
+dataset_giong/
+*.onnx
+*.onnx.json
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+# HuggingFace cache
+.cache/
+*.bin
+
+# Audio tạm
+*.wav
+*.mp3
+!tests/data/*.wav
+!tests/data/*.mp3
+
+# Env files
+.env
+.env.local
+

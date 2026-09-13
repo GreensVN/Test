@@ -1,0 +1,262 @@
+================================================================================
+  GIỌNG NÓI AI TIẾNG VIỆT — CHỌN MÔ HÌNH VÀ TRAIN
+  Tiêu chí: DÙNG THƯƠNG MẠI ĐƯỢC + ĐƯỢC MỞ MÃ NGUỒN DỰ ÁN CỦA BẠN
+================================================================================
+
+--------------------------------------------------------------------------------
+PHẦN 1 — SỬA LỖI "Could not find PyAudio; check installation"
+--------------------------------------------------------------------------------
+
+LỖI BẠN GẶP:
+    [STT] Lỗi khi ghi âm: Could not find PyAudio; check installation
+    [WARNING] stt: Lỗi khi ghi âm: Could not find PyAudio; check installation
+    (Không nhận diện được giọng nói, bạn có thể gõ tay bên dưới)
+
+NGUYÊN NHÂN CHÍNH XÁC:
+  Hàm stt.listen_once() (chế độ --voice) gọi sr.Microphone().
+  Bên trong SpeechRecognition, sr.Microphone.__init__ làm đúng một việc này:
+
+        try:
+            import pyaudio
+        except ImportError:
+            raise AttributeError("Could not find PyAudio; check installation")
+
+  Tức là sr.Microphone() BẮT BUỘC phải có PyAudio, không có đường vòng.
+  Mà PyAudio lại không có wheel cho Python 3.13 → bạn không cài được nó.
+
+  Lưu ý: đây là lỗi Ở MÃ NGUỒN, không phải lỗi cài đặt. Dù bạn đã cài
+  sounddevice thành công thì bản stt.py CŨ vẫn đâm vào sr.Microphone().
+
+SỠ KHÔNG ĐỒNG NHẤT TRONG BẢN CŨ:
+  - Lớp STT (lệnh "mic")   → dùng sounddevice  → CHẠY ĐƯỢC
+  - listen_once() (cờ --voice) → dùng sr.Microphone() → ĐÒI PyAudio → LỖI
+  Cùng một dự án, hai đường thu âm khác nhau. Bạn rơi đúng vào đường hỏng.
+
+ĐÃ SỬA (bản stt.py trong gói này):
+  1. Thêm hàm _record_audiodata_sd() — thu âm bằng sounddevice rồi đóng gói
+     thành sr.AudioData. Thay thế hoàn toàn sr.Microphone().
+  2. listen_once() giờ ƯU TIÊN sounddevice, chỉ rơi xuống sr.Microphone()
+     nếu không có sounddevice.
+  3. Bắt riêng AttributeError (đúng loại mà SpeechRecognition ném ra) và in
+     hướng dẫn khắc phục thay vì báo lỗi cụt lủn.
+  4. is_available() giờ kiểm tra CẢ bộ giải mã LẪN bộ thu âm, nên không
+     còn báo "sẵn sàng" rồi chết giữa chừng nữa.
+  5. Thêm has_pyaudio() để chẩn đoán.
+
+VIỆC BẠN CẦN LÀM:
+    pip install sounddevice numpy
+    python main.py --voice
+
+--------------------------------------------------------------------------------
+PHẦN 2 — BẪY GIẤY PHÉP BẠN PHẢI BIẾT TRƯỚC
+--------------------------------------------------------------------------------
+
+MỖI DỰ ÁN TTS CÓ HAI GIẤY PHÉP TÁCH RỌI:
+
+     [1] GIẤY PHÉP CỦA CODE   (engine, thư viện Python)
+     [2] GIẤY PHÉP CỦA WEIGHTS (file model đã train)
+
+Giấy phép SIẾT CHẶT HƠN sẽ quyết định. Code MIT + weights CC-BY-NC
+= BẠN KHÔNG ĐƯỢC DÙNG THƯƠNG MẠI.
+
+Đây là chỗ hầu hết người Việt làm TTS bị dính. XTTS, F5-TTS, MMS, viet-tts
+đều được gọi là "open source" nhưng weights đều phi thương mại.
+
+--------------------------------------------------------------------------------
+PHẦN 3 — MÔ HÌNH NÊN DÙNG
+--------------------------------------------------------------------------------
+
+=== LỰA CHỌN SỐ 1 (KHUYẾN NGHỊ): Piper + vi_VN-vais1000-medium ===
+
+  Code engine  : Piper TTS (rhasspy/piper) — MIT
+  Weights      : vi_VN-vais1000-medium
+  Dataset gốc  : VAIS-1000 (IEEE DataPort) — CC BY 4.0
+  Thương mại   : ĐƯỢC
+  MỞ mã nguồn : ĐƯỢC (CC BY không có điều khoản copyleft)
+  Điều kiện    : PHẢI GHI CÔNG
+  Nặng         : 63 MB, chạy CPU thời gian thực, không cần GPU
+  Giọng        : nữ, 22050 Hz
+
+  Cài:
+      pip install piper-tts==1.2.0 onnxruntime
+      python giong_noi_ai.py tai
+      python giong_noi_ai.py thu "Xin chào Việt Nam"
+
+  Vì sao chọn bản 1.2.0 chứ không phải mới nhất:
+      Piper đã chuyển nhà sang OHF-Voice/piper1-gpl và đổi sang GPL-3.0.
+      GPL là copyleft — nếu bạn nhúng thẳng vào code, dự án của bạn cũng
+      phải GPL. Bản piper-tts 1.2.0 vẫn là MIT nên tự do hơn nhiều.
+      (Nếu bắt buộc dùng bản mới: gọi piper như MỘT TIẾN TRÌNH RIÊNG qua
+       subprocess thay vì import — tránh được ràng buộc GPL linking.)
+
+  CÂU GHI CÔNG (dán vào README hoặc mục About):
+      Giọng nói tổng hợp dùng mô hình vi_VN-vais1000-medium của Piper TTS,
+      huấn luyện trên bộ dữ liệu VAIS-1000 (CC BY 4.0).
+
+  File giong_ai/ATTRIBUTION.txt được tạo tự động khi tải. GIỮ NÓ LẠI.
+
+
+=== LỰA CHỌN SỐ 2: MeloTTS-Vietnamese ===
+
+  Code + weights: MIT (cả hai)
+  Thương mại    : ĐƯỢC
+  MỞ mã nguồn  : ĐƯỢC
+  Ghi công     : không bắt buộc (nhưng nên)
+  Nặng          : ~500 MB, cần torch
+  Chất lượng    : cao hơn Piper rõ rệt
+
+  https://huggingface.co/nmcuong/MeloTTS-Vietnamese
+  https://github.com/manhcuong02/MeloTTS_Vietnamese
+
+  RỦI RO CẦN BIẾT: weights do cộng đồng train, KHÔNG công bố rõ nguồn dữ
+  liệu âm thanh. Giấy phép ghi MIT nhưng chuỗi cung ứng dữ liệu không
+  kiểm chứng được. Dùng cho sản phẩm thương mại lớn thì nên cân nhắc.
+  Piper + VAIS-1000 có đường dây pháp lý RÕ RÀNG hơn.
+
+
+=== LỰA CHỌN SỐ 3 (SẠCH NHẤT): Train giọng của chính bạn ===
+
+  Bạn thu giọng mình → bạn sở hữu 100% → không ai kiện được.
+  Xem PHẦN 5.
+
+--------------------------------------------------------------------------------
+PHẦN 4 — MÔ HÌNH PHẢI TRÁNH (dù được gọi là "open source")
+--------------------------------------------------------------------------------
+
+  [X] Coqui XTTS v2 / viXTTS
+      Code MPL-2.0 nhưng weights theo CPML — PHI THƯƠNG MẠI.
+      Coqui đóng cửa tháng 01/2024 nên KHÔNG CÒN AI BÁN giấy phép thương mại.
+      viXTTS fine-tune từ XTTS → thừa hưởng luôn ràng buộc đó.
+      Đặt COQUI_TOS_AGREED=1 CHỈ là bạn đồng ý điều khoản, KHÔNG gỡ bỏ nó.
+
+  [X] F5-TTS (và F5-TTS-Vietnamese)
+      Code MIT nhưng checkpoint gốc CC BY-NC 4.0 — PHI THƯƠNG MẠI.
+
+  [X] facebook/mms-tts-vie
+      Toàn bộ MMS (code + weights) là CC BY-NC 4.0 — PHI THƯƠNG MẠI.
+
+  [X] dangvansam/viet-tts
+      Code Apache-2.0 NHƯNG model card ghi rõ: "Pre-trained models and audio
+      samples are licensed under the CC BY-NC License, based on an in-the-wild
+      dataset." — PHI THƯƠNG MẠI.
+
+  [X] Piper vi_VN-vivos-x_low
+      Dataset VIVOS là CC BY-NC-SA 4.0. NC = phi thương mại.
+      SA = nếu dùng thì sản phẩm phái sinh bị buộc cùng giấy phép.
+
+  [X] Piper vi_VN-25hours_single-low
+      Model card ghi giấy phép "Unknown" (dữ liệu InfoRe Technology).
+      Không rõ = không an toàn. Đây là giọng NAM duy nhất có sẵn — muốn
+      giọng nam thương mại thì phải tự train (PHẦN 5).
+
+  Xem bảng đầy đủ bất kỳ lúc nào:
+      python giong_noi_ai.py giay-phep
+
+--------------------------------------------------------------------------------
+PHẦN 5 — DATASET ĐỂ TRAIN GIỌNG TIẾNG VIỆT
+--------------------------------------------------------------------------------
+
+  DÙNG ĐƯỢC THƯƠNG MẠI:
+
+  [OK] Mozilla Common Voice (vi) — CC0 (public domain)
+       https://commonvoice.mozilla.org/vi/datasets
+       Sạch nhất về pháp lý, không cần ghi công. Nhiều người nói, thu
+       bằng mic tạp → hợp cho STT hơn TTS. Muốn dùng cho TTS phải lọc
+       lấy một người nói và chuẩn hoá âm lượng.
+
+  [OK] VAIS-1000 — CC BY 4.0
+       https://ieee-dataport.org/documents/vais-1000-vietnamese-speech-synthesis-corpus
+       1000 câu, 1 giọng nữ, thu studio. Đây là bộ chuẩn cho TTS tiếng Việt.
+       Phải ghi công.
+
+  [OK] Google FLEURS (vi_vn) — CC BY 4.0
+       https://huggingface.co/datasets/google/fleurs
+       ~10 giờ. Phải ghi công.
+
+  [OK] Giọng chính bạn tự thu — bạn sở hữu 100%
+       python train_tts.py record --count 300
+       AN TOÀN TUYỆT ĐỐI về pháp lý.
+
+  TRÁNH:
+
+  [X]  VIVOS — CC BY-NC-SA 4.0 (phi thương mại)
+  [X]  InfoRe — giấy phép không rõ ràng
+  [X]  Dữ liệu cào từ YouTube / podcast / sách nói — vi phạm bản quyền
+       giọng đọc, kể cả khi "ai cũng làm thế"
+
+--------------------------------------------------------------------------------
+PHẦN 6 — TRAIN GIỌNG RIÊNG (tóm tắt)
+--------------------------------------------------------------------------------
+
+Chi tiết đầy đủ từng lệnh:
+    python giong_noi_ai.py huong-dan-train
+
+TÓM TẮT 5 BƯỚC:
+
+  1. Thu 300-500 câu (~30-45 phút audio) trên Windows:
+         python train_tts.py record --count 300
+         python giong_noi_ai.py chuan-bi-data
+
+  2. Cài môi trường train trên WSL2 / Linux / Google Colab.
+     piper_train KHÔNG chạy được trên Windows.
+
+  3. Tiền xử lý:  python -m piper_train.preprocess --language vi ...
+
+  4. Fine-tune TỪ checkpoint vais1000 (không train từ đầu — tốn 20+ giờ
+     audio và vài ngày GPU). Fine-tune chỉ cần 2-6 giờ GPU.
+
+  5. Xuất .onnx, copy về thư mục giong_ai/ trên Windows, khai báo thêm
+     vào PIPER_VOICES trong giong_noi_ai.py.
+
+GIẤY PHÉP KẾT QUẢ FINE-TUNE:
+  Khởi tạo từ checkpoint CC BY 4.0 → model mới của bạn vẫn phải ghi công
+  VAIS-1000. CC BY cho phép sửa đổi + thương mại hoá, chỉ yêu cầu ghi công.
+  Muốn không còn ràng buộc gì: train từ đầu bằng dữ liệu CC0 hoặc giọng
+  của chính bạn.
+
+--------------------------------------------------------------------------------
+PHẦN 7 — TÍCH HỢP VÀO CHƯƠNG TRÌNH
+--------------------------------------------------------------------------------
+
+tts.py đã được nối sẵn. Chuỗi ưu tiên mới:
+
+     kho giọng cache
+       ↓
+     GIỌNG AI PIPER      <-- mới thêm, đứng đầu
+       ↓
+     pyttsx3
+       ↓
+     Windows SAPI
+       ↓
+     gTTS
+
+Chưa cài piper thì _speak_piper() trả False và rơi xuống tầng dưới — không
+làm hỏng gì cả.
+
+Dùng bình thường:
+    python main.py --speak
+
+Bắt buộc dùng giọng AI (báo lỗi nếu thiếu, thay vì âm thầm rơi tầng):
+    python -c "import tts; tts.ENGINE='piper'; tts.speak('Xin chào')"
+
+Gọi trực tiếp:
+    import giong_noi_ai
+    giong_noi_ai.speak("Xin chào")
+    giong_noi_ai.synth_to_file("Xin chào", "ra.wav")
+
+--------------------------------------------------------------------------------
+PHẦN 8 — LỆNH KIỂM TRA
+--------------------------------------------------------------------------------
+
+    python giong_noi_ai.py kiem-tra        # đã cài piper + tải giọng chưa
+    python giong_noi_ai.py giay-phep       # bảng giấy phép
+    python -c "import tts; print(tts.available_engines())"
+    python -c "import stt; print(stt.is_available(), stt.has_pyaudio())"
+    python -c "import sounddevice; print(sounddevice.query_devices())"
+    python main.py --version
+
+================================================================================
+MIỄN TRỪ TRÁCH NHIỆM: Đây là tóm tắt kỹ thuật dựa trên model card và file
+giấy phép công khai tại thời điểm viết, KHÔNG phải tư vấn pháp lý. Trước khi
+phát hành thương mại, hãy tự đọc lại giấy phép gốc — chúng có thể thay đổi.
+================================================================================
