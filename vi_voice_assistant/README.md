@@ -3,7 +3,7 @@
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
-> **v7.3 (2026-09-13)** - **cài đặt & tiện nghi**: `pip install .` chạy được thật
+> **v7.3 (2026-09-20)** - **cài đặt & tiện nghi**: `pip install .` chạy được thật
 > (`vi-assistant`, `vi-doctor`, `vi-train`, `vi-voice`), dữ liệu người dùng rời
 > khỏi `site-packages` (mới `paths.py`), có `install.py` tự phát hiện môi trường
 > và tự chữa lỗi pip (PEP 668), REPL có ↑/↓ + Tab + gợi ý khi gõ sai tên lệnh,

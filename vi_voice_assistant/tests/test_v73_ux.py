@@ -28,6 +28,11 @@ import pytest
 PKG_DIR = Path(__file__).resolve().parent.parent          # .../vi_voice_assistant
 REPO_ROOT = PKG_DIR.parent
 sys.path.insert(0, str(PKG_DIR))
+# Test dưới đây import theo TÊN package (vi_voice_assistant.paths) vì phải kiểm tra
+# cả entry điểm trong pyproject lẫn `python -m`. Chế độ nhúng (chỉ copy thư mục con,
+# chạy từ trong đó) không có cha của PKG_DIR trên đường dẫn import, nên tự thêm vào.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import config  # noqa: E402
 import executor  # noqa: E402

@@ -138,7 +138,7 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
-- v7.3 (2026-09-13): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests
+- v7.3 (2026-09-20): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests
 - v7.2 (2026-09-13): 15 lỗi thật + 347 lint -> 0, 251 tests pass, refactor C901
 - v7.1 (2026-09-13): Dọn cấu trúc dự án, đồng bộ docs/version, typing hiện đại
 - v7.0 (2026-09-13): Fix regex, Path, Popen, 220 tests pass

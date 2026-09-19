@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v7.3 (2026-09-13) - Cài đặt & tiện nghi: `pip install .` chạy ĐƯỢC, 330 test
+## v7.3 (2026-09-20) - Cài đặt & tiện nghi: `pip install .` chạy ĐƯỢC, 330 test
 
 ### Vì sao bản này tồn tại
 v7.2 dọn code nhưng KHÔNG ai kiểm tra xem dự án **sau khi cài đặt** còn chạy
@@ -51,6 +51,11 @@ cài đặt, dùng hằng ngày, và tốc độ.
 7. **`import run_tests` giữa một phiên pytest che mất pytest thật** (gán
    `sys.modules["pytest"]` vô điều kiện) -> fixture/mark của các file chạy sau
    hỏng khó hiểu. Nay chỉ lắp shim khi KHÔNG có pytest thật.
+8. **Test của v7.3 tụt ở chế độ nhúng** (chỉ copy thư mục con rồi chạy,
+   không cài gì): hai test import theo tên package nên cần thư mục gốc trên đường
+   dẫn import. File test tự thêm gốc vào `sys.path`; bây giờ bộ test xanh ở cả ba cách
+   chạy: `pytest`, `python vi_voice_assistant/run_tests.py` từ gốc, và
+   `python run_tests.py` từ bên trong package không cần `PYTHONPATH`.
 
 ### Tiện lợi (CLI)
 - **Nói thẳng ra lệnh, không cần cờ**: `vi-assistant "mở youtube"` (thay vì
