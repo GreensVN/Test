@@ -448,6 +448,28 @@ GIỌNG NÓI AI - HAI TẦNG (thay cho `train_tts.py` đã bỏ từ v7.x):
   python giong_nc.py kiem-tra | dong-y | cai | thu | so-sanh
       tầng phi thương mại (MMS/VITS mở) - PHẢI đọc giấy phép trước (`dong-y`)
 
+KHO GIỌNG ĐỌC SẴN (voice_cache) - ĐỊNH DẠNG THẬT, TỰ LÀM BẰNG PYTHON THUẦN
+  tts.py đọc <thư mục dữ liệu>/voice_cache/index.csv, mỗi dòng:
+      <câu nói>,<tên file âm thanh trong cùng thư mục>
+  Khoá TRUY CẬP là `text.strip().lower()` của câu nói - giữ nguyên dấu, KHÔNG
+  chuẩn hoá NFC/NFD. Vì vậy nên sinh khoá bằng chính Python (không gõ tay):
+      python - <<'PY'
+      import csv, pathlib
+      thu_muc = pathlib.Path("~/.local/share/vi_voice_assistant/voice_cache").expanduser()
+      (thu_muc / "index.csv").write_text("", encoding="utf-8")
+      with (thu_muc / "index.csv").open("w", newline="", encoding="utf-8") as f:
+          w = csv.writer(f)
+          for f_mp3 in sorted(thu_muc.glob("*.mp3")):
+              cau_noi = f_mp3.stem.replace("_", " ")          # tên file -> câu nói
+              w.writerow([cau_noi.strip().lower(), f_mp3.name])
+      print("đã ghi", len(list(thu_muc.glob("*.mp3"))), "mục")
+      PY
+  Lưu ý THẬT: dự án chỉ ĐỌC kho giọng, không có lệnh tạo mp3 (công cụ tạo
+  `train_tts.py cache` đã bị bỏ). Cách nhanh nhất để có file mp3 cho một câu là
+  tầng pyttsx3/gTTS hoặc `python giong_noi_ai.py thu`; sau đó đặt vào thư mục trên.
+  Nếu index.csv có dòng trỏ tới file không tồn tại, dòng đó bị BỎ QUA (tự lành),
+  không phát lỗi giữa câu.
+
 stt.py có 2 lớp:
   - is_available()/listen_once(): nhanh, dùng SpeechRecognition (cần mạng)
   - class STT: đầy đủ, dùng PhoWhisper (offline sau lần tải đầu ~1GB), tự
