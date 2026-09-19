@@ -1,4 +1,4 @@
-name: CI - Trợ lý ảo tiếng Việt v7.2
+name: CI - Trợ lý ảo tiếng Việt v7.3
 
 on:
   push:
@@ -90,14 +90,124 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
-    - name: Install pytest only
-      run: python -m pip install pytest
-    - name: Test
-      working-directory: vi_voice_assistant
-      run: python -m pytest tests/ -q
+    - name: Test with pytest
+      run: |
+        python -m pip install pytest
+        cd vi_voice_assistant && python -m pytest tests/ -q
     - name: CLI smoke
       working-directory: vi_voice_assistant
       run: |
         python main.py --version
+        python main.py --doctor
         python main.py --once "mở google" --dry-run --json
-        python run_tests.py -q
+        python main.py "15 cộng 27 bằng bao nhiêu" --dry-run
+        python diagnostic.py --json > /tmp/doctor.json
+        python -c "import json;print('doctor json ok' if json.load(open('/tmp/doctor.json')) else '')"
+
+  # v7.3 - runner nhúng PHẢI chạy được khi máy không có pytest (đó là lý do nó
+  # tồn tại). Thêm job riêng vì từ trước tới nay không môi trường nào trong CI
+  # thiếu pytest, nên các lỗi kiểu "runner báo missing argument: caplog" hoặc
+  # parametrize bị bung thành từng ký tự không ai thấy.
+  embedded-runner:
+    name: Built-in runner (không có pytest)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Run run_tests.py (no pytest installed)
+      shell: bash
+      working-directory: vi_voice_assistant
+      run: python run_tests.py -q
+
+  # v7.3 - KIỂM TRA CÁI MÀ KHÔNG AI KIỂM TRA: bản cài đặt thật.
+  # `pip install .` của v7.2 tạo wheel ĐỦ FILE nhưng DÙNG KHÔNG ĐƯỢC
+  # (ModuleNotFoundError: No module named 'platform_utils'), README vẫn khoe
+  # "pip install -e ." được - bằng chứng là CI chưa từng cài thử.
+  install:
+    name: pip install + console scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install from the repo (no deps required)
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install .
+    - name: Console scripts must run
+      shell: bash
+      run: |
+        vi-assistant --version
+        vi-assistant --doctor
+        vi-assistant --dry-run --once "mở youtube"
+        vi-doctor --json > doctor.json
+        python -c "import json;d=json.load(open('doctor.json'));print('ok' if d['sections'] else 'empty')"
+    - name: Module entry point + run from another cwd
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        cd ~
+        python -m vi_voice_assistant --version
+    - name: User data must NOT be written into site-packages
+      shell: bash
+      run: |
+        python - <<'PY'
+        import json, pathlib, sysconfig, subprocess, sys
+        pkg = pathlib.Path(sysconfig.get_paths()["purelib"]) / "vi_voice_assistant"
+        before = {p.name for p in pkg.glob("*") if p.suffix in (".json", ".log", ".pkl", ".csv")}
+        subprocess.run([sys.executable, "-m", "vi_voice_assistant", "--once", "mở youtube",
+                        "--dry-run"], check=True, cwd=str(pathlib.Path.home()))
+        after = {p.name for p in pkg.glob("*") if p.suffix in (".json", ".log", ".pkl", ".csv")}
+        new = after - before
+        assert not new, f"bản cài đã ghi dữ liệu người dùng vào site-packages: {new}"
+        print("site-packages sạch:", sorted(after) or "(khong co file du lieu)")
+        PY
+        test -f ~/.local/share/vi_voice_assistant/config.json || echo "(chưa cần config ở user dir - ok)"
+    - name: Wheel must not carry private runtime files
+      shell: bash
+      run: |
+        python -m pip install wheel
+        python -m pip wheel . --no-deps -w dist
+        python - <<'PY'
+        import glob, zipfile
+        wheel = glob.glob("dist/*.whl")[0]
+        names = zipfile.ZipFile(wheel).namelist()
+        bad = [n for n in names if any(k in n for k in
+               (".history.json", "reminders.json", "feedback.csv", "lite_model.pkl",
+                "logs/", "__pycache__", "/tests/"))]
+        assert not bad, f"wheel rò rỉ file runtime/tests: {bad}"
+        need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
+                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py"}
+        missing = need - set(names)
+        assert not missing, f"wheel thiếu: {missing}"
+        print("wheel ok:", len(names), "files")
+        PY
+
+  # Cai bang script huong dan cua chinh du an (install.py) - kiem tra no khong
+  # bao loi khi may khong co pytest va khong mang (chi --check/--dry-run).
+  bootstrap:
+    name: install.py bootstrap
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Diagnose only (no network needed)
+      run: python install.py --check
+    - name: Plan without running pip
+      run: |
+        python install.py --dry-run --profile ml | tee install.log
+        grep -q "pip install --upgrade scikit-learn" install.log
+        python install.py --offline --skip-tests | tee -a install.log

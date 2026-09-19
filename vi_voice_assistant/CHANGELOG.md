@@ -1,5 +1,103 @@
 # CHANGELOG
 
+## v7.3 (2026-09-13) - Cài đặt & tiện nghi: `pip install .` chạy ĐƯỢC, 330 test
+
+### Vì sao bản này tồn tại
+v7.2 dọn code nhưng KHÔNG ai kiểm tra xem dự án **sau khi cài đặt** còn chạy
+được không. Vừa kiểm tra là thấy nó chết ngay. Bản này nhắm đúng ba chỗ:
+cài đặt, dùng hằng ngày, và tốc độ.
+
+### Lỗi nghiêm trọng đã sửa (cài đặt / đóng gói)
+1. **`pip install .` tạo ra gói DÙNG KHÔNG ĐƯỢC** [CRITICAL]
+   - Triệu chứng: `vi-assistant` chết bằng
+     `ModuleNotFoundError: No module named 'platform_utils'`.
+   - Nguyên nhân: wheel chứa đủ file `.py` nhưng package không có `__init__.py`,
+     mà toàn bộ mã nguồn dùng import PHẲNG (thiết kế "chạy thẳng từ thư mục").
+   - Sửa: thêm `vi_voice_assistant/__init__.py` (nối thư mục gói vào `sys.path`
+     MỘT LẦN, không sửa 20 file import) + `__main__.py` cho
+     `python -m vi_voice_assistant`; khai báo tường minh `packages` +
+     `package-data` trong pyproject.
+2. **Dữ liệu người dùng bị ghi vào `site-packages`**
+   - `config.json`/`reminders.json`/`feedback.csv`/`logs/`/model `.pkl` đều lấy
+     `Path(__file__).parent` làm chỗ lưu -> máy cài system-wide (read-only) thì
+     `PermissionError` giữa phiên, và MỌI dữ liệu bị xoá khi nâng cấp gói.
+   - Sửa: module `paths.py` mới, quy tắc
+     `$VI_ASSISTANT_HOME` → thư mục source (nếu ghi được) →
+     `%LOCALAPPDATA%` / `~/Library/Application Support` / `$XDG_DATA_HOME`;
+     thư mục không tạo được thì rơi về temp dir có PID (KHÔNG bao giờ crash).
+3. **File riêng tư của người build bị phát tán trong wheel**
+   - `include-package-data = true` khiến setuptools vơ cả file đang có trên đĩa
+     (`.history.json` - tức NHỮNG CÂU ĐÃ NÓI với trợ lý) vào wheel.
+   - Sửa: `include-package-data = false` + `package-data` liệt kê đích danh
+     6 file cần thiết; thêm bước CI kiểm wheel không có file runtime/tests.
+4. **`config.json` không đi theo wheel** -> bản đã cài chạy với cấu hình mặc định
+   trong code, mất whitelist. Nay `paths.migrate_from_package_dir()` chép một lần
+   (không bao giờ ghi đè) dữ liệu từ gói sang thư mục người dùng.
+5. **`python run_tests.py -q` chết trên máy chưa cài pytest**: runner tự định nghĩa
+   argparse nhưng không có cờ `-q` -> `unrecognized arguments`, trong khi CI
+   `no-deps` và `install.py` chính xác là gọi như vậy. Nay nhận `-q` thật và bỏ
+   qua cờ lạ (`parse_known_args`).
+6. **Runner nhúng thiếu 4 khả năng của pytest** - mỗi cái đều biến test HỢP LỆ
+   thành lỗi trên máy chưa cài pytest:
+   - fixture-nhà-fixture (`def fx(tmp_path, monkeypatch)`) -> TypeError;
+   - fixture `yield` -> test nhận generator, teardown không chạy;
+   - thiếu `caplog` -> missing argument;
+   - `monkeypatch.setattr(..., raising=False)` -> TypeError;
+   - `parametrize` một tham số là LIST bị bung thành TỪNG KÝ TỰ
+     (`main.py: error: unrecognized arguments: - h i s t o r y`).
+   Thêm: `__spec__` cho module giả (nếu không, `import pytest` chết bằng
+   `pytest.__spec__ is None`), và `_detect_real_pytest()` để shim không tự nhận
+   mình là pytest thật ở lần import thứ hai.
+7. **`import run_tests` giữa một phiên pytest che mất pytest thật** (gán
+   `sys.modules["pytest"]` vô điều kiện) -> fixture/mark của các file chạy sau
+   hỏng khó hiểu. Nay chỉ lắp shim khi KHÔNG có pytest thật.
+
+### Tiện lợi (CLI)
+- **Nói thẳng ra lệnh, không cần cờ**: `vi-assistant "mở youtube"` (thay vì
+  bắt nhớ `--once`); `--once` vẫn giữ nguyên.
+- **`--yes` / `-y`**: bỏ bước xác nhận cho script/CI; `_confirm()` khi không có
+  bàn phím tương tác nay nói rõ NGUYÊN NHÂN + chỉ cách khắc phục, thay vì "[HỦY]"
+  lạnh lùng.
+- **`--doctor` (và `vi-doctor`)**: chẩn đoán cài đặt trong một lần chạy -
+  Python, nền tảng, đang chạy source hay pip, thư mục dữ liệu có ghi được không,
+  config hợp lệ + đếm whitelist THẬT theo nền tảng, model đã cache/fingerprint còn
+  hợp không, từng thư viện tuỳ chọn, engine TTS, giọng AI - và in ĐÚNG lệnh cần gõ
+  (đã khử trùng lặp). Có `--json` cho công cụ.
+- **Phím ↑/↓ gọi lại lệnh cũ + Tab hoàn thành tên lệnh** trong REPL (dùng
+  `readline` nếu có, nhập history từ `.history.json` sẵn có; không có readline
+  thì REPL y hệt trước - nâng cấp tuỳ chọn, không phải yêu cầu mới).
+- **Gợi ý khi gõ sai lệnh**: `he thogng` -> "Có phải bạn muốn gõ  he thong ?".
+  Bảng gợi ý lấy trực tiếp từ table đăng ký lệnh, nên thêm lệnh mới tự được gợi ý.
+  An toàn: KHÔNG BAO GIỜ gợi ý lệnh thoát (`hát` không còn bị xui "thoát"), và
+  chỉ áp cho câu <= 2 từ.
+- Console scripts mới: `vi-doctor`, `vi-train`, `vi-voice`; `train_nlu`/`run_tests`
+  có `main()` trả mã exit thật + `--lite` (huấn luyện model không cần sklearn).
+- `install.py` ở thư mục gốc: cài đặt một lệnh, chỉ dùng stdlib -
+  `--check`, `--profile core|ml|voice|full|all|dev`, `--offline`, `--dry-run`,
+  `--index-url`; tự xử lý PEP 668 theo trình tự an toàn
+  (`--user` trước, `--break-system-packages` chỉ khi hết cách) và nhắc tạo venv
+  bằng đúng cú pháp của nền tảng đang chạy.
+
+### Hiệu năng
+- `text_utils.normalize_text()` / `strip_diacritics()` có cache LRU 8192 câu:
+  tầng NLU gọi lại cùng một chuỗi hàng chục lần cho MỘT câu nói.
+  Đo: 3.4µs -> **0.32µs** mỗi lần lặp lại; `predict_intent` 172µs -> **140µs**/câu.
+- Đầu vào không phải chuỗi được ép sang `str` thay vì `AttributeError`.
+- Startup đã nhanh sẵn (83ms toàn bộ tiến trình, model lite cache 5ms) nên KHÔNG
+  "tối ưu" thêm bằng cách hy sinh độ đọc được của code; con số đo được ghi trong
+  test để không ai phải đoán lại.
+
+### Kiểm chứng
+- 251 -> **330 test**; `pytest` và `python run_tests.py` (môi trường KHÔNG có
+  pytest) đều **330 pass / 0 fail** - xác nhận bằng venv sạch không cài pytest.
+- `ruff check .` = 0 (thêm `install.py`, `paths.py`, `diagnostic.py` vào vùng lint).
+- Cài thật + chạy thật: `pip install .` trong venv → `vi-assistant --version`,
+  `vi-doctor`, `python -m vi_voice_assistant --once ...` từ `cwd` khác;
+  chmod read-only thư mục cài đặt vẫn chạy, dữ liệu rơi vào `~/.local/share/...`.
+- Wheel mới: 34 file, `__init__.py`/`__main__.py`/`config.json`/`diagnostic.py`
+  có mặt; `.history.json`, `*.pkl`, `tests/`, `__pycache__` không có.
+
+
 ## v7.2 (2026-09-13) - Trả nợ kỹ thuật: 347 cảnh báo lint -> 0, 15 lỗi thật đã sửa
 
 ### Tổng quan

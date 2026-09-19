@@ -31,10 +31,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
+# v7.3: config được lưu ở THƯ MỤC DỮ LIỆU của người dùng (xem paths.py) thay vì
+# ngay trong thư mục cài đặt - máy cài "pip install ." cho cả hệ thống trước đây
+# dính PermissionError ngay lần đầu lưu cấu hình.
+CONFIG_PATH = data_path("config.json")
 
 # --- Validation helpers ---
 REQUIRED_KEYS = {

@@ -1,5 +1,5 @@
 """
-train_nlu.py v7.2
+train_nlu.py v7.3
 ----------------
 v7.0 nâng cấp:
 - Thêm type hints, pathlib, logging
@@ -74,13 +74,14 @@ except ImportError:  # pragma: no cover
 
 from dataset import get_dataset_as_lists
 from nlu_advanced import TEEN_CODE, smart_normalize, strip_accents
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "intent_model.pkl")
-REPORT_PATH = os.path.join(BASE_DIR, "nlu_report.txt")
+MODEL_PATH = str(data_path("intent_model.pkl"))
+REPORT_PATH = str(data_path("nlu_report.txt"))
 EXTRA_CSV = os.path.join(BASE_DIR, "my_dataset.csv")
-FEEDBACK_CSV = os.path.join(BASE_DIR, "feedback.csv")
+FEEDBACK_CSV = str(data_path("feedback.csv"))
 
 random.seed(42)
 
@@ -382,14 +383,32 @@ def quick_test(model):
         safe_print(f"  {s:<40} -> {r['intent']:<15} | {r['target'][:22]:<22} | {r['confidence']}")
 
 
-if __name__ == "__main__":
+def main(argv=None) -> int:
+    """Điểm vào CLI (mới v7.3) - cũng là console script ``vi-train``.
+
+    Trả về mã thoát: 0 khi huấn luyện xong, 1 khi model không lưu được (trước
+    đây script luôn thoát 0 kể cả khi fail -> chạy trong CI không phát hiện
+    được).
+    """
     setup_console()
     parser = argparse.ArgumentParser(description="Huấn luyện mô hình hiểu ý nâng cao")
     parser.add_argument("--fast", action="store_true", help="bỏ GridSearch cho nhanh")
     parser.add_argument("--no-augment", action="store_true", help="không tăng cường dữ liệu")
-    args = parser.parse_args()
+    parser.add_argument("--lite", action="store_true",
+                        help="chỉ huấn luyện model lite (không cần scikit-learn)")
+    args = parser.parse_args(argv)
 
-    model = train(fast=args.fast, use_augment=not args.no_augment)
+    if args.lite:
+        from lite_model import train_lite_model
+
+        return 0 if train_lite_model(show_report=True) else 1
+
+    try:
+        model = train(fast=args.fast, use_augment=not args.no_augment)
+    except RuntimeError as e:                    # thieu scikit-learn / loi luu model
+        safe_print(f"[LỖI] {e}")
+        safe_print("       Máy chưa cài scikit-learn? Dùng bản nhẹ:  python train_nlu.py --lite")
+        return 1
     try:
         quick_test(model)
     except Exception as e:
@@ -400,3 +419,8 @@ if __name__ == "__main__":
         print(f"(Bỏ qua test nhanh: {e})", file=sys.stderr)
 
     safe_print("\nXONG! Giờ chạy:  python main.py")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

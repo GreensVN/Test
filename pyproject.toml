@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vi-voice-assistant"
-version = "7.2.0"
+version = "7.3.0"
 description = "Trợ lý ảo tiếng Việt - hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng"
 readme = "vi_voice_assistant/README.md"
 license = { text = "MIT" }
@@ -101,12 +101,43 @@ Issues = "https://github.com/GreensVN/Test/issues"
 Changelog = "https://github.com/GreensVN/Test/blob/main/vi_voice_assistant/CHANGELOG.md"
 
 [project.scripts]
+# v7.3: them 3 lenh nua - trc dc chi co 2 lenh trung gia (cung tro ve main:main)
+# va main.py khong co ham mien phien ban/chan doan rieng. Moi lenh bay gio la
+# mot cong cu that: xem may thieu gi (vi-doctor), huan luyen (vi-train), giong AI
+# (vi-voice). Tat ca deu tra ma exit code that de dung duoc trong script/CI.
 vi-assistant = "vi_voice_assistant.main:main"
 tro-ly-ao = "vi_voice_assistant.main:main"
+vi-doctor = "vi_voice_assistant.diagnostic:main"
+vi-train = "vi_voice_assistant.train_nlu:main"
+vi-voice = "vi_voice_assistant.giong_noi_ai:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["vi_voice_assistant*"]
+# v7.3 - SUA LOI DONG GOI THAT SU (do duoc bang `pip wheel` + chay thu):
+#   * package khong co __init__.py nen setuptools xu ly kieu "namespace":
+#     wheel du .py nhung `vi-assistant` chet ngay voi
+#         ModuleNotFoundError: No module named 'platform_utils'
+#     vi toan bo ma nguon dung import PHANG. Da them __init__.py (nom duong dan
+#     sys.path) + __main__.py (cho `python -m vi_voice_assistant`);
+#   * config.json / huong dan / requirements.txt KHONG duoc dua vao wheel ->
+#     ban cai dat chay ma thieu whitelist (mo app/mo web khong tai duoc danh sach).
+# Liệt kê tường minh (thay vi packages.find) để tests/ và cache không lọt vào wheel.
+[tool.setuptools]
+packages = ["vi_voice_assistant"]
+# FALSE co y do: `include-package-data = true` khiến setuptools lay ca nhung
+# file duoc git THEO DOI (kể cả file đang bị .gitignore nhưng co trên dĩa lúc
+# build) vao wheel. Thuc nghiem ban 7.3 cho thay `.history.json` - lich su cau
+# noi cua ngu dung build - bi dong goi tra theo moi lan `pip install .`.
+# Chi duoc publish nhung file khai bao tuong minh o package-data ben duoi.
+include-package-data = false
+
+[tool.setuptools.package-data]
+vi_voice_assistant = [
+    "config.json",
+    "requirements.txt",
+    "HUONG_DAN_SU_DUNG.txt",
+    "GIAY_PHEP_MODEL.md",
+    "CHANGELOG.md",
+    "README.md",
+]
 
 [tool.ruff]
 line-length = 100

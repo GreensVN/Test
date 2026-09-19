@@ -1,5 +1,5 @@
 """
-executor.py v7.2
+executor.py v7.3
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from config import load_config
+from paths import data_path
 from platform_utils import (
     is_windows7_or_older,
     is_wsl,
@@ -106,10 +107,12 @@ _BARE_DOMAIN_RE = re.compile(r"^[\w.\-]+\.[a-z]{2,}(?:/\S*)?$", re.IGNORECASE)
 
 HOME = Path.home()
 ACTIVE_REMINDERS: list[dict[str, Any]] = []
+# v7.3: --yes của CLI bật cờ này (xem set_auto_confirm). Mac dinh LUON hoi lai.
+AUTO_CONFIRM = False
 ACTIVE_REMINDERS_LOCK = threading.RLock()
 
 BASE_DIR = Path(__file__).resolve().parent
-REMINDERS_PATH = BASE_DIR / "reminders.json"
+REMINDERS_PATH = data_path("reminders.json")   # v7.3: xem paths.py
 
 EXECUTABLE_EXTENSIONS = {
     ".exe",
@@ -208,11 +211,31 @@ def _best_match(
     return None, None
 
 
+def set_auto_confirm(enabled: bool) -> bool:
+    """Bật/tắt "không hỏi lại lệnh nguy hiểm" (cờ --yes của CLI). Trả về trạng thái mới.
+
+    Tách thành hàm riêng (thay vì để main.py gán thẳng thuộc tính module) để
+    caller khác - test, NLU, script - bật/tắt được và đọc lại được trạng thái.
+    """
+    global AUTO_CONFIRM
+    AUTO_CONFIRM = bool(enabled)
+    return AUTO_CONFIRM
+
+
 def _confirm(prompt: str) -> bool:
+    # --yes / AUTO_CONFIRM: cho pipeline tự động hoá. Vẫn in ra MỘT DÒNG để
+    # trong log/terminal thấy rõ lệnh này đã KHÔNG được con người xác nhận.
+    if AUTO_CONFIRM:
+        safe_print(f"[TỰ XÁC NHẬN --yes] {prompt}")
+        return True
     try:
         answer = input(f"[XÁC NHẬN] {prompt} (y/n): ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        safe_print("\n[HUỶ] Không lấy được xác nhận - huỷ để an toàn.")
+        # Xay ra khi chay trong CI/script (stdin dong/het) - truoc day chi in
+        # "[HỦY] Không lấy được xác nhận" khiến người dùng tưởng mình bị từ chối.
+        # Nay nêu nguyên nhân + đúng cách khắc phục (--yes).
+        safe_print("\n[HUỶ] Không lấy được xác nhận (không có bàn phím tương tác) - huỷ để an toàn")
+        safe_print("      (dùng --yes nếu bạn chắc chắn muốn chạy lệnh này)")
         return False
     return answer in ("y", "yes", "co", "có", "ok")
 

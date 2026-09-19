@@ -19,10 +19,14 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from paths import data_path
 from text_utils import normalize_text
 
 BASE_DIR = Path(__file__).resolve().parent
-LITE_MODEL_PATH = BASE_DIR / "lite_model.pkl"
+# v7.3: model cache nam trong thu muc du lieu (paths.py) - site-packages co the
+# chi doc, va moi lan nang cấp pip sẽ XOÁ sạch model đã huấn luyện nếu nó nằm
+# trong package.
+LITE_MODEL_PATH = data_path("lite_model.pkl")
 
 FORMAT_VERSION = 2  # tăng lên vì đổi protocol + cải tiến nhỏ
 CHAR_NGRAM_SIZES = (3, 4)

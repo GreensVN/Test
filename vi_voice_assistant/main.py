@@ -1,5 +1,14 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.2
+main.py - Trợ lý ảo tiếng Việt v7.3
+
+v7.3 nâng cấp (CÀI ĐẶT & TIỆN NGHI):
+- Nói THẲNG ra lệnh: `python main.py "mở youtube"` (giống --once, khỏi nhớ cờ)
+- --doctor: chẩn đoán cài đặt (thư viện, model, config, quyền ghi, giọng nói)
+  và in ĐÚNG lệnh cần gõ để khắc phục; --yes cho script/CI
+- REPL: ↑/↓ gọi lại lệnh cũ + Tab hoàn thành tên lệnh (khi có readline); gõ SAI
+  tên lệnh thì gợi ý lệnh đúng - trước đây rơi vào "tôi chưa hiểu ý bạn"
+- history/model/log chuyển sang THƯ MỤC DỮ LIỆU (paths.py): `pip install .`
+  không còn ghi vào site-packages (máy cài system-wide từng dính PermissionError)
 
 v7.1 nâng cấp (tiếp nối v7.0):
 - Thêm --debug, --no-banner, --config, --engine
@@ -17,8 +26,8 @@ import logging
 import signal
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 setup_console()
@@ -30,7 +39,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.2"
+APP_VERSION = "7.3"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -66,7 +75,7 @@ LỆNH ĐIỀU KHIỂN:
 
 YES_WORDS = {"có", "co", "ừ", "u", "ủ", "đúng", "dung", "ok", "y", "yes", "vâng", "ừừ", "o", "k"}
 
-HISTORY_PATH = Path(__file__).resolve().parent / ".history.json"
+HISTORY_PATH = data_path(".history.json")   # v7.3: thu muc du lieu - xem paths.py
 MAX_HISTORY = 200
 
 
@@ -83,13 +92,28 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=f"{APP_NAME} - demo hiểu ý + thực thi",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='Ví dụ: python main.py --once "mở youtube" --json',
+        epilog=(
+            'Ví dụ:\n'
+            '  python main.py "mở youtube"              # noi thang ra lenh, khong can --once\n'
+            '  python main.py --dry-run "tắt máy tính"  # chi phan tich\n'
+            '  python main.py --yes "mở firefox"        # khong hoi lai lenh nguy hiem\n'
+            '  python main.py --doctor                  # chan doan cai dat / moi truong\n'
+            '  python main.py --once "15 + 27" --json   # xuat JSON cho may doc'
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Chỉ phân tích, không thực thi")
     parser.add_argument("--voice", action="store_true", help="Nhận lệnh qua micro")
     parser.add_argument("--speak", action="store_true", help="Đọc phản hồi bằng giọng nói")
     parser.add_argument(
         "--once", metavar="CÂU_LỆNH", help='Chạy 1 lệnh rồi thoát (vd: --once "mở youtube")'
+    )
+    # v7.3: cho phép noi thang ra lenh nhu moi CLI khac (`vi-assistant mo youtube`)
+    # thay vi phai nho co --once; thieu no thi nguoi dung goi
+    #     python main.py "mở youtube"
+    # va nhan "unrecognized arguments" - nghe nhu tro ly bi hong.
+    parser.add_argument(
+        "text", nargs="?", metavar="CÂU_LỆNH",
+        help="Chạy ngay một câu lệnh rồi thoát (giống --once, cho tiện gõ)",
     )
     parser.add_argument("--json", action="store_true", help="In kết quả JSON (dùng kèm --once)")
     parser.add_argument(
@@ -109,6 +133,14 @@ def parse_args() -> argparse.Namespace:
         help="Chọn engine TTS",
     )
     parser.add_argument("--history", action="store_true", help="In lịch sử lệnh rồi thoát")
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Tự động xác nhận các lệnh nguy hiểm (tắt máy/khoá máy...) - cho script/CI",
+    )
+    parser.add_argument(
+        "--doctor", action="store_true",
+        help="Chẩn đoán cài đặt: thư viện, model, config, quyền ghi, giọng nói + in lệnh khắc phục",
+    )
     return parser.parse_args()
 
 
@@ -250,7 +282,14 @@ def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False) 
             )
         if dry_run:
             continue
-        if result.get("status") in ("ok", "low_confidence"):
+        status = result.get("status")
+        # v7.3: `--yes` phai co tac dung o CAI che do `--once`. Trc day no chi
+        # duoc executor dung den, con run_once luon tra ma 2 cho `need_confirm`
+        # -> nguoi dung dung script (vi-assistant --yes "tat may tinh") bi tu
+        # choi chinh lenh ma ho da bao "khoi hoi", va khong co loi bao nao.
+        if status == "need_confirm" and executor.AUTO_CONFIRM:
+            status = "ok"
+        if status in ("ok", "low_confidence"):
             if not execute_command(result):
                 exit_code = 1
         else:
@@ -288,7 +327,12 @@ def _print_version() -> None:
 
 
 def _apply_cli_options(args: argparse.Namespace) -> int | None:
-    """Áp --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
+    """Áp --yes / --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
+    if args.yes:
+        # executor._confirm() trả về True mà không hỏi - chủ ý cho script/CI.
+        # Chỉ cắt BƯỚC XÁC NHẬN, không cắt bước CHẶN lệnh ngoài whitelist.
+        executor.set_auto_confirm(True)
+        safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")
     if args.config:
         try:
             executor.reload_config(args.config)
@@ -353,6 +397,11 @@ class ReplContext:
     text: str
     low: str
 
+
+# Lệnh thoát: dùng ở HAI nơi (dispatcher + bộ gợi ý gõ sai) nên đặt thành hằng
+# số; trước đây là tuple chữ kê khai ngay trong if -> muốn loại nó ra khỏi gợi ý
+# phải copy lại danh sách, dễ lệch.
+_EXIT_COMMANDS = ("thoat", "thoát", "exit", "quit", "q")
 
 _CONTROL_COMMANDS: dict = {}      # từ khoá đúng -> hàm xử lý
 _CONTROL_PREFIXES: list = []      # (các prefix, hàm xử lý) - cho lệnh có tham số
@@ -512,7 +561,7 @@ def handle_control_command(text: str, nlu: NLU, state: ReplState) -> bool:
     lệnh duy nhất cần báo hiệu "dừng vòng lặp" cho main().
     """
     low = text.lower()
-    if low in ("thoat", "thoát", "exit", "quit", "q"):
+    if low in _EXIT_COMMANDS:
         safe_print("Tạm biệt!")
         logger.info("Kết thúc phiên làm việc.")
         state.stop = True
@@ -549,7 +598,75 @@ def _execute_commands(commands: list, nlu: NLU, dry_run: bool) -> None:
             safe_print("   Phiên làm việc vẫn tiếp tục bình thường.")
 
 
+def _control_candidates() -> list[str]:
+    """Mọi từ khoá điều khiển (bỏ dấu kết thúc prefix) - dùng cho gợi ý + Tab."""
+    words = set(_CONTROL_COMMANDS) - {"?"}
+    words.update(p.rstrip() for pair in _CONTROL_PREFIXES for p in pair[0])
+    words.update(_EXIT_COMMANDS)
+    return sorted(words)
+
+
+def _setup_readline() -> bool:
+    """Bật phím ↑/↓ (xem lại lệnh đã gõ) + Tab completion cho REPL.
+
+    ``readline`` chỉ có sẵn trên Linux/macOS; Windows cần ``pip install
+    pyreadline`` - thiếu thì REPL chạy y hệt trước, chỉ mất phím mũi tên, nên
+    đây là NÂNG CẤP tuỳ chọn chứ không phải yêu cầu mới.
+
+    History của readline NHẠP LUÔN từ ``.history.json`` mà dự án đã lưu từ bản
+    v6 -> lên máy mới, xóa file log, đổi thư mục... vẫn gọi lại được lệnh cũ.
+    """
+    try:
+        import readline
+    except ImportError:
+        logger.debug("không có readline - REPL không hỗ trợ phím ↑/↓")
+        return False
+    try:
+        for entry in load_history():
+            readline.add_history(entry)
+        readline.set_completer(_make_completer())
+        readline.parse_and_bind("tab: complete")
+    except Exception as e:                       # readline trên Windows vài bản thiếu API
+        logger.debug("cấu hình readline thất bại: %s", e)
+        return False
+    return True
+
+
+def _make_completer():
+    """Tab hoàn thành tên lệnh điều khiển (``nap<Tab>`` -> ``nap lai``)."""
+    candidates = _control_candidates()
+
+    def completer(text: str, state: int):
+        matches = [c for c in candidates if c.startswith(text)]
+        return matches[state] if state < len(matches) else None
+
+    return completer
+
+
+def _suggest_control_command(text: str) -> str | None:
+    """Gợi ý lệnh điều khiển gần đúng nhất khi người dùng gõ SAU chính tả.
+
+    Chỉ áp cho câu NGẮN (<= 2 từ) - câu dài là lệnh nói bình thường, không phải
+    lệnh gõ sai._cutoff 0.8 để "mở youtube" không bị gợi ý thành... gì đó.
+    """
+    import difflib
+
+    candidate = text.strip().lower()
+    if not candidate or len(candidate.split()) > 2 or len(candidate) < 3:
+        return None
+    # LOAI BENH: khong bao gio GOI Y lenh thoat. "hat" (hat noi) rat gan "thoat"
+    # theo do tuong dong ky tu, ma gui nguoi dung "co phai ban muon thoat?" khi
+    # ho muoi hat nhac la kind - va neu ho go theo thi CHET phien lam viec.
+    pool = [w for w in _control_candidates() if w not in _EXIT_COMMANDS]
+    close = difflib.get_close_matches(candidate, pool, n=1, cutoff=0.7)
+    if not close or close[0] == candidate:
+        return None
+    return close[0]
+
+
 def _run_repl(nlu: NLU, state: ReplState) -> int:
+    if _setup_readline():
+        safe_print("(Mẹo: phím ↑/↓ gọi lại lệnh cũ, phím Tab hoàn thành tên lệnh.)")
     safe_print("Sẵn sàng! (gõ 'help' để xem hướng dẫn)\n")
     while True:
         text = get_input(state.mic_mode)
@@ -560,6 +677,14 @@ def _run_repl(nlu: NLU, state: ReplState) -> int:
         if handle_control_command(text, nlu, state):
             if state.stop:
                 return 0
+            continue
+
+        # v7.3: "he thogng"/"napllai"... trước đây rơi thẳng vào NLU và nhận về
+        # câu "tôi chưa hiểu ý bạn" - người dùng không biết mình chỉ gõ sai một
+        # lệnh có sẵn. Gợi ý đúng lệnh đó rồi cho gõ lại.
+        suggestion = _suggest_control_command(text)
+        if suggestion:
+            safe_print(f"   Có phải bạn muốn gõ  {suggestion} ?  (gõ lại để thực hiện)")
             continue
 
         if state.mic_mode:
@@ -576,22 +701,63 @@ def _run_repl(nlu: NLU, state: ReplState) -> int:
         _execute_commands(commands, nlu, state.dry_run)
 
 
-def main() -> int:
-    args = parse_args()
+def _run_info_command(args: argparse.Namespace) -> int | None:
+    """Xử lý các cờ "in thông tin rồi thoát". Trả về None nếu phải chạy tiếp.
 
+    Tách khỏi main() vì chúng là 4 nhánh độc lập, không liên quan vòng đời
+    NLU/REPL - và ``--doctor`` PHẢI chạy trước khi nạp model: mục đích của nó là
+    chẩn đoán lúc cài đặt hỏng, mà cài hỏng thì model không nạp được.
+    """
+    if args.doctor:
+        import diagnostic
+
+        return diagnostic.main()
     if args.sysinfo:
         print_sysinfo()
         return 0
-
     if args.history:
         print_history()
         return 0
+    if args.version:
+        setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
+        _print_version()
+        return 0
+    return None
+
+
+def _adopt_shipped_data() -> list[str]:
+    """Lần đầu chạy bản cài bằng pip: lấy config/whitelist đi theo gói làm điểm khởi đầu.
+
+    Không có bước này thì người dùng ``pip install`` sẽ chạy với DEFAULT_CONFIG
+    trong code (và mọi tự chỉnh sửa trước đó trong ``config.json`` ở thư mục
+    source bị mất khi chuyển sang cài đặt) - im lặng, không báo lỗi, nên rất
+    khó nhận ra. Hàm chỉ COPY khi file đích chưa tồn tại -> không bao giờ ghi đè.
+    """
+    try:
+        import paths
+
+        if paths.describe()["from_source"]:
+            return []
+        return paths.migrate_from_package_dir(
+            ("config.json", "reminders.json", ".history.json", "feedback.csv")
+        )
+    except Exception as e:                      # khong duoc phep lam chet tro ly vi sao chep
+        logger.debug("không chép được dữ liệu từ gói: %s", e)
+        return []
+
+
+def main() -> int:
+    args = parse_args()
+
+    early = _run_info_command(args)
+    if early is not None:
+        return early
 
     setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
-    if args.version:
-        _print_version()
-        return 0
+    adopted = _adopt_shipped_data()
+    if adopted:
+        safe_print(f"[CẤU HÌNH] Đã lấy {', '.join(adopted)} từ gói cài đặt vào thư mục dữ liệu.")
 
     option_error = _apply_cli_options(args)
     if option_error is not None:
@@ -602,7 +768,8 @@ def main() -> int:
 
     _warn_missing_optional_features(args)
 
-    if not args.once:
+    one_shot = args.once or args.text
+    if not one_shot:
         safe_print("Đang nạp mô hình hiểu ý...")
     try:
         nlu = NLU()
@@ -619,9 +786,9 @@ def main() -> int:
     if restored:
         safe_print(f"[NHẮC NHỞ] Đã khôi phục {restored} lời nhắc còn hạn từ lần chạy trước.")
 
-    if args.once:
-        save_history_entry(args.once)
-        return run_once(args.once, nlu, dry_run=args.dry_run, as_json=args.json)
+    if one_shot:
+        save_history_entry(one_shot)
+        return run_once(one_shot, nlu, dry_run=args.dry_run, as_json=args.json)
 
     return _run_repl(nlu, ReplState(dry_run=args.dry_run, mic_mode=args.voice))
 

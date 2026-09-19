@@ -53,14 +53,18 @@ import argparse
 import logging
 import os
 
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VOICE_DIR = os.path.join(BASE_DIR, "giong_ai")  # giữ lại cho tương thích ngược (Piper)
-CLONE_DIR = os.path.join(BASE_DIR, "giong_nhan_ban")
-DATASET_DIR = os.path.join(BASE_DIR, "dataset_giong")
+# v7.3: model TTS (~200MB) + audio nhân bản + dataset giọng là DỮ LIỆU, không
+# phải tài nguyên gói - đặt trong thư mục dữ liệu để (a) cài đặt system-wide
+# không cần quyền root, (b) không bị xoá khi `pip install -U`.
+VOICE_DIR = str(data_path("giong_ai"))          # giữ lại cho tương thích ngược (Piper)
+CLONE_DIR = str(data_path("giong_nhan_ban"))
+DATASET_DIR = str(data_path("dataset_giong"))
 
 # ============================================================================
 # ENGINE MẶC ĐỊNH — VieNeu-TTS v3-Turbo (Apache 2.0)
@@ -373,7 +377,7 @@ def chuan_bi_data():
     bản giọng), nhưng với VieNeu, đa số trường hợp chỉ cần nhan_ban_giong()
     ở trên với đúng 1 file audio 3-5 giây, không cần bước này.
     """
-    rec_dir = os.path.join(BASE_DIR, "my_voice")
+    rec_dir = str(data_path("my_voice"))
     if not os.path.isdir(rec_dir):
         safe_print("[!] Chưa có thư mục my_voice/.")
         safe_print("    Thu giọng trước:  python train_tts.py record --count 300")

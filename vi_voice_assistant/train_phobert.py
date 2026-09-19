@@ -33,13 +33,14 @@ import json
 import os
 
 from dataset import get_dataset_as_lists
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "phobert_model")
 CHECKPOINT_DIR = os.path.join(BASE_DIR, "phobert_checkpoints")
 EXTRA_CSV = os.path.join(BASE_DIR, "my_dataset.csv")
-FEEDBACK_CSV = os.path.join(BASE_DIR, "feedback.csv")
+FEEDBACK_CSV = str(data_path("feedback.csv"))
 BASE_CHECKPOINT = "vinai/phobert-base"
 
 

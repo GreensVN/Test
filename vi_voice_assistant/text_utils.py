@@ -8,12 +8,23 @@ v7.0 nâng cấp:
 - Tối ưu regex, cache compiled patterns
 - Thêm hàm sanitize_filename, truncate
 - Xử lý edge cases tốt hơn
+
+v7.3 nâng cấp:
+- CACHE hai hàm nóng nhất (normalize_text / strip_diacritics). Lý do thật:
+  tầng NLU gọi lặp lại cùng một chuỗi RẤT nhiều lần cho một câu nói - tách từ,
+  phân loại từng từ, so khớp mờ từng từ - nên bản không cache tốn ~3.4us/lần
+  cho những lần lặp thừa. Cache chặn ở 8192 câu (LRU) nên bộ nhớ không tăng
+  không giới hạn khi chạy cả ngày; kết quả đo được ở tests/test_v73_ux.py.
+- Đầu vào KHÔNG phải chuỗi (số do config lỗi, None từ caller...) được ép sang
+  str thay vì ném AttributeError: một trợ lý giọng nói không nên chết vì kiểu
+  dữ liệu lạ ở tầng văn bản.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from typing import Final
 
 # Pre-compiled regex cho hiệu năng - để dấu - ở cuối để tránh range
@@ -30,8 +41,25 @@ __all__ = [
 ]
 
 
+_TEXT_CACHE = 8192
+
+
+def _as_text(text) -> str:
+    """Mọi thứ không phải chuỗi đều được ép sang chuỗi TRƯỚC khi vào cache.
+
+    lru_cache cần đối tượng hash được, và dự án không bao giờ được chết chỉ vì
+    ai đó đưa vào một con số/khối dict từ config.
+    """
+    return text if isinstance(text, str) else ("" if text is None else str(text))
+
+
 def normalize_text(text: str | None) -> str:
     """Chuẩn hoá câu: NFC, lower, bỏ ký tự thừa, giữ ký tự đường dẫn."""
+    return _normalize_cached(_as_text(text))
+
+
+@lru_cache(maxsize=_TEXT_CACHE)
+def _normalize_cached(text: str) -> str:
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text.strip().lower())
@@ -45,6 +73,11 @@ def strip_diacritics(text: str | None) -> str:
     Bỏ dấu tiếng Việt: 'bật google lên' -> 'bat google len'.
     Xử lý cả đ/Đ.
     """
+    return _strip_diacritics_cached(_as_text(text))
+
+
+@lru_cache(maxsize=_TEXT_CACHE)
+def _strip_diacritics_cached(text: str) -> str:
     if not text:
         return ""
     text = unicodedata.normalize("NFD", text)

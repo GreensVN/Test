@@ -1,8 +1,14 @@
-# Trợ lý ảo tiếng Việt v7.2
+# Trợ lý ảo tiếng Việt v7.3
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
+> **v7.3 (2026-09-13)** - **cài đặt & tiện nghi**: `pip install .` chạy được thật
+> (`vi-assistant`, `vi-doctor`, `vi-train`, `vi-voice`), dữ liệu người dùng rời
+> khỏi `site-packages` (mới `paths.py`), có `install.py` tự phát hiện môi trường
+> và tự chữa lỗi pip (PEP 668), REPL có ↑/↓ + Tab + gợi ý khi gõ sai tên lệnh,
+> và `run_tests.py` chạy trọn 330 test trên máy CHƯA cài pytest.
+>
 > **v7.2 (2026-09-13)** - bản **trả nợ kỹ thuật**: 15 lỗi thật đã sửa, 347 cảnh
 > báo lint -> 0, 220 -> 251 test, và các hàm "20-30 nhánh" được tách thành bảng tra.
 > Điểm đáng chú ý nhất:
@@ -42,6 +48,16 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 # Chạy ngay, không cần cài gì thêm
 python main.py
 
+# Hoac dung bootstrap o thu muc goc (tu kiem tra may + tu chua loi pip)
+python ../install.py            # cai goi co ban
+python ../install.py --check    # chi chan doan
+
+# Cai chuan Python -> co lenh toan cuc
+pip install ..                  # vi-assistant "mở youtube"
+pip install "..[full]"          # + scikit-learn, TTS/STT
+python main.py --doctor         # may da du gi, thieu gi, lenh khac phuc la gi
+```
+
 # Cài đầy đủ (khuyến nghị)
 pip install -r requirements.txt
 # hoặc
@@ -77,7 +93,10 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 
 | File | Vai trò | Thay đổi ở v7.2 |
 |---|---|---|
-| `main.py` | Vòng lặp chính + CLI | Tách REPL thành bảng lệnh `_CONTROL_COMMANDS`/`_CONTROL_PREFIXES` + `ReplState`/`ReplContext` (test được từng lệnh) |
+| `paths.py` | Thư mục dữ liệu người dùng | **Mới v7.3** - `pip install` không còn ghi vào site-packages |
+| `diagnostic.py` | `--doctor` / `vi-doctor` | **Mới v7.3** - chẩn đoán cài đặt + in lệnh khắc phục |
+| `__init__.py` / `__main__.py` | Nạp gói | **Mới v7.3** - làm `pip install .` và `python -m vi_voice_assistant` chạy được |
+| `main.py` | Vòng lặp chính + CLI | v7.3: `main.py "câu lệnh"`, `--yes`, `--doctor`, ↑/↓ + Tab, gợi ý lệnh gõ sai. v7.2: tách REPL thành bảng lệnh `_CONTROL_COMMANDS`/`_CONTROL_PREFIXES` + `ReplState`/`ReplContext` (test được từng lệnh) |
 | `nlu_advanced.py` | Tầng hiểu ý | `refresh_thresholds()`: `nap lai` đổi được ngưỡng; ngưỡng hỏng trong config không còn làm sập lúc import |
 | `intent_model.py` | Pipeline TF-IDF + entity | `parse_time_expression`/`extract_entity`/`_parse_number_run` tách thành bảng quy tắc + handler (hành vi giữ nguyên) |
 | `lite_model.py` | Classifier thuần Python | **`evidence_ratio()`** - câu không có từ đã biết bị hạ confidence; từ điển suy ra từ `_log_prob` nên file model cũ vẫn dùng được |
@@ -92,12 +111,12 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 251 test | + `test_v72_regressions.py` (31 test hồi quy, mỗi test gắn một lỗi) |
+| `tests/` | 330 test | + `test_v72_regressions.py` (31 test hồi quy, mỗi test gắn một lỗi) |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py        # 251 pass, 0 fail - không cần cài gì
+python run_tests.py        # 330 pass, 0 fail - không cần cài gì
 pytest tests/ -v           # nếu đã cài pytest
 python -m unittest discover
 ```

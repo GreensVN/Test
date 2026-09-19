@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.2
+nlu_advanced.py v7.3
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -41,6 +41,7 @@ import os
 import re
 from datetime import datetime
 
+from paths import data_path
 from platform_utils import safe_print, setup_console
 from text_utils import normalize_text
 from text_utils import strip_diacritics as strip_accents
@@ -56,7 +57,7 @@ _DEFAULT_ASK = 0.25
 _logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FEEDBACK_PATH = os.path.join(BASE_DIR, "feedback.csv")
+FEEDBACK_PATH = str(data_path("feedback.csv"))   # v7.3: xem paths.py
 
 
 def _read_thresholds(cfg: dict | None):

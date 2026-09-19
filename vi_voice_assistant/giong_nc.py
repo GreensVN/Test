@@ -43,12 +43,13 @@ import logging
 import os
 import tempfile
 
+from paths import data_path
 from platform_utils import safe_print, setup_console
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-NC_DIR = os.path.join(BASE_DIR, "giong_nc_model")
+NC_DIR = str(data_path("giong_nc_model"))   # v7.3: thu muc du lieu - xem paths.py
 CONSENT_FILE = os.path.join(NC_DIR, "DA_DONG_Y.json")
 
 

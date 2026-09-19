@@ -1,5 +1,5 @@
 """
-intent_model.py v7.2
+intent_model.py v7.3
 --------------------
 HUẤN LUYỆN MÔ HÌNH PHÂN LOẠI Ý ĐỊNH (TF-IDF + LogisticRegression / SVM,
 hoặc PhoBERT nếu đã fine-tune) và TRÍCH XUẤT THỰC THỂ (Entity Extraction).
@@ -52,12 +52,16 @@ except ImportError:   # pragma: no cover
     SKLEARN_AVAILABLE = False
 
 from dataset import get_dataset_as_lists
+from paths import data_path
 from platform_utils import safe_print, setup_console
 from text_utils import normalize_text, strip_diacritics
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intent_model.pkl")
+# v7.3: model đã huấn luyện nằm trong thư mục dữ liệu người dùng (paths.py) -
+# trước đây nó bị ghi vào site-packages (read-only trên máy cài cho cả hệ thống)
+# và bị xoá sạch mỗi lần `pip install -U`.
+MODEL_PATH = str(data_path("intent_model.pkl"))
 
 
 # ============================================================================

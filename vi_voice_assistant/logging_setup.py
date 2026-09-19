@@ -31,8 +31,10 @@ import os
 import threading
 from pathlib import Path
 
+from paths import data_path
+
 BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = data_path("logs")   # v7.3: xem paths.py
 LOG_FILE = LOG_DIR / "assistant.log"
 
 _configured = False

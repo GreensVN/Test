@@ -1,10 +1,16 @@
-# Trợ lý ảo tiếng Việt v7.2
+# Trợ lý ảo tiếng Việt v7.3
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 251 pass](https://img.shields.io/badge/tests-251%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 330 pass](https://img.shields.io/badge/tests-330%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+
+**v7.3** tập trung vào CÀI ĐẶT và TIỆN NGHI: `pip install .` giờ chạy được thật
+(có `vi-assistant`, `vi-doctor`), dữ liệu người dùng không còn nằm trong
+`site-packages`, có `install.py` tự phát hiện môi trường + tự chữa lỗi pip
+(PEP 668), REPL hỗ trợ phím ↑/↓ và Tab, và model nhẹ cache kết quả chuẩn hoá.
+Chi tiết trong [CHANGELOG](vi_voice_assistant/CHANGELOG.md).
 
 **v7.2** là bản trả nợ kỹ thuật: 15 lỗi thật đã sửa (trong đó có 1 lỗi chèn mã
 AppleScript qua nội dung nhắc nhở), 347 cảnh báo lint -> 0, và các hàm "20-30
@@ -17,16 +23,42 @@ trên 188k câu. Xem [CHANGELOG](vi_voice_assistant/CHANGELOG.md).
 git clone https://github.com/GreensVN/Test.git
 cd Test
 
-# Chạy ngay không cần cài gì
+# C1. Chạy ngay, không cài gì (chỉ cần Python >= 3.9)
 python vi_voice_assistant/main.py
 
-# Hoặc cài đầy đủ
-pip install -e .
-pip install -e ".[full]"
-vi-assistant
+# C2. Cài bằng script của dự án - tu phat hien may, tu xu ly loi pip (PEP 668)
+python install.py                  # goi co ban: kiem tra + cai + chay test
+python install.py --check          # chi chan doan, khong cai gi
+python install.py --profile ml     # + scikit-learn (chinh xac hon lite)
+python install.py --profile voice  # + doc/nhan giong noi
+python install.py --offline        # may khong co mang
+python install.py --dry-run        # chi in lenh se chay
+
+# C3. Cach chuan cua Python
+pip install .        # xong:  vi-assistant "mở youtube"
+pip install ".[full]" && vi-doctor
+python -m vi_voice_assistant        # cai roi van chay duoc bang -m
+```
+
+Ba lenh kiem tra nhanh sau khi cai:
+
+```bash
+python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
+python vi_voice_assistant/run_tests.py -q    # 330 test, khong can pytest
+python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
 ## Tính năng
+
+### v7.3 - cài đặt & tiện nghi
+- `pip install .` chay duoc that (truoc day wheel thieu `__init__.py` nen
+  `vi-assistant` chet bang `ModuleNotFoundError`)
+- Du lieu (config, lời nhắc, log, model) ve `~/.local/share/vi_voice_assistant`
+  hoac `%LOCALAPPDATA%...` - khong bi ghi vao / xoa khoi `site-packages`
+- `install.py` tu chon lenh pip dung, tu thu `--user` khi bi PEP 668 chan
+- `--yes` cho script/CI, ↑/↓ + Tab trong REPL, goi y khi goi sai ten lenh
+- Cache `normalize_text`/`strip_diacritics`: 3.4us -> 0.32us; `predict_intent`
+  172us -> 140us/moi cau
 
 ### v7.2 - sửa lỗi & chất lượng code
 - Không còn "thực thi bừa câu vô nghĩa": model lite có **bảo chứng từ điển**
@@ -53,28 +85,37 @@ vi-assistant
 ## Cấu trúc
 
 ```
-vi_voice_assistant/
-├── main.py              # CLI chính v7.2
-├── executor.py          # Thực thi an toàn (fix major v7.0)
-├── text_utils.py        # Xử lý text (fix major v7.0)
-├── nlu_advanced.py      # Tầng NLU
-├── intent_model.py      # Model TF-IDF + entity
-├── lite_model.py        # Model thuần Python
-├── tts.py / stt.py      # Giọng nói (nâng cấp v7.0)
-├── platform_utils.py    # Utils đa nền tảng (mới v7.0)
-├── logging_setup.py     # Logging (mới v7.0)
-├── config.py            # Config loader (mới v7.0)
-├── giong_noi_ai.py      # Giọng AI VieNeu
-├── tests/               # 251 tests
-├── run_tests.py         # Test runner không cần pytest
-└── README.md / CHANGELOG.md / UPGRADE_REPORT_v7.md
+Test/
+├── install.py             # Bootstrap cài đặt + tự kiểm tra (chỉ stdlib, mới v7.3)
+├── pyproject.toml         # deps = []; [full] [ml] [tts] [stt] [dev] [all]
+└── vi_voice_assistant/
+    ├── __init__.py        # Nối import phẳng -> `pip install .` chạy được (mới v7.3)
+    ├── __main__.py        # python -m vi_voice_assistant              (mới v7.3)
+    ├── paths.py           # Thư mục dữ liệu người dùng, không còn site-packages (v7.3)
+    ├── diagnostic.py      # --doctor / vi-doctor: chẩn đoán + lệnh khắc phục (v7.3)
+    ├── main.py            # CLI chính + REPL (bảng lệnh điều khiển, ↑/↓, Tab, --yes)
+    ├── nlu_advanced.py    # Tầng hiểu ý: không dấu, typo, ngữ cảnh, đa lệnh
+    ├── intent_model.py    # Model TF-IDF + trích xuất thực thể/thời gian/toán
+    ├── lite_model.py      # Model thuần Python (Naive Bayes) + "bảo chứng từ điển"
+    ├── executor.py        # Thực thi lệnh theo nền tảng (bảng whitelist, escape)
+    ├── text_utils.py      # normalize/strip dấu (cache LRU - v7.3)
+    ├── dataset.py         # ~1.5k câu mẫu, tự sinh bản không dấu
+    ├── config.py          # Nạp/kiểm tra/lưu config.json (atomic)
+    ├── tts.py / stt.py    # Giọng nói ra / vào, engine dự phòng
+    ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
+    ├── platform_utils.py  # capability report, safe_print, setup_console
+    ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (330 test)
+    └── tests/             # 330 test (gồm bộ hồi quy v7.2 + v7.3)
 ```
 
 ## Kiểm thử
 
 ```bash
+# Ca hai cach deu chay duoc 330 test - may CHUA cai pytest van ok
+python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 251 pass, 0 fail, 0 skip
+# Ket qua: 330 pass, 0 fail, 0 skip
 ```
 
 ## Tài liệu
@@ -97,6 +138,7 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
+- v7.3 (2026-09-13): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests
 - v7.2 (2026-09-13): 15 lỗi thật + 347 lint -> 0, 251 tests pass, refactor C901
 - v7.1 (2026-09-13): Dọn cấu trúc dự án, đồng bộ docs/version, typing hiện đại
 - v7.0 (2026-09-13): Fix regex, Path, Popen, 220 tests pass
