@@ -104,6 +104,13 @@ nhận `in_venv` như tham số THUẦN để test được mọi nhánh trên m
     job `embedded-runner` trong CI giờ cài pytest rồi *vẫn* chạy runner nhúng,
     nên phần đó được kiểm tra bất kể image của runner đổi ra sao.
 
+### Tài liệu
+`HUONG_DAN_SU_DUNG.txt` có mục mới về **định dạng thật của `voice_cache/index.csv`**
+kèm đoạn Python thuần để sinh chỉ mục - vì `tts.py` chỉ ĐỌC kho giọng mà dự án
+không còn công cụ tạo nó (lệnh `train_tts.py cache` đã bị bỏ từ trước, nên tài liệu
+cũ đang bảo người dùng làm một việc không có cách làm). Đoạn mã trong tài liệu đã
+được chạy thật và `tts._load_voice_cache()` đọc ra đúng mục.
+
 ### Test
 `tests/test_v74_hardening.py` (29) + `tests/test_v74_compat.py` (8) -> **367 test**,
 xanh trên cả ba cách chạy: pytest, `python vi_voice_assistant/run_tests.py` từ gốc,
