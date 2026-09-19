@@ -25,6 +25,11 @@ Script này chỉ dùng THƯ VIỆN CHUẨN (chạy được trước khi cài b
 
 Mọi quyết định (chọn cờ pip, suy ra PEP 668) nằm trong hàm THUẦN nên có test
 đơn vị mà không cần gọi pip thật - xem tests/test_v73_ux.py.
+v7.4 nâng cấp:
+- `retry_flags_for()` nhận thêm `in_venv` (tham số THUẦN, không tự dò môi trường)
+  và có `in_virtualenv()`/`fix_hint(in_venv)`: trước đây trong venv script vẫn thử
+  `--user` và `--break-system-packages` (cả hai bị pip từ chối ở đó) rồi khuyên
+  "hãy tạo venv" cho người đang ở trong venv.
 """
 
 from __future__ import annotations

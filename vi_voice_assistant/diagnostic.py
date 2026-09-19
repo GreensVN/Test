@@ -13,6 +13,12 @@ in ra ĐÚNG LỆNH cần gõ để khắc phục (theo đúng nền tảng đan
 
 Chạy độc lập: ``python diagnostic.py`` hoặc ``vi-doctor`` (khi cài bằng pip).
 Không cần thư viện ngoài, không phát tiếng, không sửa gì - chỉ đọc.
+v7.4 nâng cấp:
+- Bỏ `platform.system().major` (AttributeError); một section raise thì được ghi
+  `[X]` vào báo cáo thay vì làm mất cả báo cáo.
+- `print_report` không còn in "Mọi thứ ổn" khi vẫn còn dòng `[X]`.
+- `check_runtime(version_info)` nhận version làm tham số nên kiểm thử được mà
+  không phải phụ thuộc máy đang chạy.
 """
 
 from __future__ import annotations

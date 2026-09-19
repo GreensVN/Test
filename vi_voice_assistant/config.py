@@ -19,6 +19,13 @@ v7.2 nâng cấp:
   mà executor.py sẽ crash nếu sai.
 - save_config() thêm fsync trước khi rename: chỉ "temp + rename" KHÔNG đảm bảo
   nội dung đã nằm trên đĩa - mất điện đúng lúc rename có thể để lại file rỗng.
+
+v7.4 nâng cấp:
+- `save_config` gộp về `paths.atomic_write_json()` - MỘT biến thể duy nhất cho mọi
+  file dữ liệu runtime. Bản này vốn đã temp + fsync + rename (từ v7.2) nên hành vi
+  giữ nguyên; cái được bỏ là ba bản thể sao chép ở ba file, mỗi bản thiếu một bước.
+- Giá trị sai kiểu trong các map (`app_map_*`, `*_cmd`) bị ép về `dict[str, str]`
+  hoặc mặc định ngay khi nạp; trước đó chúng đi thẳng vào executor.
 """
 
 from __future__ import annotations

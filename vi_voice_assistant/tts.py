@@ -6,6 +6,11 @@ v7.0 nâng cấp:
 - Thêm timeout, cleanup tốt hơn cho file tạm
 - Sửa lỗi race khi xoá file tạm đang phát
 - Thêm logging debug chi tiết
+v7.4 nâng cấp:
+- Kho giọng `voice_cache/` đi theo paths.py (thư mục dữ liệu của người dùng)
+  thay vì nằm cạnh mã nguồn: bản `pip install .` không còn bắt người dùng đặt
+  mp3 vào site-packages. Thư mục cũ vẫn được đọc nên ai đã có cache không mất
+  gì. `index.csv` chỉ nhận dòng mà file được trỏ tới thật sự tồn tại.
 """
 
 from __future__ import annotations

@@ -33,6 +33,10 @@ LƯU Ý TƯƠNG THÍCH
     nên test cũ và ``monkeypatch.setattr`` vẫn hoạt động;
   * không import gì ngoài stdlib -> dùng được cả khi chưa cài gì (hợp đồng
     "chỉ cần stdlib" của dự án).
+v7.4 nâng cấp:
+- `atomic_write_json()`: ghi file tạm -> flush -> fsync -> `os.replace` -> fsync
+  thư mục, dọn file tạm khi lỗi, tự tạo thư mục cha, giữ nguyên quyền file gốc.
+  Mọi nơi ghi dữ liệu runtime (config, danh sách nhắc việc, lịch sử) đi qua đây.
 """
 
 from __future__ import annotations

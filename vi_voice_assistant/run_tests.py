@@ -5,6 +5,11 @@ Cach dung:
     python3 run_tests.py            # chay tat ca
     python3 run_tests.py -k time    # chi chay test co 'time' trong ten
     python3 run_tests.py -v         # verbose (in traceback ngay)
+v7.4 nâng cấp:
+- Không còn in "0 pass, 0 fail" rồi thoát 0 khi thư mục tests trống (bản cài đặt
+  không kèm tests): in rõ lý do và thoát 1.
+- `VI_TESTS_FORCE_EMBEDDED=1` buộc dùng runner nhúng, để đường không-pytest được
+  kiểm tra ngay cả trên máy đã cài pytest.
 """
 from __future__ import annotations
 

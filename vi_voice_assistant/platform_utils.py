@@ -8,6 +8,12 @@ v7.0 nâng cấp:
 - Thêm type hints, dataclass cho capability report
 - Tối ưu _ResilientStream, thêm thread-safety
 - Thêm hàm get_python_info, is_docker, is_ci
+v7.4 nâng cấp:
+- `_ResilientStream.write()` trả về số ký tự theo đúng hợp đồng, lấy `len(s)` khi
+  stream phía sau trả `None` - trước đó `int(None)` gây TypeError ngay trong
+  runner nhúng.
+- `ctypes.windll` lấy qua `getattr` (chỉ tồn tại trên Windows) nên không
+  AttributeError ở nền tảng khác và kiểm tra kiểu tĩnh được.
 """
 
 from __future__ import annotations
