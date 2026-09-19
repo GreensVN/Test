@@ -18,8 +18,9 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
+from paths import data_path
 from platform_utils import is_wsl, safe_print, setup_console
 
 SYSTEM = platform.system()
@@ -27,37 +28,60 @@ SYSTEM = platform.system()
 ENABLED: bool = True
 ENGINE: str = "auto"
 
-_engine_cache: object | None = None
+_engine_cache: Any | None = None
 _resolved_engine: Callable[[str], bool] | None = None
 _engine_lock = threading.RLock()
 _speak_lock = threading.Lock()
 
-VOICE_CACHE_DIR = Path(__file__).resolve().parent / "voice_cache"
+# v7.4: kho giọng chuyển sang THƯ MỤC DỮ LIỆU (paths.py) - trước đây nó nằm cạnh
+# file mã nguồn, nghĩa là bản `pip install .` bắt người dùng bỏ mp3 vào
+# site-packages (nơi thường chỉ đọc và bị xoá khi nâng cấp). Thư mục cũ vẫn được
+# ĐỌC tiếp để ai đã có sẵn voice_cache/ từ bản 6.x không mất gì.
+VOICE_CACHE_DIR = data_path("voice_cache")
+VOICE_CACHE_DIR_LEGACY = Path(__file__).resolve().parent / "voice_cache"
+
+
+def _cache_dirs() -> list[Path]:
+    """Nơi có thể chứa voice_cache, theo thứ tự ưu tiên (user dir trước)."""
+    out = []
+    for d in (VOICE_CACHE_DIR, VOICE_CACHE_DIR_LEGACY):
+        d = Path(str(d))
+        if d.is_dir() and d not in out:
+            out.append(d)
+    return out
 _voice_cache_index: dict[str, Path] | None = None
 
 logger = logging.getLogger(__name__)
 
 
 def _load_voice_cache() -> dict[str, Path]:
+    """index.csv trong mỗi thư mục cache -> {key_noi_dung: file mp3}.
+
+    Đọc ở Cả HAI nơi (thư mục người dùng trước), file nào cầm trước thì thắng -
+    không còn cách nào “đổ” một file .csv sang Path: đường dẫn được kiểm tra
+    tồn tại trước khi đưa vào bảng tra.
+    """
     global _voice_cache_index
     if _voice_cache_index is not None:
         return _voice_cache_index
 
-    _voice_cache_index = {}
-    index_path = VOICE_CACHE_DIR / "index.csv"
-    if index_path.exists():
-        try:
-            import csv
+    import csv
 
-            with index_path.open(encoding="utf-8-sig") as f:
-                for row in csv.DictReader(f):
-                    key = (row.get("text") or "").strip().lower()
-                    fname = row.get("file")
-                    if key and fname:
-                        full = VOICE_CACHE_DIR / fname
-                        if full.exists():
-                            _voice_cache_index[key] = full
-        except Exception as e:
+    _voice_cache_index = {}
+    for directory in _cache_dirs():
+        index_path = directory / "index.csv"
+        if not index_path.is_file():
+            continue
+        try:
+            with index_path.open(newline="", encoding="utf-8") as f:
+                for row in csv.reader(f):
+                    if len(row) < 2:
+                        continue
+                    key, fname = row[0], row[1]
+                    full = directory / fname
+                    if full.is_file():
+                        _voice_cache_index.setdefault(key, full)
+        except OSError as e:
             logger.debug("Không đọc được voice_cache index: %s", e)
     return _voice_cache_index
 

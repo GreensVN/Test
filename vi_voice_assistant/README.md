@@ -1,13 +1,28 @@
-# Trợ lý ảo tiếng Việt v7.3
+# Trợ lý ảo tiếng Việt v7.4
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
+> **v7.4 (2026-09-20)** - **chất lượng nền**: `mypy` **60 lỗi -> 0** và CI có job
+"
+"> `typecheck` giữ mức đó; `config.json` / `reminders.json` / `.history.json` ghi bằng
+"
+"> MỘT hàm atomic duy nhất (`paths.atomic_write_json`: file tạm -> fsync -> replace);
+"
+"> `vi-doctor` in được báo cáo đầy đủ cả khi một mục hỏng; `install.py` không còn khuyên
+"
+"> người đang ở trong venv đi tạo venv; và **Python 3.9 chạy được thật** (trước đây
+"
+"> `import intent_model` nổ TypeError vì annotation PEP 604) - có máy quét AST khoá lại.
+"
+"> 367 test, 0 cảnh báo lint, 0 lỗi mypy.
+"
+">
 > **v7.3 (2026-09-20)** - **cài đặt & tiện nghi**: `pip install .` chạy được thật
 > (`vi-assistant`, `vi-doctor`, `vi-train`, `vi-voice`), dữ liệu người dùng rời
 > khỏi `site-packages` (mới `paths.py`), có `install.py` tự phát hiện môi trường
 > và tự chữa lỗi pip (PEP 668), REPL có ↑/↓ + Tab + gợi ý khi gõ sai tên lệnh,
-> và `run_tests.py` chạy trọn 330 test trên máy CHƯA cài pytest.
+> và `run_tests.py` chạy trọn bộ test trên máy CHƯA cài pytest.
 >
 > **v7.2 (2026-09-13)** - bản **trả nợ kỹ thuật**: 15 lỗi thật đã sửa, 347 cảnh
 > báo lint -> 0, 220 -> 251 test, và các hàm "20-30 nhánh" được tách thành bảng tra.
@@ -111,12 +126,12 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 330 test | + `test_v72_regressions.py` (31 test hồi quy, mỗi test gắn một lỗi) |
+| `tests/` | 367 test | + `test_v74_compat.py` (tương thích Python 3.9, import sạch) và `test_v74_hardening.py` (atomic write, dispatcher, doctor, install.py); mỗi test gắn một lỗi thật đã sửa |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py        # 330 pass, 0 fail - không cần cài gì
+python run_tests.py        # 367 pass, 0 fail - không cần cài gì
 pytest tests/ -v           # nếu đã cài pytest
 python -m unittest discover
 ```

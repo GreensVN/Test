@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import tempfile
+from typing import Any
 
 from paths import data_path
 from platform_utils import safe_print, setup_console
@@ -59,7 +60,7 @@ CONSENT_FILE = os.path.join(NC_DIR, "DA_DONG_Y.json")
 #   phat_hanh_lai= có được redistribute / fork / mở mã nguồn không
 #   sharealike   = giấy phép có ép lây sang bản phái sinh không
 # ============================================================================
-NC_MODELS = {
+NC_MODELS: dict[str, dict[str, Any]] = {
     "viet-tts": {
         "ten": "VietTTS — dangvansam/viet-tts",
         "gp_code": "Apache-2.0",
@@ -187,13 +188,19 @@ VAN_PHAI_TRANH = {
 # CỔNG XÁC NHẬN GIẤY PHÉP
 # ============================================================================
 def _load_consent() -> dict:
+    """File xác nhận giấy phép; một JSON hỏng không được làm sập cả CLI.
+
+    Trước đây `json.load` trả gì trả - nếu file là danh sách/chuỗi thì hàm kế
+    tiếp gọi `.get()` và nổ ở nơi không ai nghi ngờ tới. Chỉ chấp nhận dict.
+    """
     if not os.path.exists(CONSENT_FILE):
         return {}
     try:
         with open(CONSENT_FILE, encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def da_dong_y(mo_hinh: str) -> bool:
@@ -275,7 +282,7 @@ def _write_wav(path: str, sound, sample_rate: int) -> bool:
     return True
 
 
-_mms_cache = {}
+_mms_cache: dict[str, Any] = {}
 
 
 def _load_mms():

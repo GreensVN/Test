@@ -1,10 +1,11 @@
 ================================================================================
           TRỢ LÝ ẢO TIẾNG VIỆT – INTENT RECOGNITION + ACTION EXECUTION
                     HƯỚNG DẪN SỬ DỤNG & HUẤN LUYỆN
-                (BẢN v6.3 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3)
+     (BẢN v7.4 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3 + v7.4)
 ================================================================================
 
-NGÔN NGỮ : Python 3.8+ (Windows 7: BẮT BUỘC Python 3.8.x - xem mục VIII)
+NGÔN NGỮ : Python 3.9+ để CÀI BẰNG PIP; Windows 7/Python 3.8 chạy từ source
+             (mã không dùng cú pháp hay API riêng của 3.9) - xem mục VIII + 0-H
 HỆ ĐIỀU HÀNH: Windows 7 SP1 / 8 / 8.1 / 10 / 11, macOS, Linux (kể cả WSL)
 DATASET  : ~779 câu tiếng Việt có dấu (~1558 câu kèm biến thể không dấu) / 11 nhóm ý định
 
@@ -189,6 +190,49 @@ GHÉP" bên dưới để biết những chỗ 2 nhánh xung đột đã đượ
 5. KIỂM THỬ: 220 test (tăng từ 200 ở v6.2).
 
 --------------------------------------------------------------------------------
+0-H. NÂNG CẤP Ở BẢN v7.3 - v7.4 (09/2026) - CÀI ĐẶT THẬT & CHẤT LƯỢNG NỀN
+--------------------------------------------------------------------------------
+Bản v7.3 lo việc "cài xong có chạy được không"; bản v7.4 lo "chạy trên máy của
+bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho người dùng:
+
+1. CÀI ĐẶT
+   - `pip install .` chạy được THẬT (các bản tới v7.2 tạo gói thiếu __init__.py
+     nên lệnh vừa cài xong chết bằng ModuleNotFoundError). Có lệnh toàn hệ thống:
+         vi-assistant   (trợ lý)      vi-doctor  (tự chẩn đoán)
+         vi-train       (huấn luyện)  vi-voice   (giọng nói AI)
+     và `python -m vi_voice_assistant`.
+   - `python install.py` - bootstrap CHỈ cần stdlib: --check (không cài gì),
+     --profile core|ml|voice|full|all|dev, --dry-run, --offline, --index-url.
+     Script tự chữa các lỗi pip hay gặp (PEP 668 -> --user -> --break-system-
+     packages); ĐÃ trong venv thì KHÔNG đổi cờ lung tung mà bảo bạn kiểm tra
+     `python -m pip --version`.
+2. DỮ LIỆU CÁ NHÂN (mới paths.py)
+   - config.json / model / .history.json / logs / giọng nói KHÔNG nằm trong
+     site-packages nữa mà ở ~/.local/share/vi_voice_assistant (Linux),
+     %LOCALAPPDATA% (Windows), ~/Library/Application Support (macOS). Đặt
+     VI_ASSISTANT_HOME nếu muốn chọn chỗ khác. Data cũ được chép sang MỘT LẦN.
+   - Wheel cũng không còn chép file dữ liệu của người build vào gói (từng có
+     .history.json - nghĩa là lịch sử lệnh của họ tới tay người cài sau).
+3. DÙNG HÀNG NGÀY
+   - Nói thẳng: `vi-assistant "mở youtube"`; `--yes` cho script/CI; `--doctor`
+     in đúng lệnh cần gõ để khắc phục; REPL có ↑/↓ gọi lại lệnh cũ + Tab hoàn
+     thành; gõ SAI tên lệnh thì gợi ý lệnh đúng.
+4. WINDOWS 7 / Python 3.8
+   - Chạy từ thư mục source: OK (mã không dùng cú pháp 3.9+; đã quét AST toàn bộ
+     dự án để chắc điều đó). NHƯNG `pip install .` cần Python >= 3.9 vì
+     requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
+     Mở Issue - đừng sửa requires-python rồi tưởng là xong.
+5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
+     python vi_voice_assistant/run_tests.py -q     # 367 test, KHONG cần pytest
+     python -m pytest vi_voice_assistant/tests -q   # cũng 367
+     python -m ruff check .                         # 0 cảnh báo
+     python -m mypy                                 # 0 loi (xem [tool.mypy])
+   - `VI_TESTS_FORCE_EMBEDDED=1` ép chạy bằng runner nhúng, kể cả khi máy đã có pytest
+     - cần để test chính cái runner mà người chưa cài pytest vẫn phải dùng.
+   - Không tìm thấy file test nào -> runner báo rõ và exit 1. Trước đây nó in
+     "0 pass, 0 fail" rồi trả 0: màu xanh giả, y hệt lỗi `|| echo passed` trong CI.
+
+--------------------------------------------------------------------------------
 I. 11 NHÓM Ý ĐỊNH VÀ VÍ DỤ
 --------------------------------------------------------------------------------
  | Intent          | Ví dụ câu nói                    | Hành động
@@ -241,16 +285,16 @@ vi_voice_assistant/
   |- tts.py                 : đọc phản hồi bằng giọng nói (kho cache + 4 engine)
   |- stt.py                 : nghe qua mic - SpeechRecognition (nhanh, cần
   |                           mạng) hoặc PhoWhisper (offline, lớp STT đầy đủ)
-  |- train_tts.py            : tạo kho giọng sẵn / thu giọng riêng / chuẩn bị
-  |                           dataset VietTTS
+  |- giong_noi_ai.py          : giọng nói AI + nhân bản giọng (thay cho train_tts.py)
   |- main.py                : chương trình demo - CLI flags (--dry-run/--voice/
   |                           --speak) + REPL đầy đủ (mic, day, nhac nho, quen)
+  |- paths.py               : nơi lưu DỮ LIỆU người dùng (VI_ASSISTANT_HOME/XDG)
+  |- diagnostic.py          : --doctor / vi-doctor - chẩn đoán + in lệnh khắc phục
+  |- __init__.py / __main__.py : để `pip install .` và `python -m vi_voice_assistant`` chạy được
 
   KIỂM THỬ & KHÁC
-  |- tests/                 : 220 unit test (pytest) cho mọi module trên
+  |- tests/                 : 367 unit test (chạy được CẢ KHI chưa cài pytest)
   |- requirements.txt       : thư viện cần cài (ghim bản cho Windows 7)
-  |- train_on_colab.ipynb   : notebook huấn luyện HIỂU Ý trên Google Colab
-  |- train_tts_colab.ipynb  : notebook huấn luyện GIỌNG NÓI trên Colab
   |- HUONG_DAN_SU_DUNG.txt  : file bạn đang đọc
 
   TỰ SINH RA KHI CHẠY (không có sẵn trong gói)
@@ -259,8 +303,9 @@ vi_voice_assistant/
   |- phobert_model/         : model PhoBERT sau khi chạy train_phobert.py
   |- nlu_report.txt         : báo cáo chất lượng mô hình (từ train_nlu.py)
   |- feedback.csv           : câu máy chưa hiểu + câu bạn dạy lại
-  |- voice_cache/           : kho giọng đã tạo sẵn (từ train_tts.py cache)
-  |- my_voice/              : giọng bạn tự thu (từ train_tts.py record)
+  |- voice_cache/           : kho giọng đọc sẵn (đặt trong THƯ MỤC DỮ LIỆU,
+  |                           xem mục 0-H) - không bỏ vào site-packages
+  |- my_voice/              : giọng bạn tự thu (python giong_noi_ai.py thu)
   |- logs/assistant.log     : nhật ký chạy chương trình
 
 --------------------------------------------------------------------------------
@@ -391,16 +436,17 @@ CONFIDENCE_ASK (0.25). Hay hỏi lại quá -> hạ số xuống. Hay làm bừa
 VI. MÔ-ĐUN GIỌNG NÓI (tts.py) VÀ NHẬN DIỆN GIỌNG NÓI (stt.py)
 --------------------------------------------------------------------------------
 tts.py tự dò engine theo thứ tự ưu tiên:
-  0. Kho giọng sẵn (python train_tts.py cache) - nhanh nhất, offline
+  0. Kho giọng đọc sẵn trong <thư mục dữ liệu>/voice_cache/ (xem paths.py hoặc
+     `vi-doctor` để biết thư mục đó ở đâu trên máy bạn) - nhanh nhất, offline
   1. pyttsx3 (offline) -> pip install pyttsx3
   2. Windows SAPI / macOS `say` - có sẵn, không cần cài
   3. gTTS (giọng hay nhất, cần internet) -> pip install gTTS
 
-CHO MÁY HỌC NÓI - 3 MỨC ĐỘ (python train_tts.py ...):
-  cache   : tạo sẵn mp3 cho câu hay dùng (2 phút, khuyên làm ngay)
-  record  : thu giọng của chính bạn (30-60 phút) -> dataset LJSpeech
-  prepare : chuẩn bị dataset VietTTS để train trên Colab (cần GPU, nhiều giờ)
-  check   : kiểm tra giọng hiện tại
+GIỌNG NÓI AI - HAI TẦNG (thay cho `train_tts.py` đã bỏ từ v7.x):
+  python giong_noi_ai.py kiem-tra | tai | thu | nhan-ban | giay-phep
+      tầng thương mại (VieNeu-TTS, Apache 2.0) - nhân bản giọng từ bản thu của bạn
+  python giong_nc.py kiem-tra | dong-y | cai | thu | so-sanh
+      tầng phi thương mại (MMS/VITS mở) - PHẢI đọc giấy phép trước (`dong-y`)
 
 stt.py có 2 lớp:
   - is_available()/listen_once(): nhanh, dùng SpeechRecognition (cần mạng)
@@ -503,11 +549,17 @@ TẠI SAO DÙNG COLAB? Không cần cài đặt gì (đã có sklearn), có GPU 
 PhoBERT/TTS. LƯU Ý: Colab CHỈ dùng để HUẤN LUYỆN - phần thực thi lệnh (mở
 app, tắt máy) BẮT BUỘC chạy trên máy thật của bạn.
 
-CÁCH NHANH NHẤT: vào https://colab.research.google.com, tải lên
-train_on_colab.ipynb, chạy lần lượt từng cell, tải intent_model.pkl về, chép
-vào cùng thư mục main.py.
+CÁCH HIỆN NAY (v7.4): hai notebook `train_on_colab.ipynb` và
+`train_tts_colab.ipynb` ĐÃ được bỏ khỏi gói - đừng tìm chúng. Muốn huấn
+luyện thì chạy chính lệnh của dự án, trên máy thật hoặc trên Colab):
+    python train_nlu.py            # TF-IDF/lite, không cần GPU, ~1 phút
+    python train_nlu.py --lite     # chỉ sinh lite_model.pkl (thuần stdlib)
+    python train_phobert.py        # PhoBERT, cần GPU + torch
+Mỗi lệnh có --help; `vi-doctor` cho biết model nào đã có/cũ/thiếu.
+Sau khi huấn luyện trên Colab, tải intent_model.pkl về, chép vào THƯ MỤC
+DỮ LIỆU (`vi-doctor` in ra đường dẫn đó), không phải vào site-packages.
 
-Huấn luyện giọng nói riêng: mở train_tts_colab.ipynb (bật T4 GPU).
+Huấn luyện giọng nói riêng: `python giong_noi_ai.py thu` rồi `nhan-ban`.
 
 VẤN ĐỀ PHIÊN BẢN scikit-learn: file .pkl nên được load bằng CÙNG phiên bản
 scikit-learn giữa Colab và máy bạn (import sklearn; print(sklearn.__version__)).

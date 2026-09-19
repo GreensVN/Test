@@ -1,5 +1,5 @@
 """
-intent_model.py v7.3
+intent_model.py v7.4
 --------------------
 HUẤN LUYỆN MÔ HÌNH PHÂN LOẠI Ý ĐỊNH (TF-IDF + LogisticRegression / SVM,
 hoặc PhoBERT nếu đã fine-tune) và TRÍCH XUẤT THỰC THỂ (Entity Extraction).
@@ -21,6 +21,12 @@ Chạy để huấn luyện và lưu model TF-IDF ra `intent_model.pkl`:
     python intent_model.py
 """
 
+# v7.4: Python 3.9 KHONG danh gia duoc `dict | None`/`str | None` trong chur ky ham
+# (PEP 604 can 3.10). File dung annotation kieu nay ma thieu dong nay thi lenh
+# `import intent_model` chet bang TypeError tren 3.9 - xem
+# tests/test_v74_py39_compat.py de khong ai quen lai.
+from __future__ import annotations
+
 import ast
 import json
 import logging
@@ -28,6 +34,10 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                      # chi can cho type checker (xem ruff TC003)
+    from collections.abc import Callable
 
 # v6 - THAY ĐỔI QUAN TRỌNG: scikit-learn/joblib giờ là TUỲ CHỌN.
 # Trước đây 6 dòng import này nằm trần: máy nào chưa cài được scikit-learn
@@ -400,7 +410,7 @@ _NUMBER_DECIMAL_WORD = "phẩy"                    # "hai phẩy năm" = 2.5
 # Bản KHÔNG DẤU của từ-số chữ số. Loại "sáu" (sau) vì trùng từ nối "sau".
 # Các từ đồng âm còn lại sau khi bỏ dấu đều CÙNG giá trị ("một"/"mốt" -> 1,
 # "lăm"/"nhăm" -> 5, "bảy"/"bẩy" -> 7) nên không gây xung đột.
-_NUMBER_DIGITS_PLAIN = {}
+_NUMBER_DIGITS_PLAIN: dict[str, int] = {}
 for _w, _v in _NUMBER_DIGIT_WORDS.items():
     _p = strip_diacritics(_w)
     if _p != "sau":
@@ -562,7 +572,10 @@ def _run_zero(state: dict, _value=None):
     return None
 
 
-_NUMBER_RUN_RULES = {
+# Bảng quy tắc nhận số: mỗi hàm nhận (state, value), trả về số nguyên hoặc
+# _RUN_INVALID. Kiểu ghi rõ ở đây để "gọi một object" không còn là lỗi ẩn -
+# bảng này do v7.2 tách ra từ 30 nhánh if/elif nên hợp đồng phải nằm ở kiểu.
+_NUMBER_RUN_RULES: dict[str, Callable[..., object]] = {
     "digit": _run_digit,
     "ten": _run_ten,
     "tens": _run_tens,
@@ -587,7 +600,7 @@ def _run_integer_value(kinds) -> int | None:
             return None
     if not state["seen"]:
         return None
-    return state["total"] + state["current"]
+    return int(state["total"]) + int(state["current"])
 
 
 def _run_fraction_value(kinds):
@@ -816,7 +829,7 @@ def _shift_morning(hour: int) -> int:
     return 0 if hour == 12 else hour
 
 
-_PERIOD_SHIFTERS: dict[str, object] = {
+_PERIOD_SHIFTERS: dict[str, Callable[[int], int]] = {
     "chieu": _shift_afternoon, "toi": _shift_afternoon,
     "dem": _shift_night, "khuya": _shift_night,
     "trua": _shift_noon, "sang": _shift_morning,
@@ -845,7 +858,7 @@ def _find_period_around_time(t: str, u: str, plain_input: bool, time_end: int) -
     """
     period = _detect_period(t, u[time_end:], plain_input)
     if period is not None:
-        return period
+        return str(period)
     compound = re.search(r"\b(sang|trua|chieu|toi|dem|khuya)\s+(?:nay|mai|hom)\b", u)
     if not compound:
         return None
@@ -1150,7 +1163,7 @@ class _EntityContext:
     original: str            # GIỮ NGUYÊN hoa/thường - dùng cho URL / đường dẫn
 
     @classmethod
-    def build(cls, text: str) -> "_EntityContext":
+    def build(cls, text: str) -> _EntityContext:
         raw = normalize_text(text)
         return cls(raw=raw, raw_no_dia=strip_diacritics(raw), original=(text or "").strip())
 

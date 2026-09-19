@@ -68,18 +68,40 @@ def _package_mode() -> str:
     return "source" if paths.is_source_checkout() else "đã cài bằng pip"
 
 
-def check_runtime() -> list[tuple[str, str]]:
+def check_runtime(version_info: tuple[int, ...] | None = None) -> list[tuple[str, str]]:
+    """Kiểm tra Python/OS. ``version_info`` chỉ để test mô phỏng bản Python khác.
+
+    v7.4: bản v7.3 gọi ``platform.major`` (không tồn tại - phải là
+    ``sys.version_info.major``), nên chỉ cần chạy trên Python >= 3.14 là
+    ``vi-doctor`` chết bằng AttributeError trước khi in được dòng nào.
+    """
+    py = tuple(version_info) if version_info is not None else tuple(sys.version_info[:3])
     rows = [
         (OK, f"Python {platform.python_version()} ({sys.executable})"),
         (OK, f"Hệ điều hành: {platform.system()} {platform.release()} - {platform.machine()}"),
         (OK, f"Chạy từ: {_package_mode()}"),
     ]
-    py = sys.version_info
-    if py < (3, 9):
-        rows.insert(0, (BAD, f"Python {platform.python_version()} < 3.9 - dự án không hỗ trợ"))
-    elif py >= (3, 14):
-        rows.insert(0, (WARN, f"Python {platform.major}.{py.minor} mới hơn bản đã kiểm tra (3.13)"))
+    if py[:2] < (3, 9):
+        rows.insert(0, (BAD, f"Python {py[0]}.{py[1]} < 3.9 - dự án không hỗ trợ"))
+    elif py[:2] >= (3, 14):
+        rows.insert(0, (WARN, f"Python {py[0]}.{py[1]} mới hơn bản đã kiểm tra (3.13)"))
     return rows
+
+
+def _section_result(title: str, fn) -> tuple[list[tuple[str, str]], list[str]]:
+    """Gọi một hàm kiểm tra và biến mọi lỗi bất ngờ thành một dòng [X].
+
+    Mỗi mục của báo cáo đọc dữ liệu người dùng (config.json, model.pkl, thư
+    mục giọng nói) - một file hỏng là đủ để ``vi-doctor`` chết và người dùng
+    MẤT LUÔN phần còn lại của báo cáo, đúng lúc họ cần nó nhất.
+    """
+    try:
+        result = fn()
+    except Exception as e:          # cý ý bất mọi loại lỗi: báo cáo phải in ra được
+        logger.warning("Mục %s của --doctor lỗi: %s", title, e, exc_info=True)
+        return ([(BAD, f"{title}: bộ kiểm tra lỗi ({type(e).__name__}: {e})")], [])
+    rows, extra = result
+    return list(rows), list(extra)
 
 
 def check_data_dir() -> tuple[list[tuple[str, str]], list[str]]:
@@ -238,12 +260,15 @@ def run_checks() -> dict:
     sections: dict[str, list] = {}
     fixes: list[str] = []
 
-    rows = check_runtime()
+    # check_runtime chi tra ve cac dong (khong co lenh sua) -> boc no dung dang
+# (rows, fixes) nhu cac muc khac.
+    rows, extra = _section_result("Môi trường", lambda: (check_runtime(), []))
     sections["Môi trường"] = rows
+    fixes.extend(extra)
     for title, fn in (("Dữ liệu", check_data_dir), ("Cấu hình", check_config),
                       ("Model", check_models), ("Thư viện", check_libraries),
                       ("Giọng nói", check_voice)):
-        rows, extra = fn()
+        rows, extra = _section_result(title, fn)
         sections[title] = rows
         fixes.extend(extra)
 
@@ -271,7 +296,16 @@ def print_report(report: dict) -> None:
     fixes = report["fixes"]
     safe_print("\n" + "=" * 60)
     if not fixes:
-        safe_print("  Mọi thứ ổn - chạy:  python main.py")
+        # v7.4: "không có lệnh nào để chạy" KHONG dong nghia "moi thu on".
+        # Mục [X] không kèm được lệnh sửa (vd file model hỏng) từng in ra dòng
+        # "Mọi thứ ổn" trong khi exit code là 1 - báo cáo tự mâu thuẫn.
+        if report.get("problems"):
+            note = f'Có {report["problems"]} mục cần chú ý - xem các dòng [X] ở trên.'
+            safe_print(f"  {note}")
+            safe_print("  (Mục này không có lệnh sửa tự động - xem hướng dẫn trong từng dòng,")
+            safe_print("   sửa xong chạy lại: python main.py --doctor)")
+        else:
+            safe_print("  Mọi thứ ổn - chạy:  python main.py")
         return
     safe_print("  CẦN LÀM THÊM (copy-paste từng dòng):")
     for cmd in fixes:
@@ -284,7 +318,17 @@ def main(argv: list[str] | None = None) -> int:
     """Điểm vào CLI: ``vi-doctor`` / ``python -m vi_voice_assistant.diagnostic``."""
     setup_console()
     as_json = "--json" in (argv if argv is not None else sys.argv[1:])
-    report = run_checks()
+    try:
+        report = run_checks()
+    except Exception as e:          # CLI khong duoc nem traceback ra nguoi dung
+        logger.warning("Bộ chẩn đoán lỗi: %s", e, exc_info=True)
+        report = {
+            "ok": False,
+            "problems": 1,
+            "warnings": 0,
+            "sections": {"Bộ chẩn đoán": [(BAD, f"không chạy được: {type(e).__name__}: {e}")]},
+            "fixes": [],
+        }
     if as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     else:

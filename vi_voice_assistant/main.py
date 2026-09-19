@@ -1,5 +1,11 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.3
+main.py - Trợ lý ảo tiếng Việt v7.4
+
+v7.4 nâng cấp (TOÀN VẸN DỮ LIỆU):
+- .history.json ghi bằng paths.atomic_write_json(): tiến trình chết giữa chừng
+  không còn để lại file rỗng; --doctor không bao giờ ném traceback ra người dùng
+- text/`target` do model trả về được ép kiểu TRƯỚC khi xử lý (int/None không làm
+  dispatcher nổ AttributeError)
 
 v7.3 nâng cấp (CÀI ĐẶT & TIỆN NGHI):
 - Nói THẲNG ra lệnh: `python main.py "mở youtube"` (giống --once, khỏi nhớ cờ)
@@ -27,7 +33,7 @@ import signal
 import sys
 from dataclasses import dataclass
 
-from paths import data_path
+from paths import atomic_write_json, data_path
 from platform_utils import safe_print, setup_console
 
 setup_console()
@@ -39,7 +45,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.3"
+APP_VERSION = "7.4"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -166,8 +172,10 @@ def save_history_entry(text: str) -> None:
         if len(hist) >= 2 and hist[-1] == hist[-2]:
             hist.pop()
         hist = hist[-MAX_HISTORY:]
-        with HISTORY_PATH.open("w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False, indent=2)
+        # v7.4: open("w") cắt file ngay lập tức - tiến trình chết giữa chừng
+        # để lại .history.json rỗng/hỏng và mất luôn lịch sử cũ. Dùng hàm ghi
+        # atomic chung của paths.py.
+        atomic_write_json(HISTORY_PATH, hist, prefix=".history_tmp_")
     except Exception as e:
         logger.debug("Không lưu được history: %s", e)
 
@@ -191,7 +199,7 @@ def get_input(use_voice: bool) -> str:
             if stt.is_available():
                 text = stt.listen_once()
                 if text:
-                    return text
+                    return str(text)
                 safe_print("(Không nhận diện được giọng nói, bạn có thể gõ tay bên dưới)")
             else:
                 safe_print("[CẢNH BÁO] Chưa cài SpeechRecognition, chuyển sang gõ phím.")
@@ -711,7 +719,8 @@ def _run_info_command(args: argparse.Namespace) -> int | None:
     if args.doctor:
         import diagnostic
 
-        return diagnostic.main()
+        code: int = diagnostic.main()
+        return code
     if args.sysinfo:
         print_sysinfo()
         return 0
@@ -738,9 +747,9 @@ def _adopt_shipped_data() -> list[str]:
 
         if paths.describe()["from_source"]:
             return []
-        return paths.migrate_from_package_dir(
+        return list(paths.migrate_from_package_dir(
             ("config.json", "reminders.json", ".history.json", "feedback.csv")
-        )
+        ))
     except Exception as e:                      # khong duoc phep lam chet tro ly vi sao chep
         logger.debug("không chép được dữ liệu từ gói: %s", e)
         return []

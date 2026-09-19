@@ -44,7 +44,12 @@ class _ResilientStream:
         with self._lock:
             for attempt in range(3):
                 try:
-                    return self._stream.write(s)
+                    # Hop dong cua write() tra ve SO KY TU da ghi. `int(None)` ma
+                    # ghi tran vao day se nang TypeError - ma do lai la loi cua
+                    # stream ma ta dang boc (khi test thay sys.stdout bang mot doi
+                    # tuong gia), nen lay len(s) lam gia tri quy uoc.
+                    written = self._stream.write(s)
+                    return len(s) if written is None else int(written)
                 except (OSError, ValueError, UnicodeError):
                     if attempt < 2:
                         try:
@@ -64,7 +69,8 @@ class _ResilientStream:
                         ascii_s = strip_diacritics(s).encode(
                             "ascii", errors="replace"
                         ).decode("ascii")
-                        return self._stream.write(ascii_s)
+                        written = self._stream.write(ascii_s)
+                        return (len(ascii_s) if written is None else int(written))
                     except Exception:
                         return len(s)
         return len(s)
@@ -84,7 +90,7 @@ class _ResilientStream:
 
     def isatty(self) -> bool:
         try:
-            return self._stream.isatty()
+            return bool(self._stream.isatty())
         except (OSError, ValueError):
             return False
 
@@ -123,9 +129,14 @@ def setup_console() -> None:
             import ctypes
             import time
 
-            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-            ctypes.windll.kernel32.SetConsoleCP(65001)
-            time.sleep(0.05)
+            # `ctypes.windll` chỉ tồn tại trên Windows: lấy qua getattr để đoạn
+            # này không AttributeError nếu bị chép sang nền tảng khác, và để kiểm
+            # được kiểu tĩnh thay vì mặc mypy báo "Module has no attribute".
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                windll.kernel32.SetConsoleOutputCP(65001)
+                windll.kernel32.SetConsoleCP(65001)
+                time.sleep(0.05)
         except Exception as cp_error:
             # Không đổi được code page -> tiếng Việt có thể hiển thị sai trên
             # console Windows cũ. stream đã được reconfigure(errors="replace")

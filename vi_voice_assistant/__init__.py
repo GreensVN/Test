@@ -1,5 +1,5 @@
 """
-Trợ lý ảo tiếng Việt - gói Python (v7.3)
+Trợ lý ảo tiếng Việt - gói Python (v7.4)
 -----------------------------------------
 
 Toàn bộ mã nguồn trong thư mục này từ trước tới nay dùng LỆNH IMPORT PHẲNG
@@ -33,7 +33,7 @@ if _HERE not in _sys.path:
     # CO MAT trong path.
     _sys.path.append(_HERE)
 
-__version__ = "7.3"
+__version__ = "7.4"
 __all__ = ["__version__", "main"]
 
 
@@ -53,4 +53,5 @@ def doctor() -> int:
     """Điểm vào ``vi-doctor`` - chẩn đoán cài đặt/môi trường."""
     import diagnostic
 
-    return diagnostic.main()
+    code: int = diagnostic.main()
+    return code

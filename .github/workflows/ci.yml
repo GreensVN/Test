@@ -1,4 +1,4 @@
-name: CI - Trợ lý ảo tiếng Việt v7.3
+name: CI - Trợ lý ảo tiếng Việt v7.4
 
 on:
   push:
@@ -80,6 +80,27 @@ jobs:
     - name: ruff check
       run: ruff check .
 
+  # v7.4: mypy tu 60 loi -> 0 va CI giu muc do. [tool.mypy] trong pyproject.toml
+  # da bat check_untyped_defs/warn_return_any/warn_unused_ignores - co that muc
+  # nay thi "sua kieu" khong con la viec tu nguyen.
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Install mypy
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "mypy>=1.11,<2"
+    - name: mypy (package + install.py)
+      run: |
+        mypy --version
+        mypy vi_voice_assistant install.py
+
   # Chạy được cả khi CHƯA cài scikit-learn: đây là hợp đồng cốt lõi của dự án
   # (lite_model.py). Nếu môi trường tối giản sập nghĩa là lỗi import mềm bị hồi quy.
   no-deps:
@@ -121,9 +142,17 @@ jobs:
       with:
         python-version: "3.12"
     - name: Run run_tests.py (no pytest installed)
+      # VI_TESTS_FORCE_EMBEDDED: buoc chay bang runner nhung DU moi truong co
+      # pytest san (image cua GitHub co the doi). Neu khong co co nay, job nay
+      # im lang uy quyen cho pytest va khong con kiem thu phan nhung nua -
+      # dung cai lop ma no sinh ra de phong.
+      env:
+        VI_TESTS_FORCE_EMBEDDED: "1"
       shell: bash
       working-directory: vi_voice_assistant
-      run: python run_tests.py -q
+      run: |
+        python -m pip install pytest          # co y cai: van phai dung runner
+        python run_tests.py -q
 
   # v7.3 - KIỂM TRA CÁI MÀ KHÔNG AI KIỂM TRA: bản cài đặt thật.
   # `pip install .` của v7.2 tạo wheel ĐỦ FILE nhưng DÙNG KHÔNG ĐƯỢC
@@ -163,17 +192,53 @@ jobs:
       shell: bash
       run: |
         python - <<'PY'
-        import json, pathlib, sysconfig, subprocess, sys
+        import pathlib, subprocess, sys, sysconfig
         pkg = pathlib.Path(sysconfig.get_paths()["purelib"]) / "vi_voice_assistant"
-        before = {p.name for p in pkg.glob("*") if p.suffix in (".json", ".log", ".pkl", ".csv")}
+
+        def snapshot(root: pathlib.Path) -> set:
+            """Toan bo cay (ten + kich thuoc), tru __pycache__/.pyc.
+
+            Ban cu chi kiem file dinh cap *.json/*.log/*.pkl/*.csv -> mot THU MUC
+            moi (voice_cache/) hoac file o cap sau hơn thoát qua mat. Kiem ca cay
+            thi khong con lo hổng do.
+            """
+            out = set()
+            for p in root.rglob("*"):
+                if "__pycache__" in p.parts or p.suffix == ".pyc":
+                    continue
+                rel = p.relative_to(root).as_posix()
+                out.add((rel, p.stat().st_size) if p.is_file() else (rel, -1))
+            return out
+
+        before = snapshot(pkg)
+        # Goi ca duong doc (no) vi voice_cache/ chi duoc tao khi doc - dung `--once`
+        # khong cham vao no, va day chinh la cho ban cu ghi vao site-packages.
         subprocess.run([sys.executable, "-m", "vi_voice_assistant", "--once", "mở youtube",
                         "--dry-run"], check=True, cwd=str(pathlib.Path.home()))
-        after = {p.name for p in pkg.glob("*") if p.suffix in (".json", ".log", ".pkl", ".csv")}
-        new = after - before
-        assert not new, f"bản cài đã ghi dữ liệu người dùng vào site-packages: {new}"
-        print("site-packages sạch:", sorted(after) or "(khong co file du lieu)")
+        # MUST be the fully-qualified name: `import tts` only works from the source
+        # directory, so the short form fails silently in an installed copy.
+        subprocess.run([sys.executable, "-c",
+                        "import vi_voice_assistant.tts as t; t.speak('xin chao')"],
+                       check=True, cwd=str(pathlib.Path.home()))
+        assert not (pkg / "voice_cache").exists(), (
+            "ban cai da tao voice_cache/ trong site-packages - phai di qua data_path()")
+        new = snapshot(pkg) - before
+        assert not new, f"ban cai da ghi du lieu vao site-packages: {sorted(new)}"
+        print("site-packages sach sau khi chay + doc:", len(snapshot(pkg)), "muc")
         PY
-        test -f ~/.local/share/vi_voice_assistant/config.json || echo "(chưa cần config ở user dir - ok)"
+    - name: User data must land in the DATA DIR (not a fixed XDG path)
+      shell: bash
+      run: |
+        python - <<'PY'
+        # Kiem tra THAT, khong `|| echo ok`. Dung chinh paths.data_path() de lay
+        # duong dan - mot hang so `~/.local/share/...` se fail tren Windows/macOS.
+        import pathlib
+        from vi_voice_assistant.paths import data_path
+        missing = [name for name in ("config.json", ".history.json")
+                   if not data_path(name).is_file()]
+        assert not missing, f"thieu du lieu nguoi dung tai thu muc du lieu: {missing}"
+        print("du lieu nam o:", data_path(".history.json").parent)
+        PY
     - name: Wheel must not carry private runtime files
       shell: bash
       run: |

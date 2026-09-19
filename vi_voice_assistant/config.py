@@ -26,12 +26,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from paths import data_path
+from paths import atomic_write_json, data_path
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -401,32 +399,12 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
-    """Lưu config atomic: ghi ra file tạm rồi rename."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Lưu config atomic: ghi ra file tạm rồi rename (xem paths.atomic_write_json).
 
-    # Ghi ra file tạm trong cùng thư mục để rename atomic
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".config_tmp_", suffix=".json"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-            # v7.2: rename CHƯA đủ để an toàn khi mất điện - nội dung có thể
-            # còn nằm trong buffer của OS. fsync trước rồi mới replace.
-            f.flush()
-            os.fsync(f.fileno())
-        # Atomic rename
-        Path(tmp_path).replace(path)
-    except Exception:
-        try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except OSError as cleanup_error:
-            # File tạm nằm lại trên đĩa không nguy hiểm bằng việc che mất lỗi
-            # chính (đang `raise` ở dưới) - ghi lại để lần sau còn truy.
-            logger.debug("Không dọn được file tạm %s: %s", tmp_path, cleanup_error)
-        raise
+    v7.4: phần ghi file được gộp về MỘT hàm chung với reminders/history - trước
+    đây mỗi nơi tự viết một biến thể nên chỗ thiếu fsync, chỗ thiếu dọn file tạm.
+    """
+    atomic_write_json(path, config, prefix=".config_tmp_")
 
 
 def get_config_value(key: str, default: Any = None, config_path: str | Path = CONFIG_PATH) -> Any:

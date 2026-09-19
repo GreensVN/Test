@@ -1,5 +1,5 @@
 """
-train_phobert.py v7.0
+train_phobert.py v7.4
 ---------------------
 v7.0 nâng cấp:
 - Thêm type hints, pathlib, logging
@@ -31,6 +31,7 @@ import argparse
 import csv
 import json
 import os
+import sys
 
 from dataset import get_dataset_as_lists
 from paths import data_path
@@ -224,7 +225,7 @@ def train(args):
         safe_print(f"  {sample!r:40} -> {intent} ({conf:.2%})")
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fine-tune PhoBERT cho phân loại ý định")
     parser.add_argument(
         "--model",
@@ -243,10 +244,11 @@ def main():
     parser.add_argument(
         "--no-feedback", action="store_true", help="Bỏ qua feedback.csv khi gộp dữ liệu"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     train(args)
+    return 0
 
 
 if __name__ == "__main__":
     setup_console()
-main()
+    sys.exit(main())

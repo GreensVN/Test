@@ -1,5 +1,5 @@
 """
-executor.py v7.3
+executor.py v7.4
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import datetime
 import difflib
+import functools
+import inspect
 import json
 import logging
 import os
@@ -27,16 +29,15 @@ import platform
 import random
 import re
 import subprocess
-import tempfile
 import threading
 import urllib.parse
 import uuid
 import webbrowser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import load_config
-from paths import data_path
+from paths import atomic_write_json, data_path
 from platform_utils import (
     is_windows7_or_older,
     is_wsl,
@@ -60,7 +61,7 @@ except ImportError:
     )
 
 SYSTEM = platform.system()
-CONFIG = load_config()
+CONFIG: dict[str, Any] = load_config()
 
 CONFIDENCE_THRESHOLD: float = float(CONFIG.get("confidence_threshold", 0.35))
 DANGEROUS_ACTIONS: set[str] = {str(a) for a in CONFIG.get("dangerous_actions", [])}
@@ -355,12 +356,31 @@ def _volume_via_pycaw(target: str) -> bool | None:
         return None
 
 
+def _as_map(value: Any) -> dict[str, str]:
+    """Một mục ``*_map`` trong config.json phải là dict.
+
+    v7.4: trước đây hàm trả thẳng ``CONFIG.get(key, {})``, nên một file cấu hình
+    bị lệch kiểu (viết ``"app_map_linux": null`` hoặc nhầm sang chuỗi) lọt qua
+    im lặng rồi nổ ở chỗ không liên quan - người dùng chỉ thấy traceback khó hiểu.
+    Nay coi mục lệch kiểu là TRỐNG để rơi vào nhánh "chưa cấu hình" vốn đã có sẵn
+    hướng dẫn sửa đúng tên key.
+    """
+    if isinstance(value, dict):
+        if all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+            return value          # giu nguyen doi tuong: day la duong nong, goi lai moi lenh
+        return {str(k): str(v) for k, v in value.items()}   # so/ten khong phai chuoi -> ep kieu
+    if value is not None and value != "":
+        logger.warning("Mục map trong config.json không phải dict (%s) - coi như trống",
+                       type(value).__name__)
+    return {}
+
+
 def _app_map_for_platform() -> dict[str, str]:
     if SYSTEM == "Darwin":
-        return CONFIG.get("app_map_macos", {})
+        return _as_map(CONFIG.get("app_map_macos", {}))
     if SYSTEM == "Windows":
-        return CONFIG.get("app_map_windows", {})
-    return CONFIG.get("app_map_linux", {})
+        return _as_map(CONFIG.get("app_map_windows", {}))
+    return _as_map(CONFIG.get("app_map_linux", {}))
 
 
 # ============================================================================
@@ -786,7 +806,7 @@ def _system_control_linux(target: str) -> bool | None:
     return None
 
 
-_SYSTEM_HANDLERS = {
+_SYSTEM_HANDLERS: dict[str, Callable[..., Any]] = {
     "Windows": _system_control_windows,
     "Darwin": _system_control_macos,
     "Linux": _system_control_linux,
@@ -939,14 +959,9 @@ def _save_reminders() -> None:
                 data.append(
                     {"id": item.get("id"), "task": item.get("task", ""), "at": at.isoformat()}
                 )
-        # Atomic write - handle both Path and str for test compatibility
-        rem_path = Path(REMINDERS_PATH)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(rem_path.parent), prefix=".reminders_tmp_", suffix=".json"
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        Path(tmp_path).replace(rem_path)
+        # Atomic write (paths.atomic_write_json) - chap nhận ca Path lan str de
+        # test monkeypatch REMINDERS_PATH duoc de dang.
+        atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
     except OSError as e:
         logger.warning("Không lưu được danh sách nhắc nhở: %s", e)
 
@@ -1090,7 +1105,7 @@ def action_unknown(_target: str) -> bool:
 
 
 # --- Dispatcher ---
-HANDLERS = {
+HANDLERS: dict[str, Callable[..., Any]] = {
     "open_website": action_open_website,
     "open_app": action_open_app,
     "open_file": action_open_file,
@@ -1104,7 +1119,32 @@ HANDLERS = {
     "chitchat": action_chitchat,
 }
 
-_HANDLERS_WITH_DATA = {"set_reminder", "calculate"}
+@functools.lru_cache(maxsize=64)
+def _handler_wants_data(handler) -> bool:
+    """Handler có nhận tham số thứ hai (toàn bộ intent_json) hay không.
+
+    v7.4: trước đây danh sách này GHI TAY (``{"set_reminder", "calculate"}``).
+    Thêm một handler 2 tham số mà quên ghi tên vào danh sách thì dispatcher gọi
+    ``handler(target)`` -> TypeError lúc chạy, chỉ lộ ra khi người dùng gọi đúng
+    intent đó. Suy ra từ chữ ký thật của hàm thì không thể lệch được nữa.
+    """
+    try:
+        params = list(inspect.signature(handler).parameters.values())
+    except (TypeError, ValueError):        # builtin/C-implemented -> khong doc duoc chu ky
+        return False
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return True
+    positional = [q for q in params if q.kind in (
+        inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2
+
+
+def _handlers_with_data(handlers: dict[str, Any]) -> frozenset[str]:
+    return frozenset(name for name, fn in handlers.items() if _handler_wants_data(fn))
+
+
+# Giu tên cũ cho tương thích (bây giờ là giá trị TÍNH RA, không phải bảng tay).
+_HANDLERS_WITH_DATA = _handlers_with_data(HANDLERS)
 
 
 def execute_command(intent_json: dict[str, Any] | str) -> bool:
@@ -1119,8 +1159,14 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
         safe_print("[LỖI] Đầu vào phải là dict hoặc JSON string.")
         return False
 
-    intent = intent_json.get("intent")
-    target = (intent_json.get("target") or "").strip()
+    raw_intent = intent_json.get("intent")
+    # Key tra bang PHAI la chuoi: intent = 42 hay None thi phai bao "khong hieu
+    # y dinh", khong phai TypeError luc tra dict.
+    intent = raw_intent if isinstance(raw_intent, str) else ""
+    raw_target = intent_json.get("target")
+    # Ep kieu TRUOC khi strip: `target` co the la so (model goi len hoac intent
+    # khac truyen vao), ma `(2026 or "").strip()` thi nang nhu chinh no.
+    target = "" if raw_target is None else str(raw_target).strip()
     try:
         confidence = float(intent_json.get("confidence", 1.0))
     except (TypeError, ValueError):
@@ -1128,8 +1174,8 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
 
     handler = HANDLERS.get(intent)
     if handler is None:
-        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {intent}")
-        logger.warning("Không hiểu ý định: %s", intent)
+        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {raw_intent}")
+        logger.warning("Không hiểu ý định: %s", raw_intent)
         return action_unknown(target)
 
     if confidence < CONFIDENCE_THRESHOLD:
@@ -1137,9 +1183,9 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
         logger.info("Từ chối vì độ tự tin thấp: %.2f < %.2f", confidence, CONFIDENCE_THRESHOLD)
         return False
 
-    if intent in _HANDLERS_WITH_DATA:
-        return handler(target, intent_json)
-    return handler(target)
+    if _handler_wants_data(handler):
+        return bool(handler(target, intent_json))
+    return bool(handler(target))
 
 
 if __name__ == "__main__":

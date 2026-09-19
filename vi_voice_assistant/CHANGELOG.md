@@ -1,5 +1,114 @@
 # CHANGELOG
 
+## v7.4 (2026-09-20) - Toàn vẹn dữ liệu & kiểu: mypy 60 lỗi -> 0, 367 test
+
+### Vì sao bản này tồn tại
+v7.3 làm cho dự án **cài được**. Bản này trả hai món nợ mà các bản trước để lại:
+(1) `[tool.mypy]` có sẵn trong pyproject nhưng **chưa từng được chạy** - bật lên
+thấy ngay 60 lỗi, trong đó có một lỗi làm `vi-doctor` sập; (2) file dữ liệu của
+người dùng vẫn được ghi theo kiểu "mở ra là mất nội dung cũ". Xen giữa là một lỗi
+làm **toàn bộ trợ lý chết trên Python 3.9** - bản mà README và CI đều nói hỗ trợ.
+
+### Lỗi thật đã sửa
+1. **`import intent_model` chết trên Python 3.9** [CRITICAL]
+   `str | None` trong chữ ký hàm (PEP 604) cần Python 3.10, còn `intent_model.py`
+   và `nlu_advanced.py` KHÔNG có `from __future__ import annotations`. Trên 3.9:
+   `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` ngay lúc
+   import, tức mọi tính năng chết chứ không riêng gì máy học. CI có job 3.9 nhưng
+   workflow chưa nằm trên nhánh mặc định nên chưa lần nào chạy; lỗi sống dai từ
+   v7.1. Sửa: thêm future import (hành vi trên 3.10+ giữ nguyên) + máy quét AST
+   trong `tests/test_v74_compat.py` khoá lại - quét cả `tests/` vì test cũng phải
+   chạy trên 3.9 (chính file test mới này từng vi phạm đúng rule nó kiểm).
+2. **`import train_phobert` tự chạy... vòng huấn luyện** [HIGH]
+   `main()` nằm NGOÀI khối `if __name__ == "__main__":` (lệch đúng một cấp thụt
+   lề), nên IDE/pytest/bộ kiểm tra import nào chạm vào là bị kéo qua toàn bộ
+   pipeline; nặng hơn `parse_args()` đọc argv của chương trình gọi nên tiến trình
+   nhận `SystemExit(2)` không lời giải thích. Nay `main(argv=None) -> int` và chỉ
+   gọi trong khối guard - đúng khuôn `train_nlu`/`run_tests` đã sửa ở v7.3.
+3. **`vi-doctor` chết trước khi in nổi một dòng trên Python >= 3.14**
+   `platform.major` không tồn tại (phải là `sys.version_info.major`), và nó nằm ở
+   nhánh chỉ chạy khi Python *mới hơn* bản đã kiểm tra - đúng chỗ không ai test.
+   Quan trọng hơn: mỗi mục báo cáo giờ đi qua `_section_result()`, nên một mục
+   hỏng (file model đọc không được, quyền thư mục...) thành dòng `[X]` chứ không
+   kéo sập cả báo cáo, và CLI không bao giờ ném traceback cho người dùng.
+4. **Báo cáo tự mâu thuẫn**: `print_report` in "Mọi thứ ổn - chạy: python main.py"
+   mỗi lần không có lệnh gợi ý nào - kể cả khi còn mục `[X]` và exit code là 1.
+5. **Dispatcher chọn cách gọi handler bằng bảng GHI TAY** (`_HANDLERS_WITH_DATA`):
+   thêm handler 2 tham số mà quên ghi tên vào bảng thì gọi `handler(target)` ->
+   TypeError. Nay suy ra từ `inspect.signature` (bọc `lru_cache`); tên cũ vẫn còn
+   nhưng là giá trị TÍNH RA nên không lệch được nữa.
+6. **`target` không phải chuỗi làm sập dispatcher**: `(2026 or "").strip()` ->
+   AttributeError. Nay ép kiểu TRƯỚC khi strip; `intent` không phải chuỗi thì báo
+   "không hiểu ý định" thay vì lỗi dict.
+7. **Mục map lệch kiểu trong config.json lọt qua im lặng**:
+   `CONFIG.get("app_map_linux", {})` trả nguyên giá trị, nên `"app_map_linux": null`
+   hoặc nhầm sang chuỗi nổ ở `subprocess` - nơi người dùng chỉ thấy traceback. Nay
+   `_as_map()` trả dict rỗng + ghi log, rơi vào nhánh "chưa cấu hình" đã có sẵn
+   hướng dẫn sửa đúng tên key.
+8. **`giong_nc`: file JSON đồng ý giấy phép hỏng làm sập CLI** - `json.load` trả gì
+   trả; nay chỉ chấp nhận dict.
+9. **`monkeypatch.setenv` của runner nhúng không hoàn tác được**: `os.environ` không
+   phải dict, `undo()` gọi `delattr` rồi im lặng bỏ qua -> biến môi trường đặt ở
+   test trước RÒ sang mọi test chạy sau (kết quả phụ thuộc thứ tự). Thêm `delenv`
+   (pytest có, shim thiếu) và đánh dấu bản ghi kiểu "item" để undo dùng đúng phép.
+
+12. **`voice_cache/` vẫn nằm trong site-packages** - chỗ cuối cùng chưa theo
+    `paths.py` (bản v7.3 đã chuyển config/model/log/history nhưng quên kho giọng).
+    Hệ quả: bản cài bằng pip bắt người dùng nhét mp3 vào thư mục thường CHỈ ĐỌC và
+    bị xoá khi nâng cấp. Nay `VOICE_CACHE_DIR = data_path("voice_cache")`, và
+    thư mục cũ cạnh mã nguồn vẫn được ĐỌC tiếp (ai đã có cache từ bản 6.x không
+    mất gì). Cùng lúc, `_load_voice_cache()` chỉ nhận file thật sự tồn tại - trước
+    đây một dòng lệch trong `index.csv` đưa Path ảo vào bảng tra, tts thử "phát"
+    file không có.
+
+### Toàn vẹn dữ liệu (thay đổi chính)
+`paths.atomic_write_json()` - MỘT hàm duy nhất: file tạm cùng thư mục -> flush +
+`fsync` -> `os.replace` -> `fsync` thư mục -> dọn file tạm khi lỗi. Ba nơi trước
+đây tự viết ba biến thể, nay dùng chung:
+- `config.save_config`: đã có fsync, giữ nguyên hành vi;
+- `executor._save_reminders`: thiếu fsync và **thiếu tạo thư mục cha** - khi
+  `REMINDERS_PATH` trỏ vào thư mục chưa tồn tại thì `mkstemp` raise và `except
+  OSError` nuốt mất, nhắc nhở biến mất không một lời báo;
+- `main.save_history_entry`: nặng nhất - `open("w")` cắt file ngay, tiến trình
+  chết giữa chừng (Ctrl+C, hết đĩa, mất điện) để lại `.history.json` rỗng.
+Chi phí đo được: **0,25 ms -> 1,39 ms mỗi lần lưu** (100 lần, trên tmpfs). History
+chỉ ghi một lần mỗi lệnh nên không cảm nhận nổi; đổi lại là không mất dữ liệu.
+
+### Kiểu được kiểm tra thật
+- `[tool.mypy]` bật đủ độ: `check_untyped_defs`, `no_implicit_optional`,
+  `warn_redundant_casts`, `warn_unused_ignores`, `files` gồm cả `install.py`.
+  `python_version` phải đẩy lên 3.10 vì mypy không còn phân tích cho 3.9 - việc
+  chạy *thật* trên 3.9 do job `test` (ma trận 3.9-3.13) và `test_v74_compat.py` lo.
+- **60 lỗi -> 0** trên 37 file nguồn (kể cả test). `tests/` được nới lỏng có ghi
+  rõ lý do trong pyproject: `lambda p: opened.append(p) or True` là phong cách test
+  hợp lệ, siết ở đó chỉ sinh noise chứ không bắt thêm bug của người dùng.
+- CI thêm job `typecheck` (mypy pinned) -> tổng cộng **7 job**.
+
+### Cài đặt thông minh hơn
+`install.py` từng khuyên người ĐANG ở trong venv... đi tạo venv, và thử `--user` /
+`--break-system-packages` - hai cờ mà pip từ chối trong venv -> một lần lỗi vô ích
+rồi vẫn tắc. Nay `in_virtualenv()` (VIRTUAL_ENV / CONDA_PREFIX / sys.prefix) quyết
+định hướng: trong venv thì không đổi cờ, in hướng dẫn đúng (`python -m pip
+--version`, venv nằm trên đĩa chỉ đọc thì tạo lại ở nơi khác). `retry_flags_for`
+nhận `in_venv` như tham số THUẦN để test được mọi nhánh trên mọi máy.
+
+### Runner nhúng: hai chỗ tự nói dối
+10. **Chạy `run_tests.py` trên bản cài bằng pip in ra "0 pass, 0 fail" với exit 0** -
+    wheel cố ý không kèm `tests/`, nên lệnh đó không kiểm tra gì mà vẫn xanh. Cùng
+    họ với `|| echo passed` từng có trong CI. Nay: không thấy file test nào thì in
+    rõ nguyên nhân + đường dẫn đã tìm, và trả **exit 1**.
+11. **Không có cách nào test chính runner nhúng trên máy CÓ pytest** - mọi lệnh
+    `run_tests.py` đều bị đẩy sang pytest thật, nên phần shim (fixture,
+    parametrize, caplog, monkeypatch...) nằm ngoài vùng kiểm tra, hỏng cũng
+    không ai biết. Thêm `VI_TESTS_FORCE_EMBEDDED=1` để cưỡng chế runner nhúng;
+    job `embedded-runner` trong CI giờ cài pytest rồi *vẫn* chạy runner nhúng,
+    nên phần đó được kiểm tra bất kể image của runner đổi ra sao.
+
+### Test
+`tests/test_v74_hardening.py` (29) + `tests/test_v74_compat.py` (8) -> **367 test**,
+xanh trên cả ba cách chạy: pytest, `python vi_voice_assistant/run_tests.py` từ gốc,
+và `python run_tests.py` từ trong package trên máy chưa cài pytest.
+
 ## v7.3 (2026-09-20) - Cài đặt & tiện nghi: `pip install .` chạy ĐƯỢC, 330 test
 
 ### Vì sao bản này tồn tại

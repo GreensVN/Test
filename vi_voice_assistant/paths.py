@@ -1,5 +1,5 @@
 """
-paths.py - Xác định nơi lưu DỮ LIỆU NGƯỜI DÙNG (v7.2 -> v7.3)
+paths.py - Nơi lưu DỮ LIỆU NGƯỜI DÙNG + ghi file an toàn (v7.3, v7.4)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -37,9 +37,13 @@ LƯU Ý TƯƠNG THÍCH
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "PACKAGE_DIR",
@@ -198,6 +202,55 @@ def _writable(directory: Path) -> bool:
         except OSError:
             pass
         return False
+
+
+def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = None,
+                      indent: int = 2, trailing_newline: bool = True) -> None:
+    """Ghi một file JSON sao cho file cũ KHÔNG BAO GIỜ hỏng giữa chừng.
+
+    Vì sao phải có một hàm chung thay vì mỗi nơi tự viết (v7.4): config.json và
+    reminders.json mỗi nơi copy một biến thể - chỗ có fsync, chỗ không - còn
+    ``.history.json`` thì mở ``"w"`` trực tiếp, nghĩa là tiến trình chết giữa
+    lúc ghi (Ctrl+C, hết đĩa, mất điện) để lại file rỗng/hỏng và người dùng mất
+    sạch lịch sử lẫn nhắc nhở đang có.
+
+    Trình tự an toàn trên mọi OS: ghi file tạm CÙNG thư mục (rename trong cùng
+    filesystem mới atomic) -> flush + fsync -> ``os.replace`` -> fsync thư mục
+    (để chính bản thân rename nằm bền trên đĩa). Lỗi ở bước nào cũng dọn file
+    tạm rồi ném lại, không để rác nằm chờ.
+    """
+    target = Path(str(path))
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = prefix or f".{target.stem}_tmp_"
+    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=tmp_name, suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=indent)
+            if trailing_newline:
+                f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError as cleanup_error:
+            # File tạm sót lại không nguy hiểm bằng việc che mất lỗi chính.
+            logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
+        raise
+    if os.name != "nt":
+        # Windows không cho mở thư mục để fsync; bỏ qua (NTFS tự ghi metadata).
+        try:
+            dir_fd = os.open(str(parent), os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
 
 
 if __name__ == "__main__":      # python paths.py -> in ra nơi sẽ lưu dữ liệu

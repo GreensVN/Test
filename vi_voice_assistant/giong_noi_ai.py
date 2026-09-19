@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from typing import Any
 
 from paths import data_path
 from platform_utils import safe_print, setup_console
@@ -85,7 +86,7 @@ MODEL_INFO = {
 }
 
 # 10 giọng dựng sẵn — không cần audio mẫu, gọi thẳng bằng tên
-DEFAULT_VOICES = {
+DEFAULT_VOICES: dict[str, dict[str, Any]] = {
     "Ngọc Lan": {"gioi_tinh": "nữ", "phong_cach": "nhẹ nhàng, dịu dàng", "mac_dinh": True},
     "Ngọc Linh": {"gioi_tinh": "nữ", "phong_cach": "tươi sáng"},
     "Trúc Ly": {"gioi_tinh": "nữ", "phong_cach": "trẻ trung"},

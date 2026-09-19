@@ -1,5 +1,5 @@
 """
-train_nlu.py v7.3
+train_nlu.py v7.4
 ----------------
 v7.0 nâng cấp:
 - Thêm type hints, pathlib, logging
@@ -137,7 +137,7 @@ REVERSE_TEEN = {v: k for k, v in TEEN_CODE.items() if len(k) >= 2}
 
 def aug_no_accent(text: str) -> str:
     """Giả lập người dùng gõ không dấu."""
-    return strip_accents(text)
+    return str(strip_accents(text))
 
 
 def aug_teencode(text: str) -> str:

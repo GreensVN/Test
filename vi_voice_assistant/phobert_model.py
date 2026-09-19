@@ -1,5 +1,5 @@
 """
-phobert_model.py v7.0
+phobert_model.py v7.4
 ---------------------
 v7.0 nâng cấp:
 - Thêm type hints, pathlib, logging
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 from platform_utils import safe_print, setup_console
 
@@ -46,8 +47,8 @@ class PhoBertIntentClassifier:
     def __init__(self, model_dir: str = MODEL_DIR, max_length: int = MAX_LENGTH):
         self.model_dir = model_dir
         self.max_length = max_length
-        self.model = None
-        self.tokenizer = None
+        self.model: Any = None
+        self.tokenizer: Any = None
         self.labels = None
         self.device = None
 

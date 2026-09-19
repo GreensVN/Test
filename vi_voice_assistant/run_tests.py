@@ -21,6 +21,7 @@ import sys
 import tempfile
 import traceback
 import types
+from typing import Any
 
 
 # --- Co pytest that khong? Quyet dinh o main(), KHONG lam luc import ---
@@ -59,7 +60,11 @@ def _detect_real_pytest() -> bool:
 
 # find_spec (khong phai import): chi can biet co module hay khong; import that
 # se chay __init__ cua pytest (~chuc ms) ngay khi runner bat dau.
-_HAS_PYTEST = _detect_real_pytest()
+# VI_TESTS_FORCE_EMBEDDED=1: buoc chay bang runner nhung ngay ca khi may co
+# pytest. Can cho (a) test chinh runner - neu khong, moi lenh goi vao `main()`
+# deu bi day sang pytest that va khong kiem duoc phan nhung; (b) mo phong may
+# chua cai gi ca.
+_HAS_PYTEST = _detect_real_pytest() and not os.environ.get("VI_TESTS_FORCE_EMBEDDED")
 
 # ---------------------------------------------------------------------------
 # PYTEST SHIM
@@ -172,7 +177,7 @@ class _Monkeypatch:
     """
     def __init__(self):
         self._patches = []
-        self._cwd = _MISSING
+        self._cwd: Any = _MISSING
         self._syspath = None
 
     def setattr(self, obj_or_dotted, name_or_value=_MISSING, value=_MISSING, raising=True):
@@ -213,18 +218,36 @@ class _Monkeypatch:
     def setitem(self, mapping, key, value):
         old = mapping.get(key, _MISSING)
         mapping[key] = value
-        self._patches.append((mapping, key, old))
+        self._patches.append((mapping, key, old, False, "item"))
+
     def delitem(self, mapping, key, raising=True):
         try:
             old = mapping[key]
             del mapping[key]
-            self._patches.append((mapping, key, old, True))
+            self._patches.append((mapping, key, old, True, "item"))
         except KeyError:
             if raising: raise
+
+    # setenv/delenv: `os.environ` KHONG phai dict, nen khong the dua vet `undo`
+    # bang duong cua setitem (no thu `delattr` va nhe nong bo qua) -> bien moi
+    # truong da dat la roi sang tat ca cac test chay sau do. Danh dau "item" de
+    # undo phuc hoi bang `obj[name] = old` / `obj.pop(name)`.
     def setenv(self, name, value, prepend=None):
         old = os.environ.get(name, _MISSING)
-        os.environ[name] = (value + prepend + os.environ.get(name,"")) if prepend else value
-        self._patches.append((os.environ, name, old))
+        if prepend:
+            value = value + prepend + os.environ.get(name, "")
+        os.environ[name] = value
+        self._patches.append((os.environ, name, old, False, "item"))
+
+    def delenv(self, name, raising=True):
+        try:
+            old = os.environ[name]
+        except KeyError:
+            if raising:
+                raise KeyError(name) from None
+            return
+        del os.environ[name]
+        self._patches.append((os.environ, name, old, False, "item"))
     def chdir(self, path) -> None:
         self._cwd = os.getcwd()
         os.chdir(str(path))
@@ -245,6 +268,12 @@ class _Monkeypatch:
         for item in reversed(self._patches):
             obj, name, old = item[0], item[1], item[2]
             restore_del = len(item) > 3 and item[3]
+            if len(item) > 4 and item[4] == "item":
+                if restore_del or old is _MISSING:
+                    obj.pop(name, None)
+                else:
+                    obj[name] = old
+                continue
             if restore_del:
                 setattr(obj, name, old); continue
             if old is _MISSING:
@@ -281,7 +310,9 @@ class _Caplog:
         self.handler = logging.StreamHandler(io.StringIO())
         self.handler.setLevel(self._level)
         self.handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-        self.handler.emit = self.records.append          # giu nguyen LogRecord
+        # type checker coi day la 'gan vao method' - o day dung y: handler tam
+        # nay chi gom record, khong in an gi.
+        self.handler.emit = self.records.append  # type: ignore[method-assign,assignment]
         root.addHandler(self.handler)
         root.setLevel(min(root.level or self._level, self._level))
 
@@ -347,14 +378,20 @@ def _install_pytest_shim() -> None:
     # nhung file test dung pytest.fixture/parametrize KHONG CHAY DUOC tren chinh
     # runner cua minh, dung cai ma runner sinh ra de phuc vu.
     spec = importlib.util.spec_from_loader("pytest", loader=None)
+    assert spec is not None, "khong tao duoc spec cho module gia 'pytest'"
     module = importlib.util.module_from_spec(spec)
     module.__doc__ = "Pytest shim cua run_tests.py (chi dung khi may khong co pytest)"
-    module.__vi_shim__ = True      # de lan sau khong nhan nham shim = pytest that
-    module.fixture = _fixture
-    module.mark = _Mark()
-    module.raises = _raises
-    module.approx = _Approx
-    module.skip = _skip
+    # setattr (khong gan truc tiep): ten thuoc tinh duoc tao dong, type checker
+    # khong co quyen cho rang module 'pytest' gia phai co dinh nghien cuu.
+    for attr, value in (
+        ("__vi_shim__", True),        # de lan sau khong nhan nham shim = pytest that
+        ("fixture", _fixture),
+        ("mark", _Mark()),
+        ("raises", _raises),
+        ("approx", _Approx),
+        ("skip", _skip),
+    ):
+        setattr(module, attr, value)
     sys.modules["pytest"] = module
 
 
@@ -366,6 +403,7 @@ if not _HAS_PYTEST:
 # ---------------------------------------------------------------------------
 def _load_module(path):
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    assert spec is not None and spec.loader is not None, f"khong nap duoc {path}"
     mod = importlib.util.module_from_spec(spec)
     sys.modules[path.stem] = mod
     spec.loader.exec_module(mod)
@@ -426,6 +464,14 @@ def _resolve(name, fixtures, mp, capsys, tmp_path, finalizers=None, depth=0, cap
         return v
     return None
 
+def _count_test_files(test_dir) -> int:
+    """Bao nhieu file test trong thu muc (khong nem loi neu thu muc khong ton tai)."""
+    directory = pathlib.Path(test_dir)
+    if not directory.is_dir():
+        return 0
+    return len(sorted(directory.glob("test_*.py")))
+
+
 def run(keyword=None, verbose=False, quiet=False):
     test_dir = pathlib.Path(__file__).parent / "tests"
     files = sorted(test_dir.glob("test_*.py"))
@@ -455,7 +501,7 @@ def run(keyword=None, verbose=False, quiet=False):
         for name, fn in fns:
             if keyword and keyword.lower() not in name.lower(): continue
 
-            cases = [(name, fn, {})]
+            cases: list[Any] = [(name, fn, {})]
             if hasattr(fn, "__parametrize__"):
                 arg_names, arg_values = fn.__parametrize__
                 cases = []
@@ -481,7 +527,7 @@ def run(keyword=None, verbose=False, quiet=False):
                 mp = _Monkeypatch()
                 capsys = _Capsys()
                 caplog = _Caplog()
-                finalizers = []          # teardown cua fixture dang yield
+                finalizers: list[Any] = []   # teardown cua fixture dang yield
                 with tempfile.TemporaryDirectory() as td:
                     tmp_path = pathlib.Path(td)
                     # caplog/capsys PHAI vao cuoi TRUOC khi giai tham so: test
@@ -595,11 +641,24 @@ def main(argv=None) -> int:
     a, unknown = ap.parse_known_args(argv)
     if unknown:
         print(f"(bỏ qua cờ không thuộc runner: {' '.join(unknown)})")
+    test_dir = pathlib.Path(__file__).resolve().parent / "tests"
     if a.list:
-        test_dir = pathlib.Path(__file__).parent / "tests"
         for path in sorted(test_dir.glob("test_*.py")):
             print(path.name)
         return 0
+    if _count_test_files(test_dir) == 0:
+        # v7.4: "0 pass, 0 fail, exit 0" la MAU XANH GIA. Ban cai bang pip khong
+        # kem tests/ (co y, de wheel nhe), nen chay runner tu do la khong chay
+        # gi ca - cung kieu loi `|| echo passed` da phat hien o CI. Bao ro ly do
+        # va tra ma loi de CI/khong ai tuong la da kiem.
+        print("KHONG tim thay file test nao trong:")
+        print(f"  {test_dir}")
+        print("  - Neu day la ban cai bang pip: wheel co y KHONG dong tests/.")
+        print("    Chay bo test tu thu muc nguon:")
+        print("      cd <Thu>Muc/source && python vi_voice_assistant/run_tests.py -q")
+        print("  - Neu chay trong thu muc source ma van 0: thu muc `tests/` bi")
+        print("    doi ten/ma mat.")
+        return 1
     return 1 if run(keyword=a.keyword, verbose=a.verbose, quiet=a.quiet) else 0
 
 

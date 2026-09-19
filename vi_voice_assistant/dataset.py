@@ -253,7 +253,7 @@ def _generate_reminders() -> list[str]:
 def _generate(templates: list[str], objects: list[str], per_object: int = 3) -> list[str]:
     """Ghép mẫu câu với đối tượng. Mỗi đối tượng dùng `per_object` mẫu khác nhau
     (xoay vòng theo chỉ số để kết quả luôn ổn định, không phụ thuộc random)."""
-    out = []
+    out: list[str] = []
     n = len(templates)
     if n == 0 or not objects:
         # v7.2: người dùng tự sửa dataset.py mà xoá/rỗng một danh sách MẪU CÂU
@@ -464,7 +464,7 @@ def get_dataset_as_lists(augment_no_diacritics: bool = True) -> tuple[list[str],
     return texts, labels
 
 
-def get_dataframe(augment_no_diacritics: bool = True):  # type: ignore[no-untyped-def]
+def get_dataframe(augment_no_diacritics: bool = True):
     """Trả về dữ liệu dạng Pandas DataFrame (cột: text, intent)."""
     import pandas as pd  # import cục bộ để file vẫn chạy được khi chưa có pandas
     texts, labels = get_dataset_as_lists(augment_no_diacritics=augment_no_diacritics)

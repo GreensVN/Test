@@ -59,6 +59,13 @@ def detect_python() -> tuple[tuple[int, int], bool]:
     return sys.version_info[:2], sys.version_info[:2] >= (3, 9)
 
 
+def in_virtualenv() -> bool:
+    """Đang chạy trong một virtualenv/venv? (dùng cho lời khuyên cài đặt)"""
+    if os.environ.get("VIRTUAL_ENV") or os.environ.get("CONDA_PREFIX"):
+        return True
+    return bool(getattr(sys, "prefix", "")) and sys.prefix != sys.base_prefix
+
+
 def venv_hint() -> str:
     """Lời khuyên tạo môi trường riêng theo ĐÚNG nền tảng đang chạy."""
     if os.name == "nt":
@@ -94,20 +101,46 @@ def base_pip_args() -> list[str]:
     return [sys.executable, "-m", "pip"]
 
 
-def retry_flags_for(stderr: str, already: list[str]) -> list[str] | None:
-    """Đề xuất cờ cài lại dựa trên lỗi pip thật sự. None = bó tay (báo người)."""
+def retry_flags_for(stderr: str, already: list[str],
+                    in_venv: bool = False) -> list[str] | None:
+    """Đề xuất cờ cài lại dựa trên lỗi pip thật sự. None = bó tay (báo người).
+
+    ``in_venv`` là tham số THUẦN (hàm không tự dò môi trường) để test được mọi
+    nhánh trên mọi máy. Mặc định False vì người gọi thật (install_with_fallbacks)
+    là nơi duy nhất biết mình đang ở đâu.
+
+    v7.4: trong venv thì CẢ HAI cờ ``--user`` lẫn ``--break-system-packages``
+    đều bị pip từ chối ("Can not perform a '--user' install..."). Trước đây script
+    vẫn thử làm thành một lần lỗi vô ích, rồi in lời khuyên "hãy tạo venv" cho
+    người đang ở trong venv. Gặp lỗi quyền trong venv phải đi hướng khác:
+    pip sai chỗ hoặc venv nằm trên đĩa chỉ đọc.
+    """
     text = (stderr or "").lower()
     # Thu theo thu tu "it hai long nhat" -> "rang tay nhat": --user van ghi vao
     # nha nguoi dung, con --break-system-packages moi cham vao site-packages.
-    if PEP668_MARKER in text or "break-system-packages" in text:
+    looks_locked = PEP668_MARKER in text or "break-system-packages" in text
+    looks_perm = ("permission denied" in text or "could not create" in text
+                  or "read-only file system" in text)
+    if in_venv and (looks_locked or looks_perm):
+        return None
+    if looks_locked:
         if "--user" not in already:
             return ["--user"]
         if "--break-system-packages" not in already:
             return ["--break-system-packages"]
         return None
-    if "permission denied" in text or "could not create" in text or "read-only file system" in text:
+    if looks_perm:
         return ["--user"] if "--user" not in already else None
     return None
+
+
+def fix_hint(in_venv: bool) -> str:
+    """Lời khuyên khi pip từ chối - KHÁC NHAU tuỳ đang trong venv hay không."""
+    if in_venv:
+        return ("\n  Bạn ĐANG trong môi trường riêng (venv) nên pip không nhận --user."
+                "\n  Kiểm tra xem đúng pip của venv chưa:  python -m pip --version"
+                "\n  Nếu vẫn lỗi quyền: venv nằm trên đĩa chỉ đọc -> tạo lại venv ở nơi khác.")
+    return (f"\n  Gợi ý: tạo môi trường riêng rồi chạy lại script:\n\n  {venv_hint()}\n")
 
 
 def run(cmd: list[str], dry_run: bool = False, cwd: Path | None = None) -> tuple[int, str]:
@@ -137,21 +170,21 @@ def install_with_fallbacks(cmd: list[str], dry_run: bool = False,
     Trả về (thành_công, thông_báo_cho_người_dùng). Không bao giờ ném lỗi: mục
     tiêu của script là DẪN người dùng tới lệnh đúng, không phải crash thay họ.
     """
+    in_venv = in_virtualenv()
     extra: list[str] = []
     note = ""
     for attempt in range(max_retries + 1):
         code, output = run(cmd + extra, dry_run=dry_run)
         if code == 0:
             return True, note
-        suggested = retry_flags_for(output, extra)
+        suggested = retry_flags_for(output, extra, in_venv=in_venv)
         if not suggested or attempt >= max_retries:
             break
         note = f"pip từ chối (lỗi môi trường), thử lại với {' '.join(suggested)}"
         log(f"  [!] {note}")
         extra = extra + suggested
     tail = "\n".join(line for line in output.splitlines() if line.strip())[-900:]
-    hint = (f"\n  Gợi ý: tạo môi trường riêng rồi chạy lại script:\n\n  {venv_hint()}\n")
-    return False, f"pip thất bại.\n{tail}{hint}"
+    return False, f"pip thất bại.\n{tail}{fix_hint(in_venv)}"
 
 
 def check_imports(packages: tuple[str, ...]) -> list[str]:

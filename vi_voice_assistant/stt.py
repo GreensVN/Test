@@ -14,7 +14,7 @@ import io
 import logging
 import os
 import wave
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from platform_utils import safe_print, setup_console
 
@@ -61,10 +61,10 @@ class STT:
     def __init__(self, model_name: str = MODEL_NAME, device: str = "auto"):
         self.model_name = model_name
         self.device = device
-        self._pipe = None
+        self._pipe: Any = None
         self._use_google = False
-        self._sd = None
-        self._recognizer = None
+        self._sd: Any = None
+        self._recognizer: Any = None
 
     def _load_model(self):
         if self._pipe is not None or self._use_google:
@@ -183,7 +183,7 @@ class STT:
         with sr.AudioFile(buf) as source:
             audio_data = self._recognizer.record(source)
         try:
-            return self._recognizer.recognize_google(audio_data, language="vi-VN")
+            return str(self._recognizer.recognize_google(audio_data, language="vi-VN"))
         except Exception:
             return ""
 
@@ -195,7 +195,7 @@ class STT:
         with sr.AudioFile(path) as source:
             audio_data = self._recognizer.record(source)
         try:
-            return self._recognizer.recognize_google(audio_data, language="vi-VN")
+            return str(self._recognizer.recognize_google(audio_data, language="vi-VN"))
         except Exception:
             return ""
 
@@ -342,7 +342,7 @@ def _capture_audio(timeout: float, phrase_limit: float = 8.0):
 def _recognize(recognizer, audio, language: str) -> str:
     """Gửi audio tới Google Web Speech API, trả về chuỗi rỗng khi không nhận được."""
     try:
-        text = recognizer.recognize_google(audio, language=language)
+        text = str(recognizer.recognize_google(audio, language=language))
         safe_print(f"[STT] Nhận diện được: {text}")
         return text
     except _sr.UnknownValueError:

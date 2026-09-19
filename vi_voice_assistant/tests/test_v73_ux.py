@@ -45,6 +45,7 @@ import text_utils  # noqa: E402
 def _load_root_module(name: str, filename: str):
     """Nạp module ở THƯ MỤC GỐC repo (install.py) - không nằm trong package."""
     spec = importlib.util.spec_from_file_location(name, str(REPO_ROOT / filename))
+    assert spec is not None and spec.loader is not None, f"khong nap duoc {filename}"
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)

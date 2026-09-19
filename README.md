@@ -1,10 +1,17 @@
-# Trợ lý ảo tiếng Việt v7.3
+# Trợ lý ảo tiếng Việt v7.4
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 330 pass](https://img.shields.io/badge/tests-330%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 367 pass](https://img.shields.io/badge/tests-367%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
+[![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+
+**v7.4** siết chất lượng nền: `mypy` từ 60 lỗi về **0** và có job CI giữ mức đó;
+file dữ liệu (config/reminders/history) ghi bằng MỘT hàm atomic duy nhất có fsync;
+`vi-doctor` không còn chết vì một mục hỏng; và **Python 3.9 chạy được thật** - trước
+bản này `import intent_model` nổ TypeError trên 3.9 dù README ghi "3.9+".
 
 **v7.3** tập trung vào CÀI ĐẶT và TIỆN NGHI: `pip install .` giờ chạy được thật
 (có `vi-assistant`, `vi-doctor`), dữ liệu người dùng không còn nằm trong
@@ -44,7 +51,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 330 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 367 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -105,17 +112,21 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (330 test)
-    └── tests/             # 330 test (gồm bộ hồi quy v7.2 + v7.3)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (367 test)
+    └── tests/             # 367 test (hồi quy v7.2 + v7.3 + v74 compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 330 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 367 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 330 pass, 0 fail, 0 skip
+# Ket qua: 367 pass, 0 fail, 0 skip
+
+# Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
+python -m ruff check .                     # 0 canh bao
+python -m mypy                             # 0 loi (doc [tool.mypy] trong pyproject.toml)
 ```
 
 ## Tài liệu
@@ -138,6 +149,7 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
+- v7.4 (2026-09-20): mypy 60->0 + job typecheck, ghi file atomic co fsync, sua loi sap tren Python 3.9, 367 tests
 - v7.3 (2026-09-20): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests
 - v7.2 (2026-09-13): 15 lỗi thật + 347 lint -> 0, 251 tests pass, refactor C901
 - v7.1 (2026-09-13): Dọn cấu trúc dự án, đồng bộ docs/version, typing hiện đại

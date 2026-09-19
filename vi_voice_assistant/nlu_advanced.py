@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.3
+nlu_advanced.py v7.4
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -32,6 +32,12 @@ Cách dùng nhanh:
     for cmd in nlu.understand("mo chrome roi phat nhac tru tinh"):
         safe_print(cmd)
 """
+
+# v7.4: Python 3.9 KHONG danh gia duoc `dict | None`/`str | None` trong chur ky ham
+# (PEP 604 can 3.10). File dung annotation kieu nay ma thieu dong nay thi lenh
+# `import intent_model` chet bang TypeError tren 3.9 - xem
+# tests/test_v74_py39_compat.py de khong ai quen lai.
+from __future__ import annotations
 
 import csv
 import difflib
@@ -105,7 +111,8 @@ def _read_thresholds(cfg: dict | None):
 def _load_cfg_quietly() -> dict:
     try:
         from config import load_config
-        return load_config()
+        cfg: dict = load_config()
+        return cfg
     except Exception as cfg_error:   # pragma: no cover
         # Không nuốt lỗi âm thầm nữa: ghi log để còn biết config.json có vấn đề.
         _logger.warning("Không đọc được config.json (%s) - dùng mặc định an toàn.", cfg_error)
@@ -197,7 +204,7 @@ def _build_accent_map():
     Ví dụ: 'mo' -> 'mở', 'tat' -> 'tắt'.
     Từ nào xuất hiện nhiều nhất trong dataset sẽ được ưu tiên.
     """
-    counter = {}
+    counter: dict[str, int] = {}
     try:
         from dataset import get_dataset_as_lists
         texts, _ = get_dataset_as_lists(augment_no_diacritics=False)
@@ -212,7 +219,8 @@ def _build_accent_map():
             counter.setdefault(word, 0)
             counter[word] += 1
 
-    accent_map, best_count = {}, {}
+    accent_map: dict[str, str] = {}
+    best_count: dict[str, int] = {}
     for word, count in counter.items():
         plain = strip_accents(word)
         if plain == word:
@@ -304,7 +312,7 @@ def split_commands(text: str):
     # (v6.2: thêm động từ KHÔNG DẤU - "mo chrome va tat may").
     verbs = (r"(?:mở|mo|bật|bat|tắt|tat|phát|phat|chạy|chay|khởi|khoi|tìm|tim"
              r"|chụp|chup|đóng|dong|khóa|khoa|khoá)")
-    final = []
+    final: list[str] = []
     for part in parts:
         pieces = re.split(rf"\s+(?:và|va)\s+(?={verbs}\b)", part)
         final.extend(p.strip() for p in pieces if p.strip())
@@ -318,7 +326,7 @@ class ContextMemory:
     """Ghi nhớ lệnh gần nhất để hiểu được "nó", "cái đó", "trang đó"."""
 
     def __init__(self, max_items: int = 10):
-        self.history = []
+        self.history: list[dict] = []
         self.max_items = max_items
 
     def remember(self, result: dict):
