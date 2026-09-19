@@ -215,11 +215,20 @@ jobs:
         # khong cham vao no, va day chinh la cho ban cu ghi vao site-packages.
         subprocess.run([sys.executable, "-m", "vi_voice_assistant", "--once", "mở youtube",
                         "--dry-run"], check=True, cwd=str(pathlib.Path.home()))
-        # MUST be the fully-qualified name: `import tts` only works from the source
-        # directory, so the short form fails silently in an installed copy.
-        subprocess.run([sys.executable, "-c",
-                        "import vi_voice_assistant.tts as t; t.speak('xin chao')"],
-                       check=True, cwd=str(pathlib.Path.home()))
+        # TEN DAY DU `vi_voice_assistant.tts` bat buoc: `import tts` chi chay duoc
+        # tu thu muc ma nguon, nen viet ngan thi copy cai dat fail lang le.
+        # Import + doc bang gia (that, check=True) - do la duong cham vao thu muc
+        # cache; rieng phat tieng duoc boc suppress() vi may CI khong co am thanh
+        # va do khong phai dieu buoc nay muon bao ve.
+        code = (
+            "import contextlib\n"
+            "import vi_voice_assistant.tts as t\n"
+            "t._load_voice_cache()\n"
+            "with contextlib.suppress(Exception):\n"
+            "    t.speak('xin chao')\n"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True,
+                       cwd=str(pathlib.Path.home()))
         assert not (pkg / "voice_cache").exists(), (
             "ban cai da tao voice_cache/ trong site-packages - phai di qua data_path()")
         new = snapshot(pkg) - before
