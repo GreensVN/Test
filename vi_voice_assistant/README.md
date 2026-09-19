@@ -1,23 +1,23 @@
-# Trợ lý ảo tiếng Việt v7.4
+# Trợ lý ảo tiếng Việt v7.5
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
+> **v7.5 (2026-09-20)** - **điểm vào chịu được dữ liệu thật**: `config.json` hỏng
+> không còn giết mọi lệnh (dùng giá trị mặc định + in rõ lỗi, `--doctor` vẫn chạy);
+> `tts.speak(123)`/`speak(None)` không crash và câu rỗng không in `"[TRỢ LÝ] None"`;
+> `understand("")` không còn **bịa** một lệnh `open_website/unknown`; `--once ""`
+> thoát ngay thay vì rơi vào REPL (treo script/CI); `sanitize_filename` chặn tên dành
+> riêng của Windows (CON/AUX/COM1…) và giới hạn 255 byte. 392 test.
+>
 > **v7.4 (2026-09-20)** - **chất lượng nền**: `mypy` **60 lỗi -> 0** và CI có job
-"
-"> `typecheck` giữ mức đó; `config.json` / `reminders.json` / `.history.json` ghi bằng
-"
-"> MỘT hàm atomic duy nhất (`paths.atomic_write_json`: file tạm -> fsync -> replace);
-"
-"> `vi-doctor` in được báo cáo đầy đủ cả khi một mục hỏng; `install.py` không còn khuyên
-"
-"> người đang ở trong venv đi tạo venv; và **Python 3.9 chạy được thật** (trước đây
-"
-"> `import intent_model` nổ TypeError vì annotation PEP 604) - có máy quét AST khoá lại.
-"
-"> 367 test, 0 cảnh báo lint, 0 lỗi mypy.
-"
-">
+> `typecheck` giữ mức đó; `config.json` / `reminders.json` / `.history.json` ghi bằng
+> MỘT hàm atomic duy nhất (`paths.atomic_write_json`: file tạm -> fsync -> replace);
+> `vi-doctor` in được báo cáo đầy đủ cả khi một mục hỏng; `install.py` không còn khuyên
+> người đang ở trong venv đi tạo venv; `voice_cache/` rời khỏi site-packages; và
+> **Python 3.9 chạy được thật** (trước đây `import intent_model` nổ TypeError vì
+> annotation PEP 604) - có máy quét AST khoá lại.
+>
 > **v7.3 (2026-09-20)** - **cài đặt & tiện nghi**: `pip install .` chạy được thật
 > (`vi-assistant`, `vi-doctor`, `vi-train`, `vi-voice`), dữ liệu người dùng rời
 > khỏi `site-packages` (mới `paths.py`), có `install.py` tự phát hiện môi trường
@@ -126,12 +126,12 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 367 test | + `test_v74_compat.py` (tương thích Python 3.9, import sạch) và `test_v74_hardening.py` (atomic write, dispatcher, doctor, install.py); mỗi test gắn một lỗi thật đã sửa |
+| `tests/` | 392 test | + `test_v74_compat.py` (tương thích Python 3.9, import sạch) và `test_v74_hardening.py` (atomic write, dispatcher, doctor, install.py); mỗi test gắn một lỗi thật đã sửa |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py        # 367 pass, 0 fail - không cần cài gì
+python run_tests.py        # 392 pass, 0 fail - không cần cài gì
 pytest tests/ -v           # nếu đã cài pytest
 python -m unittest discover
 ```

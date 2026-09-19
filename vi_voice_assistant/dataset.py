@@ -45,6 +45,11 @@ Hợp nhất 2 hướng cải tiến từ 2 bản trước:
 
 Chạy để xem thống kê:
     python dataset.py
+v7.5 nâng cấp:
+- `get_dataframe()` khi thiếu pandas nói rõ `pip install pandas` hoặc dùng
+  `get_dataset_as_lists()` - trước đây chỉ `ModuleNotFoundError`, người đọc phải
+  tự đoán bước tiếp theo.
+
 """
 
 
@@ -466,7 +471,15 @@ def get_dataset_as_lists(augment_no_diacritics: bool = True) -> tuple[list[str],
 
 def get_dataframe(augment_no_diacritics: bool = True):
     """Trả về dữ liệu dạng Pandas DataFrame (cột: text, intent)."""
-    import pandas as pd  # import cục bộ để file vẫn chạy được khi chưa có pandas
+    try:
+        import pandas as pd  # import cục bộ: file vẫn import được khi chưa có pandas
+    except ImportError as e:
+        # Loi phai noi duoc cach khac phuc, khong phai "No module named 'pandas'"
+        # roi de nguoi dung tu doan (day la cho duoc goi truc tiep tu REPL/README).
+        raise RuntimeError(
+            "get_dataframe() cần pandas. Cài bằng: pip install pandas "
+            "(hoặc dùng get_dataset_as_lists() - không cần thư viện ngoài)."
+        ) from e
     texts, labels = get_dataset_as_lists(augment_no_diacritics=augment_no_diacritics)
     return pd.DataFrame({"text": texts, "intent": labels})
 

@@ -1,5 +1,5 @@
 """
-executor.py v7.4
+executor.py v7.5
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -14,6 +14,11 @@ v7.0 nâng cấp:
 - Thêm timeout cho subprocess, tránh treo
 - Thêm logging structured, metrics
 - Bảo mật: chặn thêm đuôi .lnk, kiểm tra symlink
+v7.5 nâng cấp:
+- `CONFIG, CONFIG_ERROR = load_config_safe()`: `config.json` hỏng không còn giết
+  cả ứng dụng (trước đây `import executor` raise nên không chạy nổi lệnh nào, kể cả
+  `--doctor`). Lỗi được ghi vào log và `main` in cảnh báo kèm đường dẫn cần sửa.
+
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable
 
-from config import load_config
+from config import load_config, load_config_safe
 from paths import atomic_write_json, data_path
 from platform_utils import (
     is_windows7_or_older,
@@ -61,7 +66,16 @@ except ImportError:
     )
 
 SYSTEM = platform.system()
-CONFIG: dict[str, Any] = load_config()
+
+# v7.5: file config hong KHONG duoc giet ca ung dung. `load_config` o day chay
+# luc import, nen truoc day mot dau phay thieu trong config.json -> RuntimeError
+# tran ra truoc khi lenh nao kip chay (khi ca `vi-doctor`/`--help` cua module cung
+# khong toi duoc). Gio dung ban mac dinh va ghi `CONFIG_ERROR` de `main` in canh
+# bao - loi khong bi an, no chi khong con chan nguoi dung lam tiep.
+CONFIG: dict[str, Any] = {}
+CONFIG, CONFIG_ERROR = load_config_safe()
+if CONFIG_ERROR:
+    logger.warning("config.json không dùng được - chạy với giá trị mặc định: %s", CONFIG_ERROR)
 
 CONFIDENCE_THRESHOLD: float = float(CONFIG.get("confidence_threshold", 0.35))
 DANGEROUS_ACTIONS: set[str] = {str(a) for a in CONFIG.get("dangerous_actions", [])}

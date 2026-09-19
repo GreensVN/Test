@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vi-voice-assistant"
-version = "7.4.0"
+version = "7.5.0"
 description = "Trợ lý ảo tiếng Việt - hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng"
 readme = "vi_voice_assistant/README.md"
 license = { text = "MIT" }

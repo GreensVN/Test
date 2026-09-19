@@ -1,12 +1,18 @@
-# Trợ lý ảo tiếng Việt v7.4
+# Trợ lý ảo tiếng Việt v7.5
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 367 pass](https://img.shields.io/badge/tests-367%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 392 pass](https://img.shields.io/badge/tests-392%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+
+**v7.5** siết các điểm vào công cộng: `config.json` hỏng không còn giết mọi lệnh
+(kể cả `vi-doctor`), `tts.speak()` không crash với số/`None` và không in
+`"[TRỢ LÝ] None"` cho câu rỗng, `understand("")` không bịa lệnh, `--once ""` thoát
+ngay thay vì rơi vào REPL, `sanitize_filename` chặn tên dành riêng của Windows và
+giới hạn 255 byte.
 
 **v7.4** siết chất lượng nền: `mypy` từ 60 lỗi về **0** và có job CI giữ mức đó;
 file dữ liệu (config/reminders/history) ghi bằng MỘT hàm atomic duy nhất có fsync;
@@ -51,7 +57,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 367 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 392 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -112,17 +118,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (367 test)
-    └── tests/             # 367 test (hồi quy v7.2 + v7.3 + v74 compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (392 test)
+    └── tests/             # 392 test (hồi quy v7.2 + v7.3 + v74 compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 367 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 392 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 367 pass, 0 fail, 0 skip
+# Ket qua: 392 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
@@ -149,6 +155,7 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
+- v7.5 (2026-09-20): config hong khong giet ung dung, `speak`/`understand`/`--once` chiu duoc dau vao that, sanitize_filename theo Windows, 392 tests
 - v7.4 (2026-09-20): mypy 60->0 + job typecheck, ghi file atomic co fsync, sua loi sap tren Python 3.9, 367 tests
 - v7.3 (2026-09-20): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests
 - v7.2 (2026-09-13): 15 lỗi thật + 347 lint -> 0, 251 tests pass, refactor C901

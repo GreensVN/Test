@@ -1,5 +1,5 @@
 """
-intent_model.py v7.4
+intent_model.py v7.5
 --------------------
 HUẤN LUYỆN MÔ HÌNH PHÂN LOẠI Ý ĐỊNH (TF-IDF + LogisticRegression / SVM,
 hoặc PhoBERT nếu đã fine-tune) và TRÍCH XUẤT THỰC THỂ (Entity Extraction).
@@ -19,6 +19,12 @@ BẢN KẾT HỢP (v5) + v6.2 (số bằng chữ) + v6.3 (WSL) + v7.0 (typing & 
 
 Chạy để huấn luyện và lưu model TF-IDF ra `intent_model.pkl`:
     python intent_model.py
+v7.5 nâng cấp:
+- `_EntityContext.build()` ép kiểu MỘT LẦN ở đầu hàm: `predict_intent(123)` từng
+  crash ở `(text or "").strip()` *sau khi* `normalize_text` đã xử lý tử tế - hai quy
+  tắc khác nhau trong cùng một đường gọi. `replace_number_words()` cũng chịu được giá trị
+  không phải chuỗi.
+
 """
 
 # v7.4: Python 3.9 KHONG danh gia duoc `dict | None`/`str | None` trong chur ky ham
@@ -64,7 +70,7 @@ except ImportError:   # pragma: no cover
 from dataset import get_dataset_as_lists
 from paths import data_path
 from platform_utils import safe_print, setup_console
-from text_utils import normalize_text, strip_diacritics
+from text_utils import as_text, normalize_text, strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -662,8 +668,13 @@ def replace_number_words(text):
     Ví dụ: "mười lăm cộng hai mươi bảy" -> "15 cộng 27";
            "nhắc tôi họp lúc bảy giờ sáng" -> "nhắc tôi họp lúc 7 giờ sáng".
     Cụm không đọc được được giữ nguyên văn.
+
+    v7.5: nhận được cả giá trị không phải chuỗi (xem `text_utils.as_text`) vì
+    hàm này được gọi trực tiếp từ `parse_time_expression`/`parse_math_expression`,
+    tức từ mọi nơi dùng hai hàm đó như tài liệu hướng dẫn.
     """
-    tokens = (text or "").split()
+    text = as_text(text)
+    tokens = text.split()
     out = []
     i = 0
     prev = None
@@ -1164,8 +1175,15 @@ class _EntityContext:
 
     @classmethod
     def build(cls, text: str) -> _EntityContext:
+        # v7.5: `text` co the KHONG phai chuoi khi goi truc tiep
+        # (`predict_intent(123)`, ket qua nlp tu file JSON, batch truong).
+        # `normalize_text` da ep kieu ho, nhung `original` thi (text or "")
+        # .strip() -> `'int' object has no attribute 'strip'`. Ep kieu MOT LAN
+        # o dau, roi moi dung; None -> "" (git nguoi dung thay "None" trong URL).
+        if not isinstance(text, str):
+            text = "" if text is None else str(text)
         raw = normalize_text(text)
-        return cls(raw=raw, raw_no_dia=strip_diacritics(raw), original=(text or "").strip())
+        return cls(raw=raw, raw_no_dia=strip_diacritics(raw), original=text.strip())
 
 
 def _entity_chitchat(ctx: _EntityContext) -> str:

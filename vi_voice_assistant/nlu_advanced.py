@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.4
+nlu_advanced.py v7.5
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -31,6 +31,13 @@ Cách dùng nhanh:
     nlu = NLU()
     for cmd in nlu.understand("mo chrome roi phat nhac tru tinh"):
         safe_print(cmd)
+v7.5 nâng cấp:
+- `understand()` trả `[]` cho câu rỗng thay vì một LỆNH BỊ BỊA
+  (`open_website/unknown`): script lặp qua kết quả rồi thực thi đã đi mở thật một
+  website tên "unknown".
+- `split_commands()` ép kiểu trước khi vào regex - `re.search(123)` chỉ trả về
+  "expected string or bytes-like object", không nói chỗ nào nên sửa.
+
 """
 
 # v7.4: Python 3.9 KHONG danh gia duoc `dict | None`/`str | None` trong chur ky ham
@@ -49,7 +56,7 @@ from datetime import datetime
 
 from paths import data_path
 from platform_utils import safe_print, setup_console
-from text_utils import normalize_text
+from text_utils import as_text, normalize_text
 from text_utils import strip_diacritics as strip_accents
 
 # v6: đọc CẢ 2 ngưỡng tự tin từ config.json. Trước đây chúng bị VIẾT CỨNG
@@ -303,7 +310,13 @@ def split_commands(text: str):
     """
     "mở chrome rồi phát nhạc trữ tình" -> ["mở chrome", "phát nhạc trữ tình"]
     Câu nhắc nhở / tìm kiếm được giữ nguyên để không cắt nhầm nội dung.
+
+    v7.5: `text` được ép sang chuỗi TRƯỚC khi vào regex. `understand()`/CLI có thể
+    nhận số/dict từ người gọi khác (vd lặp qua một trường JSON), và `re.search(123)`
+    chỉ trả về `TypeError: expected string or bytes-like object, got 'int'` - câu
+    lỗi không chỉ ra chỗ nên sửa.
     """
+    text = as_text(text)
     if NO_SPLIT_GUARD.search(text):
         return [text]
 
@@ -425,7 +438,18 @@ class NLU:
 
     # ------------------------------------------------------------------
     def understand(self, text: str):
+        """Hiểu một câu -> danh sách lệnh. Câu rỗng trả về ``[]`` (không bịa lệnh).
+
+        v7.5: trước đây câu rỗng/chỉ có khoảng trắng (`"   "`) đi hết tầng phân
+        loại và cho ra `{'intent': 'open_website', 'target': 'unknown'}` - một
+        LỆNH BỊ BỊA. Với ai dùng thử (`run_once`, `--json`, script lặp qua kết quả
+        rồi thực thi), trợ lý đi mở thật một website tên là "unknown". Không có
+        nội dung thì không có lệnh: đó là hợp đồng của hàm.
+        """
         from intent_model import predict_intent
+
+        if not as_text(text).strip():
+            return []
 
         results = []
         for chunk in split_commands(text):

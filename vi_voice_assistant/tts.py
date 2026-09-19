@@ -11,6 +11,12 @@ v7.4 nâng cấp:
   thay vì nằm cạnh mã nguồn: bản `pip install .` không còn bắt người dùng đặt
   mp3 vào site-packages. Thư mục cũ vẫn được đọc nên ai đã có cache không mất
   gì. `index.csv` chỉ nhận dòng mà file được trỏ tới thật sự tồn tại.
+v7.5 nâng cấp:
+- `speak()` kiểm tra nội dung TRƯỚC khi in echo và chịu được kiểu khác chuỗi:
+  `speak(123)` từng AttributeError, `speak(None)`/`speak("")` in "[TRỢ LÝ] None"
+  rồi mới chịu dừng. Nhánh "engine đã chốt vừa hỏng" tách thành
+  `_retry_other_engines()` - hanh vi GIUYÊN, chỉ tách để `speak` dưới ngưỡng C901=10.
+
 """
 
 from __future__ import annotations
@@ -297,13 +303,35 @@ def _try_engine(fn, text: str) -> bool:
         return False
 
 
+def _speech_text(text: object) -> str:
+    """Ép nội dung cần nói về chuỗi đã cắt khoảng trắng; "" = không có gì để nói.
+
+    Tách thành hàm riêng vì `speak` đã ở ngưỡng độ phức tạp (C901=10) mà hai
+    bước kiểm tra kiểu/khoảng trắng ở đây là việc của tầng gọi, không phải của
+    việc phát âm thanh.
+    """
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    return text.strip()
+
+
 def speak(text: str, show: bool = True) -> None:
+    """Đọc một câu. Im lặng tuyệt đối khi câu rỗng - không in "[TRỢ LÝ] None".
+
+    v7.5: kiểm tra nội dung TRƯỚC khi in echo và chịu được giá trị không phải
+    chuỗi (speak(123) trước đây AttributeError; None in ra "None" như thể trợ lý
+    vừa nói chữ đó).
+    """
     global _resolved_engine
+
+    text = _speech_text(text)
+    if not text:
+        return
 
     if show:
         safe_print(f"[TRỢ LÝ] {text}")
 
-    if not ENABLED or not text or not text.strip():
+    if not ENABLED:
         return
 
     if _speak_cache(text):
@@ -315,23 +343,39 @@ def speak(text: str, show: bool = True) -> None:
                 _resolved_engine = fn
                 return
 
-        # Engine đã "chốt" (lưu từ lần trước) vừa hỏng giữa chừng - vd micro bị
-        # rút, dịch vụ SAPI bị tắt. Thử lại các engine khác TRƯỚC KHI bỏ trống.
-        if ENGINE == "auto" and _resolved_engine is not None:
-            broken = _resolved_engine
-            for fn in (
-                _speak_piper,
-                _speak_pyttsx3,
-                _speak_sapi,
-                _speak_macos,
-                _speak_gtts,
-            ):
-                if fn is broken:
-                    continue
-                if _try_engine(fn, text):
-                    _resolved_engine = fn
-                    return
-            _resolved_engine = None
+        if _retry_other_engines(text):
+            return
+
+
+def _retry_other_engines(text: str) -> bool:
+    """Engine đã chốt hỏng giữa chừng -> thử lại các engine khác.
+
+    Tách từ `speak` (v7.5) để `speak` ở dưới ngưỡng độ phức tạp C901=10; hành vi
+    giữ nguyên từng dòng, kể cả thứ tự engine. Trả về True nếu một engine mới nói
+    được, khi đó `_resolved_engine` đã trỏ sang engine mới.
+
+    Chỉ thử lại khi ENGINE == "auto" - người dùng KHOÁ cứng một engine thì câu
+    trả lời đúng là "engine đó hỏng", tự ý đổi sang engine khác chỉ làm họ hoang
+    mang về chính cấu hình của mình.
+    """
+    global _resolved_engine
+    if ENGINE != "auto" or _resolved_engine is None:
+        return False
+    broken = _resolved_engine
+    for fn in (
+        _speak_piper,
+        _speak_pyttsx3,
+        _speak_sapi,
+        _speak_macos,
+        _speak_gtts,
+    ):
+        if fn is broken:
+            continue
+        if _try_engine(fn, text):
+            _resolved_engine = fn
+            return True
+    _resolved_engine = None
+    return False
 
 
 def set_enabled(value: bool) -> None:

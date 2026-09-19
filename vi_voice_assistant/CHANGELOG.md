@@ -1,5 +1,69 @@
 # CHANGELOG
 
+## v7.5 (2026-09-20) - Điểm vào công cộng chịu được dữ liệu thật: 392 test
+
+### Vì sao bản này tồn tại
+Bốn bản trước sửa lỗi ở tầng dữ liệu và tầng cài đặt; bản này quét một lớp hẹp hơn
+mà chỉ ra được khi chạy thật: **hàm ký mong `str`, còn giá trị thật đến từ file JSON
+hoặc từ người gọi khác lại là số/`None`/danh sách**, và **một file hỏng không được
+phép làm chết mọi lệnh**. Bảy lỗi dưới đây đều được tìm bằng cách cho chạy, không
+phải đọc mã.
+
+### Lỗi thật đã sửa
+1. **`config.json` hỏng giết cả ứng dụng** - `executor` nạp config ngay lúc `import`,
+   nên một file thiếu dấu phẩy (hoặc được lưu thành JSON `[...]`) làm MỌI lệnh chết
+   bằng traceback, **kể cả `--doctor`** - thứ duy nhất có thể chỉ chỗ hỏng. Thêm
+   `config.load_config_safe()`: trả `(giá trị mặc định, mô tả lỗi)`; `executor` lưu
+   `CONFIG_ERROR`, `main` in cảnh báo một dòng kèm đường dẫn cần sửa, các lệnh vẫn
+   chạy. `load_config()` **vẫn raise** cho người gọi chủ động (lệnh "nạp lại",
+   `install.py --check`).
+2. **`tts.speak()`** - hai lỗi cùng một dòng: `text.strip()` crash khi nhận
+   `123`/`None`/danh sách, và câu `safe_print` chạy TRƯỚC kiểm tra nên câu rỗng vẫn
+   in `"[TRỢ LÝ] None"` - màn hình báo trợ lý vừa nói "None" trong khi nó không nói
+   gì. Nay kiểm tra nội dung trước, im lặng tuyệt đối với câu rỗng.
+3. **`nlu_advanced.understand("")` bịa ra một lệnh** - `"   "` đi hết tầng phân loại
+   và trả `{'intent': 'open_website', 'target': 'unknown'}`. `run_once`, `--json` và
+   mọi script "lặp qua kết quả rồi thực thi" vì thế đi mở thật một website tên
+   `unknown`. Hợp đồng mới: không có nội dung -> `[]`.
+4. **`--once ""` rơi vào REPL** - `args.once or args.text` không phân biệt "được đưa
+   mà rỗng" với "không được đưa", nên câu rỗng bị bỏ qua im lặng và lệnh một-cau
+   không bao giờ thoát (treo trong script/CI). Thêm `_one_shot_text()`: in
+   "Câu rỗng - không có gì để thực hiện." rồi thoát 0.
+5. **Kiểu ở tầng NLU/NLP** - `intent_model.predict_intent(123)` crash ở
+   `_EntityContext.build` (`(text or "").strip()`) *sau khi* `normalize_text` đã ép
+   kiểu tử tế; `split_commands(123)`/`replace_number_words(123)` chết bằng
+   `TypeError: expected string or bytes-like object, got 'int'` - câu lỗi không chỉ
+   chỗ nên sửa. `text_utils._as_text` được công khai thành **`as_text`** và dùng ở cả
+   ba điểm vào.
+6. **`sanitize_filename()` thiếu ba thứ** (tên file ở đây đến từ nội dung người
+   dùng): (a) cùng lỗi kiểu trên; (b) **tên dành riêng của Windows** - `CON`, `PRN`,
+   `AUX`, `NUL`, `COM1-9`, `LPT1-9` bị OS từ chối ở mọi vị trí kể cả có phần mở rộng,
+   ghi vào là treo/lỗi khó hiểu; (c) **giới hạn 255 byte cho một thành phần đường
+   dẫn** - tiếng Việt ~3 byte/ký tự nên cái tên 90 ký tự đã thành `OSError
+   [Errno 36]`. Nay chặn tên dành riêng bằng `_`, cắt theo byte rồi giải mã (không
+   cắt giữa ký tự), và hàm idempotent.
+7. **`dataset.get_dataframe()`** báo `ModuleNotFoundError: No module named 'pandas'`
+   rồi thôi; nay nói luôn `pip install pandas` hoặc dùng `get_dataset_as_lists()`.
+8. **`raises(E, fn)` trong runner nhúng là một cái bẫy** - shim chỉ là
+   `@contextmanager`, nên dạng gọi *thẳng* trả về generator và `fn` **không bao giờ
+   được gọi**: test báo PASS dù chẳng kiểm tra gì. Nay `_raises` hỗ trợ cả hai dạng
+   (gọi `fn`, bắt đúng kiểu, `match` là regex thật, lỗi sai kiểu để nguyên bay lên),
+   và shim có thêm `importorskip` (thiếu module -> SKIP, không phải fail).
+9. **`@pytest.mark.parametrize("x", [])` từng là màu xanh giả** - vòng sinh case
+   chạy 0 lần, test biến "không có gì để kiểm tra" thành PASS. Runner nhúng giờ đánh
+   dấu một thất bại có tên `[empty-parametrize]` (exit 1).
+
+### Test
+`tests/test_v75_input_hardening.py` (18) + `tests/test_v75_runner_shim.py` (7) ->
+**392 test**, chạy được bằng cả pytest lẫn runner nhúng (đã đo cả trên venv
+KHÔNG có pytest). Mỗi lỗi ở trên có ít nhất một test; riêng lỗi 1 và 4 được test
+bằng cách chạy `main.py` thật trong `VI_ASSISTANT_HOME` tạm - lỗi nằm ở đường
+import/CLI nên unit test trong cùng tiến trình không thấy được.
+
+Test cuối của nhóm shim là **rào cho tương lai**: nó quét mọi `pytest.X` mà các
+file test đang dùng và bắt shim phải có đủ X. Thiếu một cái là máy chưa cài pytest
+chết ngay, còn máy có pytest thì vẫn xanh - kiểu lệch lạc khó tự phát hiện nhất.
+
 ## v7.4 (2026-09-20) - Toàn vẹn dữ liệu & kiểu: mypy 60 lỗi -> 0, 367 test
 
 ### Vì sao bản này tồn tại

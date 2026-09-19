@@ -18,6 +18,15 @@ v7.3 nâng cấp:
 - Đầu vào KHÔNG phải chuỗi (số do config lỗi, None từ caller...) được ép sang
   str thay vì ném AttributeError: một trợ lý giọng nói không nên chết vì kiểu
   dữ liệu lạ ở tầng văn bản.
+v7.5 nâng cấp:
+- `_as_text` thành hàm CÔNG CỘNG `as_text` (export trong `__all__`): mọi điểm vào
+  của dự án dùng chung một chính sách "không chết vì kiểu" thay vì mỗi module tự
+  viết rồi quên.
+- `sanitize_filename`: chặn tên dành riêng của Windows (CON/PRN/AUX/NUL/COM1-9/
+  LPT1-9 - OS từ chối ở mọi vị trí, kể cả có phần mở rộng), cắt theo 255 byte của
+  MỘT thành phần đường dẫn (tiếng Việt ~3 byte/ký tự, tên dài từng gây OSError 36),
+  và nhận giá trị không phải chuỗi. Giữ tính chất idempotent.
+
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ _KEEP_RE: Final = re.compile(r"[^\w\s./:\\-]+", re.UNICODE)
 _INVALID_FILENAME_RE: Final = re.compile(r'[<>:"/\\|?*]')
 
 __all__ = [
+    "as_text",
     "normalize_no_diacritics",
     "normalize_text",
     "sanitize_filename",
@@ -44,13 +54,22 @@ __all__ = [
 _TEXT_CACHE = 8192
 
 
-def _as_text(text) -> str:
-    """Mọi thứ không phải chuỗi đều được ép sang chuỗi TRƯỚC khi vào cache.
+def as_text(text: object) -> str:
+    """Ép mọi giá trị về chuỗi; ``None`` -> ``""``.
 
-    lru_cache cần đối tượng hash được, và dự án không bao giờ được chết chỉ vì
-    ai đó đưa vào một con số/khối dict từ config.
+    Lý do tồn tại (mới v7.5, trước là hàm riêng ``_as_text`` của tầng cache):
+    mọi hàm xử lý văn bản trong dự án đều nhận `str` theo chữ ký, nhưng giá trị
+    thật đến từ config/JSON/đối tượng trả về của bên thứ ba - và `re.search(123)`
+    hay `(123).strip()` thì chết bằng traceback khó đọc thay vì trả kết quả.
+    `lru_cache` còn cần thứ hash được, nên ép kiểu phải xảy ra TRƯỚC khi vào cache.
+
+    Đây là hàm CÔNG CỘNG vì tầng NLU + tts cần dùng chung: cùng một chính sách
+    "không chết vì kiểu" ở mọi điểm vào, thay vì mỗi module tự viết một kiểu.
     """
     return text if isinstance(text, str) else ("" if text is None else str(text))
+
+
+_as_text = as_text  # ten cu, van duoc dung noi bo
 
 
 def normalize_text(text: str | None) -> str:
@@ -91,16 +110,49 @@ def normalize_no_diacritics(text: str | None) -> str:
     return strip_diacritics(normalize_text(text))
 
 
-def sanitize_filename(name: str, replacement: str = "_") -> str:
-    """Làm sạch tên file, bỏ ký tự không hợp lệ trên Windows/Linux."""
-    if not name:
+# Windows tu choi nhung ten nay o MOI vi tri, ke ca khi co phan mo rong: ghi file
+# "CON.txt" khong tra ve loi "duoc" ma treo hoac loi kho hieu -> nguoi dung do loi
+# cho phan mem. Ten den tu CHINH NOI DUNG nguoi dung (cau "luu ...", tieu de web).
+_WINDOWS_RESERVED: Final = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+_MAX_NAME_BYTES: Final = 255  # gioi han MOT thanh phan duong dan (ext4/APFS/NTFS)
+
+
+def sanitize_filename(name: str, replacement: str = "_", *,
+                      max_bytes: int = _MAX_NAME_BYTES) -> str:
+    """Làm sạch tên file, bỏ ký tự không hợp lệ trên Windows/Linux.
+
+    v7.5 sửa ba chỗ mà bản cũ bỏ qua - cả ba chỉ lộ ra khi tên file đến từ nội
+    dung người dùng chứ không phải chuỗi cố định trong code:
+      * **kiểu**: ``sanitize_filename(123)`` chết bằng ``TypeError`` trong
+        ``re.sub``; giờ dùng ``as_text`` như mọi điểm vào khác của module này.
+      * **tên dành riêng của Windows** (CON/PRN/AUX/NUL/COM1-9/LPT1-9): hợp lệ với
+        POSIX nhưng bị Windows từ chối ở mọi vị trí, nên được chặn bằng cách thêm
+        ``_`` - im lặng trả về một tên mà OS khác sẽ mở được.
+      * **độ dài theo byte**: tiếng Việt ~3 byte/ký tự, một cái tên 90 ký tự đã
+        vượt giới hạn 255 byte của một thành phần đường dẫn -> ``OSError
+        [Errno 36]``. Cắt theo byte rồi giải mã, không cắt giữa ký tự.
+    """
+    text = as_text(name)
+    if not text.strip():
         return "untitled"
-    # Bỏ ký tự không hợp lệ
-    name = _INVALID_FILENAME_RE.sub(replacement, name)
-    # Bỏ control chars
-    name = "".join(ch if ord(ch) >= 32 else replacement for ch in name)
-    name = name.strip().strip(".")
-    return name or "untitled"
+    text = _INVALID_FILENAME_RE.sub(replacement, text)
+    text = "".join(ch if ord(ch) >= 32 else replacement for ch in text)
+    text = text.strip().strip(".")
+    if not text:
+        return "untitled"
+    if text.split(".", 1)[0].lower() in _WINDOWS_RESERVED:
+        text = "_" + text
+    if max_bytes and max_bytes > 0:
+        raw = text.encode("utf-8", errors="replace")
+        if len(raw) > max_bytes:
+            cut = raw[:max_bytes].decode("utf-8", errors="ignore").rstrip(". ")
+            text = cut or "untitled"
+    return text
 
 
 def truncate_text(text: str, max_len: int = 100, suffix: str = "...") -> str:

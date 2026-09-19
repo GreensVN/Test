@@ -89,7 +89,7 @@ class _Approx:
     def __repr__(self): return "approx(%r)" % self.expected
 
 @contextlib.contextmanager
-def _raises(exc_type, match=None):
+def _raises_ctx(exc_type, match=None):
     try: yield
     except exc_type as e:
         if match and not re.search(match, str(e)):
@@ -100,6 +100,29 @@ def _raises(exc_type, match=None):
         ) from e
     else:
         raise AssertionError("Expected %s but no exception" % exc_type.__name__)
+
+
+def _raises(exc_type, *args, match=None, **kwargs):
+    """Hỗ trợ CẢ HAI dạng của `pytest.raises`.
+
+    Dạng gọi thẳng `raises(E, fn, *a, **kw)` là chỗ dễ sai nhất: nếu shim chỉ là
+    `@contextmanager` thì lời gọi đó trả về một generator, `fn` KHÔNG BAO GIỜ được
+    chạy - test báo PASS trong khi không kiểm tra thứ gì (đúng kiểu "xanh giả" mà
+    bản này dẹp). Ở đây: gọi `fn`, bắt đúng `exc_type`, soi `match` bằng
+    `re.search` (giống pytest, không phải so chuỗi con), và để lỗi khác
+    NGUYÊN VẸN đi lên để traceback còn đọc được.
+    """
+    if not args and not kwargs:
+        return _raises_ctx(exc_type, match=match)
+    fn, fargs = args[0], args[1:]
+    try:
+        fn(*fargs, **kwargs)
+    except exc_type as e:
+        if match and not re.search(match, str(e)):
+            raise AssertionError("Msg %r !~ %r" % (str(e), match)) from e
+        return e
+    raise AssertionError("Expected %s but no exception (called %r)"
+                         % (exc_type.__name__, getattr(fn, "__name__", fn)))
 
 class _MarkParam:
     def __init__(self, argnames, argvalues):
@@ -368,6 +391,49 @@ def _skip(reason=""):
     raise _Skip(reason)
 
 
+def _importorskip(name, reason=None):
+    """`pytest.importorskip` cho runner nhúng: nạp module, không có thì BỎ QUA test.
+
+    Đây là semantics của pytest - SKIP chứ không FAIL. Nếu ném lỗi thì máy chưa cài
+    `pandas`/`rapidfuzz` sẽ báo đỏ những test chẳng liên quan gì tới mã đang sửa,
+    và người đọc không biết mình có gì trong tay.
+    """
+    try:
+        return importlib.import_module(name)
+    except ImportError as e:
+        raise _Skip(reason or f"module {name!r} chưa cài ({e})") from e
+
+
+def _shim_attributes():
+    """(ten, gia tri) ma shim `pytest` cua runner phai co.
+
+    Ban duoc ke o day VÌ test dung `pytest.X`; bo sung thu tuc o day ma quen
+    them vao day thi `run_tests.py` tren may CHUA cai pytest che bang
+    `AttributeError: module 'pytest' has no attribute ...` (dau hieu: may co
+    pytest van xanh, may sach thi do).
+    """
+    return (
+        ("__vi_shim__", True),        # de lan sau khong nhan nham shim = pytest that
+        ("fixture", _fixture),
+        ("mark", _Mark()),
+        ("raises", _raises),
+        ("approx", _Approx),
+        ("skip", _skip),
+        ("importorskip", _importorskip),
+    )
+
+
+def _make_pytest_shim():
+    """Tạo module `pytest` giả (KHONG đụng `sys.modules`) - để test kiểm tra được."""
+    spec = importlib.util.spec_from_loader("pytest", loader=None)
+    assert spec is not None, "khong tao duoc spec cho module gia 'pytest'"
+    module = importlib.util.module_from_spec(spec)
+    module.__doc__ = "Pytest shim cua run_tests.py (chi dung khi may khong co pytest)"
+    for attr, value in _shim_attributes():
+        setattr(module, attr, value)
+    return module
+
+
 def _install_pytest_shim() -> None:
     """Thế chỗ module `pytest` cho các file test `import pytest` lấy fixture.
 
@@ -382,22 +448,10 @@ def _install_pytest_shim() -> None:
     # chet bang ValueError "pytest.__spec__ is None" o Python 3.11+ - tuc la
     # nhung file test dung pytest.fixture/parametrize KHONG CHAY DUOC tren chinh
     # runner cua minh, dung cai ma runner sinh ra de phuc vu.
-    spec = importlib.util.spec_from_loader("pytest", loader=None)
-    assert spec is not None, "khong tao duoc spec cho module gia 'pytest'"
-    module = importlib.util.module_from_spec(spec)
-    module.__doc__ = "Pytest shim cua run_tests.py (chi dung khi may khong co pytest)"
-    # setattr (khong gan truc tiep): ten thuoc tinh duoc tao dong, type checker
-    # khong co quyen cho rang module 'pytest' gia phai co dinh nghien cuu.
-    for attr, value in (
-        ("__vi_shim__", True),        # de lan sau khong nhan nham shim = pytest that
-        ("fixture", _fixture),
-        ("mark", _Mark()),
-        ("raises", _raises),
-        ("approx", _Approx),
-        ("skip", _skip),
-    ):
-        setattr(module, attr, value)
-    sys.modules["pytest"] = module
+    # setattr (khong gan truc tiep trong _make_pytest_shim): ten thuoc tinh duoc
+    # tao dong, type checker khong co quyen cho rang module 'pytest' gia phai co
+    # dinh nghien cuu.
+    sys.modules["pytest"] = _make_pytest_shim()
 
 
 if not _HAS_PYTEST:
@@ -406,6 +460,11 @@ if not _HAS_PYTEST:
 # ---------------------------------------------------------------------------
 # RUNNER
 # ---------------------------------------------------------------------------
+def _empty_parametrize(*args, **kwargs):
+    """Vỏ bọc cho `@pytest.mark.parametrize` với danh sách rỗng."""
+    raise AssertionError("@parametrize không có giá trị nào: test không kiểm tra gì cả")
+
+
 def _load_module(path):
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
     assert spec is not None and spec.loader is not None, f"khong nap duoc {path}"
@@ -526,6 +585,12 @@ def run(keyword=None, verbose=False, quiet=False):
                         shown = seq
                     cid = "-".join(str(v)[:18] for v in shown)
                     cases.append(("%s[%s]" % (name, cid), fn, pkw))
+                if not arg_values:
+                    # @parametrize khong gia tri -> vong lap tren chay 0 lan, test
+                    # bien "khong co gi de kiem tra" thanh PASS. Do la mau xanh
+                    # gia ( cung ho voi `|| echo passed`), nen no phai la MOT
+                    # that bai co ten ro.
+                    cases.append(("%s[empty-parametrize]" % name, _empty_parametrize, {}))
 
             for case_name, test_fn, extra_kw in cases:
                 total += 1

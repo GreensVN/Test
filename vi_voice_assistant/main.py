@@ -1,5 +1,13 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.4
+main.py - Trợ lý ảo tiếng Việt v7.5
+
+v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
+- config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
+  `load_config_safe()` trả về giá trị mặc định + mô tả lỗi, `main` in cảnh báo,
+  mọi lệnh khác vẫn chạy được - trước đây `import executor` raise nên không gõ
+  nổi cả `--doctor` là thứ đáng ra phải chỉ chỗ hỏng.
+- `--once ""` phân biệt được với "không có --once": in "Câu rỗng" rồi thoát, thay
+  vì im lặng rơi vào REPL - kiểu đó làm script/CI treo mãi không dứt.
 
 v7.4 nâng cấp (TOÀN VẸN DỮ LIỆU):
 - .history.json ghi bằng paths.atomic_write_json(): tiến trình chết giữa chừng
@@ -45,7 +53,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.4"
+APP_VERSION = "7.5"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -755,6 +763,38 @@ def _adopt_shipped_data() -> list[str]:
         return []
 
 
+def _warn_broken_config() -> None:
+    """Báo (một lần, rõ ràng) nếu config.json đang bị bỏ qua vì hỏng.
+
+    Tách khỏi `main()` (v7.5) vì hàm đó đã chạm ngưỡng C901=10. Lỗi được ghi lúc
+    import nên phải in ở đây: nếu im lặng, người dùng sẽ sửa file config mãi mà
+    không thấy tác dụng - kiểu lỗi khó tự đoán nhất.
+    """
+    if not getattr(executor, "CONFIG_ERROR", None):
+        return
+    safe_print("[CẤU HÌNH] config.json không dùng được -> đang chạy với giá trị mặc định.")
+    safe_print(f"   {str(executor.CONFIG_ERROR).splitlines()[0]}")
+    from config import CONFIG_PATH
+
+    safe_print(f"   Sửa hoặc xoá file: {CONFIG_PATH}")
+
+
+def _one_shot_text(args: argparse.Namespace) -> tuple[str | None, bool]:
+    """(câu cần chạy ngay, có_phải_câu_rỗng) - tách ra để `main` còn dưới ngưỡng C901.
+
+    v7.5: `--once ""` phải KHÁC "không có --once". Trước đây cả hai cùng rơi vào một
+    phép thử (`args.once or args.text`), nên ai gõ `--once ""` trong script/CI bị
+    đẩy vào REPL một cách im lặng - một lệnh "chạy 1 câu rồi thoát" không bao giờ
+    thoát. Vì thế lấy giá trị theo `is not None` rồi mới xét nội dung rỗng.
+    """
+    one_shot = args.once if args.once is not None else args.text
+    if one_shot is None:
+        return None, False
+    if not one_shot.strip():
+        return "", True
+    return one_shot, False
+
+
 def main() -> int:
     args = parse_args()
 
@@ -764,6 +804,8 @@ def main() -> int:
 
     setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
+    _warn_broken_config()
+
     adopted = _adopt_shipped_data()
     if adopted:
         safe_print(f"[CẤU HÌNH] Đã lấy {', '.join(adopted)} từ gói cài đặt vào thư mục dữ liệu.")
@@ -772,14 +814,20 @@ def main() -> int:
     if option_error is not None:
         return option_error
 
-    if not args.once and not args.no_banner:
-        safe_print(BANNER)
+    one_shot, blank_once = _one_shot_text(args)
+
+    if one_shot is None:
+        if not args.no_banner:
+            safe_print(BANNER)
+        safe_print("Đang nạp mô hình hiểu ý...")
+    elif blank_once:
+        # `--once ""`/`--once "   "`: da chi dinh che do mot-cau thi phai thoat,
+        # khong im lang roi roi vao REPL (kieu im lang do giết script/CI).
+        safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
+        safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
+        return 0
 
     _warn_missing_optional_features(args)
-
-    one_shot = args.once or args.text
-    if not one_shot:
-        safe_print("Đang nạp mô hình hiểu ý...")
     try:
         nlu = NLU()
     except Exception as e:

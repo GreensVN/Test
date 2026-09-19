@@ -1,7 +1,7 @@
 ================================================================================
           TRỢ LÝ ẢO TIẾNG VIỆT – INTENT RECOGNITION + ACTION EXECUTION
                     HƯỚNG DẪN SỬ DỤNG & HUẤN LUYỆN
-     (BẢN v7.4 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3 + v7.4)
+  (BẢN v7.5 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3-v7.4, 0-H muc 6: v7.5)
 ================================================================================
 
 NGÔN NGỮ : Python 3.9+ để CÀI BẰNG PIP; Windows 7/Python 3.8 chạy từ source
@@ -190,7 +190,8 @@ GHÉP" bên dưới để biết những chỗ 2 nhánh xung đột đã đượ
 5. KIỂM THỬ: 220 test (tăng từ 200 ở v6.2).
 
 --------------------------------------------------------------------------------
-0-H. NÂNG CẤP Ở BẢN v7.3 - v7.4 (09/2026) - CÀI ĐẶT THẬT & CHẤT LƯỢNG NỀN
+0-H. NÂNG CẤP Ở BẢN v7.3 - v7.5 (09/2026) - CÀI ĐẶT THẬT, CHẤT LƯỢNG NỀN
+     - v7.5 o muc 6 duoi day: cai gi khi may ban co file bi hong
 --------------------------------------------------------------------------------
 Bản v7.3 lo việc "cài xong có chạy được không"; bản v7.4 lo "chạy trên máy của
 bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho người dùng:
@@ -223,14 +224,33 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
      Mở Issue - đừng sửa requires-python rồi tưởng là xong.
 5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
-     python vi_voice_assistant/run_tests.py -q     # 367 test, KHONG cần pytest
-     python -m pytest vi_voice_assistant/tests -q   # cũng 367
+     python vi_voice_assistant/run_tests.py -q     # 392 test, KHONG cần pytest
+     python -m pytest vi_voice_assistant/tests -q   # cũng 392
      python -m ruff check .                         # 0 cảnh báo
      python -m mypy                                 # 0 loi (xem [tool.mypy])
    - `VI_TESTS_FORCE_EMBEDDED=1` ép chạy bằng runner nhúng, kể cả khi máy đã có pytest
      - cần để test chính cái runner mà người chưa cài pytest vẫn phải dùng.
    - Không tìm thấy file test nào -> runner báo rõ và exit 1. Trước đây nó in
      "0 pass, 0 fail" rồi trả 0: màu xanh giả, y hệt lỗi `|| echo passed` trong CI.
+6. ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU HỎNG (mới v7.5)
+   - `config.json` gõ sai (thiếu dấu phẩy, hoặc lưu nhầm thành JSON `[...]`): trợ lý
+     KHÔNG chết nữa. Chạy với giá trị mặc định và in một khối cảnh báo ngắn (3 dòng, có đúng
+     đường dẫn tới file cần sửa); `vi-doctor` vẫn ghi việc này là [X] chứ không im lặng.
+       Trước v7.5: mọi lệnh chết bằng traceback ngay lúc `import executor` - kể cả
+       lệnh mà bạn sẽ nghĩ tới để tự chữa, `--doctor`.
+   - `--once ""` và `--once "   "`: in "Câu rỗng - không có gì để thực hiện." rồi
+     thoát 0. Trước đây hai trường hợp này bị coi như "không có --once" nên lệnh
+     một-câu rơi vào chế độ hội thoại và không bao giờ thoát (treo trong script/CI).
+   - `python -c "import tts; tts.speak(123)"`: không còn AttributeError; `speak("")`
+     và `speak(None)` im lặng tuyệt đối - trước đây in "[TRỢ LÝ] None" như thể trợ
+     lý vừa nói chữ "None".
+   - Câu rỗng không còn SINH RA LỆNH: `understand("   ")` trả `[]`. Trước đây nó trả
+     `open_website/unknown`, nên script lặp qua kết quả rồi thực thi đi mở thật một
+     website tên "unknown".
+   - Tên file trợ lý tự đặt tránh tên Windows dành riêng (CON, PRN, AUX, NUL,
+     COM1-9, LPT1-9 - OS từ chối ở mọi vị trí, kể cả có phần mở rộng) và cắt theo
+     255 BYTE: tiếng Việt ~3 byte/ký tự nên một cái tên 90 ký tự từng gây
+     `OSError [Errno 36]` khi ghi.
 
 --------------------------------------------------------------------------------
 I. 11 NHÓM Ý ĐỊNH VÀ VÍ DỤ
@@ -293,7 +313,7 @@ vi_voice_assistant/
   |- __init__.py / __main__.py : để `pip install .` và `python -m vi_voice_assistant`` chạy được
 
   KIỂM THỬ & KHÁC
-  |- tests/                 : 367 unit test (chạy được CẢ KHI chưa cài pytest)
+  |- tests/                 : 392 unit test (chạy được CẢ KHI chưa cài pytest)
   |- requirements.txt       : thư viện cần cài (ghim bản cho Windows 7)
   |- HUONG_DAN_SU_DUNG.txt  : file bạn đang đọc
 

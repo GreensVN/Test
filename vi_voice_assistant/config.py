@@ -26,6 +26,12 @@ v7.4 nâng cấp:
   giữ nguyên; cái được bỏ là ba bản thể sao chép ở ba file, mỗi bản thiếu một bước.
 - Giá trị sai kiểu trong các map (`app_map_*`, `*_cmd`) bị ép về `dict[str, str]`
   hoặc mặc định ngay khi nạp; trước đó chúng đi thẳng vào executor.
+v7.5 nâng cấp:
+- `load_config_safe()` -> `(config, lỗi)`: `executor` nạp config lúc import, nên
+  một file hỏng làm MỌI lệnh chết bằng traceback - kể cả `--doctor`. Giờ dùng giá
+  trị mặc định, trả mô tả lỗi cho tầng in; `load_config()` vẫn raise cho người gọi
+  chủ động (lệnh "nạp lại", `install.py --check`).
+
 """
 
 from __future__ import annotations
@@ -403,6 +409,24 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
     merged = _deep_merge(DEFAULT_CONFIG, user_config)
     _validate_config(merged)
     return merged
+
+
+def load_config_safe(path: str | Path = CONFIG_PATH) -> tuple[dict[str, Any], str | None]:
+    """Giống ``load_config`` nhưng KHÔNG BAO GIỜ raise -> ``(config, lỗi hoặc None)``.
+
+    Vì sao cần (v7.5): ``executor`` nạp cấu hình ngay lúc import, nên một file
+    ``config.json`` gõ sai - thiếu dấu phẩy, hoặc lưu nhầm thành JSON ``[...]`` -
+    làm MỌI lệnh của trợ lý chết bằng traceback, kể cả ``vi-doctor`` là thứ đáng
+    ra phải chỉ chỗ hỏng cho người dùng. Ở đây mã nguồn dùng cấu hình mặc định và
+    trả mô tả lỗi về cho tầng gọi in ra (main) / ghi log (diagnostic).
+
+    ``load_config`` vẫn raise: đó là hành vi đúng khi người dùng CHỦ ĐỘNG nạp lại
+    (lệnh "nạp lại") hoặc khi ``install.py --check`` muốn biết có lỗi hay không.
+    """
+    try:
+        return load_config(path), None
+    except Exception as e:  # RuntimeError (JSON sai/không phải object), OSError
+        return copy.deepcopy(DEFAULT_CONFIG), str(e)
 
 
 def save_config(config: dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
