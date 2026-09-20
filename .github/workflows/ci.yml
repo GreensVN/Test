@@ -1,0 +1,287 @@
+name: CI - Trợ lý ảo tiếng Việt v7.5
+
+on:
+  push:
+    branches: [ main, arena/* ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # v7.2: thêm 3.13 - pyproject.toml đã quảng cáo "Programming Language ::
+        # Python :: 3.13" nhưng CI chưa từng kiểm tra một bản nào.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      # v5: setup-python@v4 chạy trên Node 16 đã bị GitHub khai tử (warning +
+      # nguy cơ hết hỗ trợ), v5 dùng Node 20 và cache pip chuẩn hơn.
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r vi_voice_assistant/requirements.txt
+        python -m pip install pytest
+
+    # v7.2 - SỬA LỖI "CI XANH GIẢ": bước test trước đây là
+    #     pytest tests/ -v --tb=short || python run_tests.py
+    # Dấu `||` nghĩa là "nếu pytest FAIL thì chạy tiếp run_tests.py", và kết
+    # quả cuối cùng quyết định màu of CI. Chỉ cần run_tests.py (dùng runner nhúng,
+    # bớt khắt khe hơn pytest) xanh là CI XANH DÙ TOÀN BỘ pytest ĐỎ.
+    # Từ đây mỗi bộ test là một bước riêng, bước nào đỏ làm CI đỏ.
+    - name: Test with run_tests.py (built-in runner)
+      working-directory: vi_voice_assistant
+      run: python run_tests.py
+
+    - name: Test with pytest
+      working-directory: vi_voice_assistant
+      run: python -m pytest tests/ -v --tb=short
+
+    - name: Smoke test CLI (--version / --sysinfo / --once)
+      working-directory: vi_voice_assistant
+      run: |
+        python main.py --version
+        python main.py --sysinfo
+        python main.py --once "mở youtube" --dry-run --json
+        python main.py --once "15 cộng 27 bằng bao nhiêu" --dry-run --json
+
+  # v7.2 - BƯỚC TĨNH (lint/type) MỚI: pyproject.toml đã khai báo [tool.ruff] và
+  # [tool.mypy] từ bản 7.0 nhưng chưa lần nào được CI chạy, nên 347 cảnh báo
+  # (bao gồm 2 lỗi F821 "tên không tồn tại" thật) tích tụ không ai thấy.
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Install ruff
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "ruff>=0.5.0"
+    - name: ruff check
+      run: ruff check .
+
+  # v7.4: mypy tu 60 loi -> 0 va CI giu muc do. [tool.mypy] trong pyproject.toml
+  # da bat check_untyped_defs/warn_return_any/warn_unused_ignores - co that muc
+  # nay thi "sua kieu" khong con la viec tu nguyen.
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Install mypy
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "mypy>=1.11,<2"
+    - name: mypy (package + install.py)
+      run: |
+        mypy --version
+        mypy vi_voice_assistant install.py
+
+  # Chạy được cả khi CHƯA cài scikit-learn: đây là hợp đồng cốt lõi của dự án
+  # (lite_model.py). Nếu môi trường tối giản sập nghĩa là lỗi import mềm bị hồi quy.
+  no-deps:
+    name: Test without optional deps (chỉ stdlib)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Test with pytest
+      run: |
+        python -m pip install pytest
+        cd vi_voice_assistant && python -m pytest tests/ -q
+    - name: CLI smoke
+      working-directory: vi_voice_assistant
+      run: |
+        python main.py --version
+        python main.py --doctor
+        python main.py --once "mở google" --dry-run --json
+        python main.py "15 cộng 27 bằng bao nhiêu" --dry-run
+        python diagnostic.py --json > /tmp/doctor.json
+        python -c "import json;print('doctor json ok' if json.load(open('/tmp/doctor.json')) else '')"
+
+  # v7.3 - runner nhúng PHẢI chạy được khi máy không có pytest (đó là lý do nó
+  # tồn tại). Thêm job riêng vì từ trước tới nay không môi trường nào trong CI
+  # thiếu pytest, nên các lỗi kiểu "runner báo missing argument: caplog" hoặc
+  # parametrize bị bung thành từng ký tự không ai thấy.
+  embedded-runner:
+    name: Built-in runner (không có pytest)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Run run_tests.py (no pytest installed)
+      # VI_TESTS_FORCE_EMBEDDED: buoc chay bang runner nhung DU moi truong co
+      # pytest san (image cua GitHub co the doi). Neu khong co co nay, job nay
+      # im lang uy quyen cho pytest va khong con kiem thu phan nhung nua -
+      # dung cai lop ma no sinh ra de phong.
+      env:
+        VI_TESTS_FORCE_EMBEDDED: "1"
+      shell: bash
+      working-directory: vi_voice_assistant
+      run: |
+        python -m pip install pytest          # co y cai: van phai dung runner
+        python run_tests.py -q
+
+  # v7.3 - KIỂM TRA CÁI MÀ KHÔNG AI KIỂM TRA: bản cài đặt thật.
+  # `pip install .` của v7.2 tạo wheel ĐỦ FILE nhưng DÙNG KHÔNG ĐƯỢC
+  # (ModuleNotFoundError: No module named 'platform_utils'), README vẫn khoe
+  # "pip install -e ." được - bằng chứng là CI chưa từng cài thử.
+  install:
+    name: pip install + console scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install from the repo (no deps required)
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install .
+    - name: Console scripts must run
+      shell: bash
+      run: |
+        vi-assistant --version
+        vi-assistant --doctor
+        vi-assistant --dry-run --once "mở youtube"
+        vi-doctor --json > doctor.json
+        python -c "import json;d=json.load(open('doctor.json'));print('ok' if d['sections'] else 'empty')"
+    - name: Module entry point + run from another cwd
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        cd ~
+        python -m vi_voice_assistant --version
+    - name: User data must NOT be written into site-packages
+      shell: bash
+      run: |
+        python - <<'PY'
+        import pathlib, subprocess, sys, sysconfig
+        pkg = pathlib.Path(sysconfig.get_paths()["purelib"]) / "vi_voice_assistant"
+
+        def snapshot(root: pathlib.Path) -> set:
+            """Toan bo cay (ten + kich thuoc), tru __pycache__/.pyc.
+
+            Ban cu chi kiem file dinh cap *.json/*.log/*.pkl/*.csv -> mot THU MUC
+            moi (voice_cache/) hoac file o cap sau hơn thoát qua mat. Kiem ca cay
+            thi khong con lo hổng do.
+            """
+            out = set()
+            for p in root.rglob("*"):
+                if "__pycache__" in p.parts or p.suffix == ".pyc":
+                    continue
+                rel = p.relative_to(root).as_posix()
+                out.add((rel, p.stat().st_size) if p.is_file() else (rel, -1))
+            return out
+
+        before = snapshot(pkg)
+        # Goi ca duong doc (no) vi voice_cache/ chi duoc tao khi doc - dung `--once`
+        # khong cham vao no, va day chinh la cho ban cu ghi vao site-packages.
+        subprocess.run([sys.executable, "-m", "vi_voice_assistant", "--once", "mở youtube",
+                        "--dry-run"], check=True, cwd=str(pathlib.Path.home()))
+        # TEN DAY DU `vi_voice_assistant.tts` bat buoc: `import tts` chi chay duoc
+        # tu thu muc ma nguon, nen viet ngan thi copy cai dat fail lang le.
+        # Import + doc bang gia (that, check=True) - do la duong cham vao thu muc
+        # cache; rieng phat tieng duoc boc suppress() vi may CI khong co am thanh
+        # va do khong phai dieu buoc nay muon bao ve.
+        code = (
+            "import contextlib\n"
+            "import vi_voice_assistant.tts as t\n"
+            "t._load_voice_cache()\n"
+            "with contextlib.suppress(Exception):\n"
+            "    t.speak('xin chao')\n"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True,
+                       cwd=str(pathlib.Path.home()))
+        assert not (pkg / "voice_cache").exists(), (
+            "ban cai da tao voice_cache/ trong site-packages - phai di qua data_path()")
+        new = snapshot(pkg) - before
+        assert not new, f"ban cai da ghi du lieu vao site-packages: {sorted(new)}"
+        print("site-packages sach sau khi chay + doc:", len(snapshot(pkg)), "muc")
+        PY
+    - name: User data must land in the DATA DIR (not a fixed XDG path)
+      shell: bash
+      run: |
+        python - <<'PY'
+        # Kiem tra THAT, khong `|| echo ok`. Dung chinh paths.data_path() de lay
+        # duong dan - mot hang so `~/.local/share/...` se fail tren Windows/macOS.
+        import pathlib
+        from vi_voice_assistant.paths import data_path
+        missing = [name for name in ("config.json", ".history.json")
+                   if not data_path(name).is_file()]
+        assert not missing, f"thieu du lieu nguoi dung tai thu muc du lieu: {missing}"
+        print("du lieu nam o:", data_path(".history.json").parent)
+        PY
+    - name: Wheel must not carry private runtime files
+      shell: bash
+      run: |
+        python -m pip install wheel
+        python -m pip wheel . --no-deps -w dist
+        python - <<'PY'
+        import glob, zipfile
+        wheel = glob.glob("dist/*.whl")[0]
+        names = zipfile.ZipFile(wheel).namelist()
+        bad = [n for n in names if any(k in n for k in
+               (".history.json", "reminders.json", "feedback.csv", "lite_model.pkl",
+                "logs/", "__pycache__", "/tests/"))]
+        assert not bad, f"wheel rò rỉ file runtime/tests: {bad}"
+        need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
+                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py"}
+        missing = need - set(names)
+        assert not missing, f"wheel thiếu: {missing}"
+        print("wheel ok:", len(names), "files")
+        PY
+
+  # Cai bang script huong dan cua chinh du an (install.py) - kiem tra no khong
+  # bao loi khi may khong co pytest va khong mang (chi --check/--dry-run).
+  bootstrap:
+    name: install.py bootstrap
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Diagnose only (no network needed)
+      run: python install.py --check
+    - name: Plan without running pip
+      run: |
+        python install.py --dry-run --profile ml | tee install.log
+        grep -q "pip install --upgrade scikit-learn" install.log
+        python install.py --offline --skip-tests | tee -a install.log

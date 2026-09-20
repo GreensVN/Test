@@ -1,0 +1,50 @@
+# ===== Build / packaging (sinh ra khi `pip wheel`, `pip install -e .`, `build`) =====
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# ===== Cong cu =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# ===== Du lieu chay cua tro ly (KHONG bao gio commit) =====
+# Chi dan duong dan trong vi_voice_assistant/.gitignore khi chay tu source.
+# Tu v7.3 du lieu co the nam o thu muc nguoi dung (~/.local/share/vi_voice_assistant)
+# nen bo qua o goc de tranh vo tinh commit khi chay lenh thu o day.
+.history.json
+reminders.json
+feedback.csv
+intent_model.pkl
+lite_model.pkl
+nlu_report.txt
+logs/
+voice_cache/
+dataset/
+data/
+giong_ai/
+giong_nhan_ban/
+giong_nc_model/
+my_voice/
+*.log
+
+# ===== May moc / editor =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

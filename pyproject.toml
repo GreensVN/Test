@@ -1,0 +1,212 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vi-voice-assistant"
+version = "7.5.0"
+description = "Trợ lý ảo tiếng Việt - hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng"
+readme = "vi_voice_assistant/README.md"
+license = { text = "MIT" }
+authors = [{ name = "GreensVN", email = "greens@example.com" }]
+keywords = ["vietnamese", "voice-assistant", "nlu", "tts", "stt", "intent-classification"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Natural Language :: Vietnamese",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+# v7.2: TRƯỚC ĐÂY scikit-learn + joblib nằm trong `dependencies` (bắt buộc),
+# trong khi TOÀN BỘ thiết kế v6-v7 của dự án là "máy chưa cài được
+# scikit-learn vẫn chạy bình thường nhờ lite_model.py" - README còn quảng cáo
+# "Chạy ngay không cần cài gì". Hệ quả thật: `pip install -e .` kéo theo ~30MB
+# scikit-learn + numpy trên mọi máy, và máy không có mạng/không có wheel cho
+# Python của họ thì CÀI ĐẶT THẤT BẠI chứ không phải "chạy bản nhẹ".
+# Nay core không cần gì; muốn tăng độ chính xác thì `pip install -e ".[full]"`.
+# (Đồng thời bỏ 2 marker "python_version < '3.9'" vốn MÂU THUẪN với
+# requires-python = ">=3.9" nên không bao giờ được chọn - chỉ gây hiểu nhầm.)
+dependencies = []
+
+[project.optional-dependencies]
+full = [
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "rapidfuzz>=3.0.0",
+    "pyttsx3>=2.90",
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+]
+tts = [
+    "pyttsx3>=2.90",
+    "gTTS>=2.5.0",
+    # v7.2: bỏ "==1.2.2" (pin cứng 1 phiên bản duy nhất) -> playsound có bản
+    # mới hơn và pip sẽ xung đột khi người dùng cài kèm gói khác cần >=1.3.
+    "playsound>=1.2.2; sys_platform == 'win32'",
+]
+stt = [
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+]
+stt-offline = [
+    "transformers>=4.37.0",
+    "torch>=2.0.0",
+    "sounddevice>=0.4.6",
+]
+ai-voice = [
+    "vieneu>=3.2.0; python_version >= '3.10'",
+]
+ai-voice-clone = [
+    "vieneu>=3.2.0; python_version >= '3.10'",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+]
+nc-voice = [
+    "transformers>=4.37.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+all = [
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "rapidfuzz>=3.9.0",
+    "pyttsx3>=2.90",
+    "gTTS>=2.5.0",
+    "SpeechRecognition>=3.10.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "pandas>=2.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/GreensVN/Test"
+Repository = "https://github.com/GreensVN/Test"
+Issues = "https://github.com/GreensVN/Test/issues"
+Changelog = "https://github.com/GreensVN/Test/blob/main/vi_voice_assistant/CHANGELOG.md"
+
+[project.scripts]
+# v7.3: them 3 lenh nua - trc dc chi co 2 lenh trung gia (cung tro ve main:main)
+# va main.py khong co ham mien phien ban/chan doan rieng. Moi lenh bay gio la
+# mot cong cu that: xem may thieu gi (vi-doctor), huan luyen (vi-train), giong AI
+# (vi-voice). Tat ca deu tra ma exit code that de dung duoc trong script/CI.
+vi-assistant = "vi_voice_assistant.main:main"
+tro-ly-ao = "vi_voice_assistant.main:main"
+vi-doctor = "vi_voice_assistant.diagnostic:main"
+vi-train = "vi_voice_assistant.train_nlu:main"
+vi-voice = "vi_voice_assistant.giong_noi_ai:main"
+
+# v7.3 - SUA LOI DONG GOI THAT SU (do duoc bang `pip wheel` + chay thu):
+#   * package khong co __init__.py nen setuptools xu ly kieu "namespace":
+#     wheel du .py nhung `vi-assistant` chet ngay voi
+#         ModuleNotFoundError: No module named 'platform_utils'
+#     vi toan bo ma nguon dung import PHANG. Da them __init__.py (nom duong dan
+#     sys.path) + __main__.py (cho `python -m vi_voice_assistant`);
+#   * config.json / huong dan / requirements.txt KHONG duoc dua vao wheel ->
+#     ban cai dat chay ma thieu whitelist (mo app/mo web khong tai duoc danh sach).
+# Liệt kê tường minh (thay vi packages.find) để tests/ và cache không lọt vào wheel.
+[tool.setuptools]
+packages = ["vi_voice_assistant"]
+# FALSE co y do: `include-package-data = true` khiến setuptools lay ca nhung
+# file duoc git THEO DOI (kể cả file đang bị .gitignore nhưng co trên dĩa lúc
+# build) vao wheel. Thuc nghiem ban 7.3 cho thay `.history.json` - lich su cau
+# noi cua ngu dung build - bi dong goi tra theo moi lan `pip install .`.
+# Chi duoc publish nhung file khai bao tuong minh o package-data ben duoi.
+include-package-data = false
+
+[tool.setuptools.package-data]
+vi_voice_assistant = [
+    "config.json",
+    "requirements.txt",
+    "HUONG_DAN_SU_DUNG.txt",
+    "GIAY_PHEP_MODEL.md",
+    "CHANGELOG.md",
+    "README.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+exclude = ["__pycache__", "voice_cache", "giong_ai", "logs", "phobert_model"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "S", "B", "A", "C4", "TCH", "TID", "Q", "RUF"]
+ignore = [
+    "S101",  # assert used (tests)
+    "S603",  # subprocess without shell=True is actually safe, but ruff warns
+    "S607",  # partial executable path - đây LÀ chủ ý: gọi "shutdown"/"xdg-open" có sẵn của hệ thống
+    # v7.2 - các rule dưới là cảnh báo KHÔNG áp dụng cho dự án này, ghi rõ lý do
+    # không đi "sửa" thành code xấu hơn:
+    "S311",  # random.random() không dùng cho mật khẩu - dự án chỉ dùng để NGẪU NHIÊN CÂU TRẢ LỜI trò chuyện
+    "S324",  # hashlib chỉ để LÀM FINGERPRINT dataset/model, không phải mục đích bảo mật (đã truyền usedforsecurity=False)
+    "S605",  # chạy lệnh hệ thống - dự án KHÔNG bao giờ truyền chuỗi người dùng vào shell (luôn dùng list args)
+    "SIM105",  # contextlib.suppress() gọn hơn try/except/pass nhưng mất chỗ đặt comment giải thích
+]
+
+[tool.mypy]
+# v7.4: mypy khong phan tich cho Python 3.9 nua (ban do da EOL) nen ep cau hinh
+# 3.10 - gan nhat ma co the kiem duoc. Chay that tren 3.9 la viec cua job CI
+# "python-version: 3.9"; con cac loi ma 3.9 moi gap (annotation PEP 604, match,
+# isinstance union) da bi khoa bang AST trong tests/test_v74_compat.py.
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+files = ["vi_voice_assistant", "install.py"]
+# Duoi day la muc cua v7.4 - bat buoc trong CI (job "typecheck"), khong phai trang tri:
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# v7.4: test duoc kiem o muc thap hon ma nguon - chung dung rat nhieu
+# monkeypatch/lambda bo tui (`lambda p: opened.append(p) or True`) va khai bao
+# kieu khong can thiet. Nam trong tests/ thi kiem cha`ng khong bat duoc bug nao
+# cua nguoi dung, chi sinh nhieu; nguoc lai toan bo ma nguon ben ngoai tests/
+# phai 0 loi - do la dieu kien CI that (job "typecheck").
+[[tool.mypy.overrides]]
+module = "vi_voice_assistant.tests.*"
+check_untyped_defs = false
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["vi_voice_assistant/tests"]
+addopts = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff.lint.per-file-ignores]
+# v7.2 - vì sao cần bỏ qua THEO TỪNG FILE (thay vì sửa code cho "đẹp" một cách
+# máy móc, thứ thường làm code khó đọc hơn hoặc hỏng tính năng):
+#
+# main.py gọi setup_console() TRƯỚC các import dự án để console Windows đổi sang
+# UTF-8 KỊP lúc module khác in tiếng Việt lần đầu. Chuyển import lên đầu file là
+# làm HỒI QUY đúng lỗi ký tự tiếng Việt mà dự án đã sửa từ v6 -> bỏ qua E402.
+"vi_voice_assistant/main.py" = ["E402"]
+# intent_model.py: "token" ở đây là TOKEN TỪ VỰNG (từ-số tiếng Việt: "hai",
+# "mươi"...) chứ không phải khoá/mật khẩu - S105 chỉ đoán theo tên biến.
+# X_train/y_test là quy ước chuẩn của scikit-learn (xem tài liệu ML).
+"vi_voice_assistant/intent_model.py" = ["S105", "N806"]
+"vi_voice_assistant/train_nlu.py" = ["N806"]
+"vi_voice_assistant/train_phobert.py" = ["N806"]
+# Script test tự chạy, cố tình viết gọn (nhiều lệnh 1 dòng, in bằng %); nó còn
+# PHẢI đặt mã giữa file để vá pytest shim trước khi nạp các file test.
+"vi_voice_assistant/run_tests.py" = ["E401", "E402", "E701", "E702", "C901", "N802", "UP031", "S102"]
+
+[tool.coverage.run]
+source = ["vi_voice_assistant"]
+omit = ["*/tests/*", "*/__pycache__/*"]
