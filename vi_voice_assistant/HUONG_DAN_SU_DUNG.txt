@@ -227,7 +227,7 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
      Mở Issue - đừng sửa requires-python rồi tưởng là xong.
 5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
-     python vi_voice_assistant/run_tests.py -q     # 609 test, KHONG cần pytest
+     python vi_voice_assistant/run_tests.py -q     # 618 test, KHONG cần pytest
      python -m pytest vi_voice_assistant/tests -q   # cũng 518
      python -m ruff check .                         # 0 cảnh báo
      python -m mypy                                 # 0 loi (xem [tool.mypy])
@@ -331,9 +331,11 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
        luôn False, và JSON của Python mặc định chấp nhận `NaN` - đường `--json`
        là đường dùng thật. Cùng lý do, confidence sai kiểu nay bị hỏi lại thay vì
        nổ lỗi hoặc - tệ hơn - được coi là "chắc chắn".
-     - `feedback.csv` rỗng (mất điện) từng làm mất dòng tiêu đề, khiến
-       `train_nlu.py` ĂN MẤT dòng đầu và bỏ qua toàn bộ phần còn lại - mọi câu bạn
-       đã dạy biến mất khỏi vòng huấn luyện sau. Nay file tự được sửa lại.
+     - `feedback.csv` mất dòng tiêu đề làm `train_nlu.py` ĂN MẤT dòng đầu và bỏ
+       qua toàn bộ phần còn lại - mọi câu bạn đã dạy biến mất khỏi vòng huấn luyện
+       sau, và báo "0 câu" y hệt câu "bạn chưa dạy gì". Nay sửa CẢ HAI ĐẦU: ghi
+       thì tự thêm dòng tiêu đề khi file rỗng (mất điện), đọc thì chịu được cả
+       file không có header và báo rõ cho bạn biết file cần sửa.
      - `data_path("/etc/hosts")` và `index.csv` của kho giọng không còn trèo ra
        ngoài thư mục dữ liệu.
 

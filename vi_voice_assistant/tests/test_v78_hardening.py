@@ -33,6 +33,7 @@ Phần 12-13 bổ sung những lỗi mà chính phần 4 ĐÃ BỎ SÓT, vì tes
 """
 import json
 import math
+import pathlib
 import sys
 from pathlib import Path
 
@@ -685,3 +686,111 @@ def test_raw_text_ban_bo_roi_dung_text():
 
     r = predict_intent("15 + 27")
     assert r["intent"] == "calculate" and r["result"] == 42, r
+
+
+# ---------------------------------------------------------------------------
+# 14. `train_nlu.py` DOC file feedback.csv ma doc kieu DictReader.
+#     `log_feedback` (v7.8) da sua nguon ghi, nhung nguoi dung da co san tren dia
+#     nhung file hong do - neu phia DOC van bo qua im lang thi viet lai khong
+#     bao giup gi: "0 cau" trong khi ho da day 2 cau.
+# ---------------------------------------------------------------------------
+def _load_feedback(monkeypatch, content: str):
+    import contextlib
+    import io
+
+    import train_nlu
+
+    p = PKG_DIR / "tests" / "_tmp_feedback_probe.csv"
+    p.write_text(content, encoding="utf-8")
+    try:
+        monkeypatch.setattr(train_nlu, "FEEDBACK_CSV", str(p))
+        monkeypatch.setattr(train_nlu, "EXTRA_CSV", str(p.parent / "_khong_ton_tai.csv"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            train_nlu.load_all_data()
+        return buf.getvalue()
+    finally:
+        p.unlink(missing_ok=True)
+
+
+HEADERED = ("time,text,intent,confidence,verified\n"
+            "2026-01-01,mở youtube,play_media,0.9,1\n"
+            "2026-01-02,tắt máy,system_control,0.8,1\n"
+            "2026-01-03,xin chào,chitchat,0.7,0\n")
+
+
+def test_feedback_co_header_van_doc_dung_nhu_cu(monkeypatch):
+    out = _load_feedback(monkeypatch, HEADERED)
+    assert "KHÔNG có dòng tiêu đề" not in out
+    assert "2 câu" in out
+
+
+def test_feedback_khong_co_header_khong_bi_boc_qua(monkeypatch):
+    """Cùng dữ liệu bỏ dòng tiêu đề: trước đây ra '0 câu' - mất sạch phần dạy."""
+    same_rows = ("2026-01-01,mở youtube,play_media,0.9,1\n"
+                 "2026-01-02,tắt máy,system_control,0.8,1\n"
+                 "2026-01-03,xin chào,chitchat,0.7,0\n")
+    out = _load_feedback(monkeypatch, same_rows)
+    assert "2 câu" in out, out
+    assert "KHÔNG có dòng tiêu đề" in out, out
+
+
+def test_feedback_hong_phai_can_bao_gi_them(monkeypatch):
+    """File rỗng hoặc chỉ có header thì im lặng - không bịa cảnh báo."""
+    assert "KHÔNG có dòng tiêu đề" not in _load_feedback(monkeypatch, "")
+    only_header = HEADERED.split("\n")[0] + "\n"
+    assert "KHÔNG có dòng tiêu đề" not in _load_feedback(monkeypatch, only_header)
+
+
+def test_doc_csv_giu_duoc_ca_hai_kieu_co_va_khong_co_tieu_de(tmp_path):
+    from train_nlu import _read_keyed_csv
+
+    head = tmp_path / "a.csv"
+    head.write_text("text,intent\nmở notepad,open_app\n", encoding="utf-8")
+    bare = tmp_path / "b.csv"
+    bare.write_text("mở notepad,open_app\n", encoding="utf-8")
+    assert _read_keyed_csv(str(head), ("text", "intent"), "a.csv") == _read_keyed_csv(
+        str(bare), ("text", "intent"), "b.csv"
+    )
+
+
+def test_doc_csv_bo_quan_dong_trong():
+    """Dòng thiếu cột không được làm hỏng cả file."""
+    import tempfile
+
+    from train_nlu import _read_keyed_csv
+
+    p = pathlib.Path(tempfile.mkdtemp()) / "c.csv"
+    p.write_text("time,text,intent,confidence,verified\n"
+                 "2026-01-01,mở youtube\n", encoding="utf-8")   # thiếu 3 cột
+    rows = _read_keyed_csv(str(p), ("time", "text", "intent", "confidence", "verified"), "c.csv")
+    assert len(rows) == 1 and rows[0]["text"] == "mở youtube"
+
+
+@pytest.mark.parametrize("content,expected", [
+    # header đầy đủ
+    ("time,text,intent,confidence,verified\n"
+     "2026,mở youtube,play_media,0.9,1\n",
+     {"time": "2026", "text": "mở youtube", "intent": "play_media",
+      "confidence": "0.9", "verified": "1"}),
+    # thiếu cột phụ -> vẫn đọc theo header, KHÔNG rơi vào nhánh "không header"
+    ("time,text,intent,confidence\n"
+     "2026,mở youtube,play_media,0.9\n",
+     {"time": "2026", "text": "mở youtube", "intent": "play_media",
+      "confidence": "0.9", "verified": ""}),
+    ("text,intent,verified\n"
+     "mở youtube,play_media,1\n",
+     {"time": "", "text": "mở youtube", "intent": "play_media",
+      "confidence": "", "verified": "1"}),
+    # không header -> đọc theo vị trí cột
+    ("2026,mở youtube,play_media,0.9,1\n",
+     {"time": "2026", "text": "mở youtube", "intent": "play_media",
+      "confidence": "0.9", "verified": "1"}),
+])
+def test_doc_csv_chiu_duoc_ca_bon_kieu_header(tmp_path, content, expected):
+    from train_nlu import _read_keyed_csv
+
+    p = tmp_path / "f.csv"
+    p.write_text(content, encoding="utf-8")
+    cols = ("time", "text", "intent", "confidence", "verified")
+    assert _read_keyed_csv(str(p), cols, "f.csv") == [expected]

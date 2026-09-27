@@ -12,9 +12,10 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 > (`1.5`/`12.75` vẫn là thập phân), và phẩy thập phân không bị cắt lệnh.
 > `parse_math_expression` hiểu cả câu gõ **không dấu** (`"can bac hai cua 81"`).
 > `confidence: NaN` không còn đi thẳng qua ngưỡng an toàn (vì `nan < x` luôn
-> False, mà JSON mặc định chấp nhận `NaN`); `feedback.csv` rỗng mất dòng tiêu
-> đề khiến `train_nlu.py` bỏ qua toàn bộ phần dạy còn lại - nay tự sửa;
-> `data_path`/`voice_cache` không trèo ra ngoài thư mục dữ liệu. **609 test**.
+> False, mà JSON mặc định chấp nhận `NaN`); `feedback.csv` mất dòng tiêu
+> đề khiến `train_nlu.py` bỏ qua toàn bộ phần dạy còn lại - nay sửa cả đầu ghi lẫn đầu
+> đọc (đọc được cả file không có header, và báo rõ thay vì im lặng);
+> `data_path`/`voice_cache` không trèo ra ngoài thư mục dữ liệu. **618 test**.
 >
 > **v7.7 (2026-09-20)** - **biên kiểu ở những hàm chưa bị audit**:
 > `lite_model.predict("mở youtube")` lặp qua từng KÝ TỰ (model chấm chữ "ở", "y"

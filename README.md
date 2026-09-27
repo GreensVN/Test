@@ -1,7 +1,7 @@
 # Trợ lý ảo tiếng Việt v7.8
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 609 pass](https://img.shields.io/badge/tests-609%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 618 pass](https://img.shields.io/badge/tests-618%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -15,8 +15,9 @@ toán tử để câu dễ phân loại - rồi chính con số mất dấu tron
 trả **78.17** thay vì 411.5 vì dấu chấm là dấu **phẩy nghìn** kiểu Việt Nam; và
 `"2,5 nhân 4"` bị `split_commands` cắt thành hai lệnh nên ra 20 thay vì 10. Cùng
 đó, `confidence: NaN` đi thẳng qua ngưỡng an toàn (vì `nan < x` luôn False, mà JSON
-của Python mặc định chấp nhận `NaN`), và `feedback.csv` rỗng mất dòng tiêu đề
-làm `train_nlu.py` **bỏ qua toàn bộ** phần dạy còn lại. 609 test.
+của Python mặc định chấp nhận `NaN`), và `feedback.csv` mất dòng tiêu đề làm
+`train_nlu.py` **bỏ qua toàn bộ** phần dạy còn lại (sửa cả đầu ghi lẫn đầu đọc).
+618 test.
 
 **v7.7** soi bốn hàm CHƯA bị audit ở hai vòng trước và sửa đúng chỗ chúng im
 lặng trả kết quả sai: `lite_model.predict("mở youtube")` từng lặp qua TỪNG KÝ TỰ
@@ -80,7 +81,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 609 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 618 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -141,17 +142,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (609 test)
-    └── tests/             # 609 test (v7.2 - v7.8 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (618 test)
+    └── tests/             # 618 test (v7.2 - v7.8 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 609 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 618 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 609 pass, 0 fail, 0 skip
+# Ket qua: 618 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
@@ -178,7 +179,7 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
-- v7.8 (2026-09-27): `target` va `result` khop nhau, dau cham la phay nghinh kieu Viet, `split_commands` khong cat dau phay thap phan, cau toan bi doan nham intent, so hoc hieu ca cau khong dau, `NaN` khong qua nguong an toan, `feedback.csv` giu duoc dong tieu de, 609 tests
+- v7.8 (2026-09-27): `target` va `result` khop nhau, dau cham la phay nghinh kieu Viet, `split_commands` khong cat dau phay thap phan, cau toan bi doan nham intent, so hoc hieu ca cau khong dau, `NaN` khong qua nguong an toan, `feedback.csv` giu duoc dong tieu de va doc ca file khong co header, 618 tests
 - v7.7 (2026-09-20): `lite_model` khong con hieu mot chuoi la batch ky tu, `cancel_reminder`/`teach`/`confirm_message`/`log_feedback` chiu duoc kieu rac, `save_config` bao ly do TRUOC khi ghi đĩa, `from_state` bo qua field sai kieu, 518 tests
 - v7.6 (2026-09-20): `tts.py --cache` sinh duoc voice_cache (truoc chi co doc), nhac nho chiu `time` kieu chuoi/so, REPL nho noi dung dang hoi `luc nao`, config `update_config` bao kieu, runner `raises`/`-k` khop hop dong pytest, 487 tests
 - v7.5 (2026-09-20): config hong khong giet ung dung, `speak`/`understand`/`--once` chiu duoc dau vao that, sanitize_filename theo Windows, 392 tests

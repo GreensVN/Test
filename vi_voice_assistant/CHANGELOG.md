@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 609 test
+## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 618 test
 
 Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi
 tìm được đều có cùng một dạng: **một lớp bảo vệ chạy trước làm hỏng thứ nó định
@@ -58,6 +58,18 @@ lại trước khi ghi. Cùng kiểu: `lite_model` để lại file tạm khi gh
 (đúng nhánh lỗi hay xảy ra nhất: đĩa đầy, thiếu quyền), và nhắc nhở được đăng ký
 **sau** khi bộ đếm đã chạy nên lệnh huỷ ngay lập tức không tìm thấy nó.
 
+**Sửa nguồn ghi mà không sửa nguồn đọc thì người dùng cũ vẫn mất dữ liệu.**
+`train_nlu.py` đọc `feedback.csv` bằng `csv.DictReader`, mà `DictReader` coi
+DÒNG ĐẦU là tên cột: file không có header thì dòng dữ liệu đầu bị ăn mất thành
+tên cột và mọi dòng sau không còn khoá `verified` - kết quả **"0 câu"**, đúng bằng
+câu "bạn chưa dạy gì", không hề có cảnh báo. Đây chính là file mà `log_feedback`
+bản cũ tạo ra khi ghi vào một file rỗng (mục trên đã sửa nguồn ghi) - nên người
+dùng đã có sẵn file hỏng trên đĩa, sửa nguồn ghi không cứu được họ. Nay đọc
+chịu được cả bốn kiểu (header đầy đủ / thiếu cột phụ / không header), đọc theo
+vị trí cột khi thiếu header, và **báo rõ** để người dùng biết file của họ có vấn
+đề thay vì tưởng mình chưa dạy gì. `my_dataset.csv` (file người dùng tự viết
+tay) cũng qua cùng cách đọc.
+
 **Trèo khỏi thư mục dữ liệu.** `data_path("/etc/hosts")` và
 `voice_cache/index.csv` trỏ ra ngoài thư mục cache rồi bị phát - nay cả hai kiểm
 tra chứa trong thư mục gốc. `predict_proba` nhận hàng xác suất rỗng (file .pkl bị
@@ -66,8 +78,8 @@ sửa tay) nổ `ValueError: max() arg is an empty sequence` giết cả câu l�
 **Không đổi.** Không API nào bị bỏ; mọi câu hợp lệ cho kết quả y hệt; các chuỗi
 báo cho người dùng trong luồng hợp lệ giữ nguyên từng byte.
 
-**Kiểm chứng (đo, không ước lượng).** 609 test trên CẢ HAI đường: `pytest -q` →
-`609 passed`; `python run_tests.py -q` trên máy không pytest → `609 pass, 0 fail,
+**Kiểm chứng (đo, không ước lượng).** 618 test trên CẢ HAI đường: `pytest -q` →
+`618 passed`; `python run_tests.py -q` trên máy không pytest → `618 pass, 0 fail,
 0 skip`; `ruff check` 0; `mypy` 0 lỗi (44 file). Toán học kiểm cả 10 cặp câu có
 dấu/không dấu cho cùng kết quả, và `--once` chạy thật trên 9 câu: `15 + 27` → 42,
 `2,5 nhân 4` → 10.0, `1.234,5 chia 3` → 411.5, `1.234 + 5` → 1239.
