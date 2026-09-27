@@ -162,8 +162,8 @@ def check_config() -> tuple[list[tuple[str, str]], list[str]]:
         return rows, fixes
 
     # app_map RỖNG trong config không có nghĩa là "mở app không được": executor
-    # gộp thêm app_map_<nền tảng> + APP_DEFAULTS, nên phải đếm bằng chính hàm
-    # mà executor dùng lúc chạy lệnh.
+    # chọn đúng map theo nền tảng đang chạy, nên phải đếm bằng chính hàm đó
+    # thay vì đoán số khoá trong config.
     try:
         import executor
 

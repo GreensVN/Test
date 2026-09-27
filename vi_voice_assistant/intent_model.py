@@ -997,6 +997,15 @@ def _safe_eval(expr: str):
     for child in ast.walk(node):
         if not isinstance(child, _SAFE_AST_NODES):
             raise ValueError(f"Biểu thức không hợp lệ / không an toàn: {expr!r}")
+        # v7.8: `ast.Constant` là hạt nhân của MỌI hằng số - kể cả CHUỖI, bytes
+        # và None - nên "chỉ cho phép số" trong docstring trước đây KHÔNG đúng:
+        # `_safe_eval("'ab' * 3")` chạy được. Không gọi được hàm nào (không có
+        # Name/Call), nhưng `str * int` là cách cấp phát bộ nhớ tùy ý kiểu bom
+        # (`'x' * 10**9`). Chặn ở đây thì hằng số bất hợp lệ bị chặn ngay từ
+        # node, đúng với tên hàm - và `parse_math_expression` vốn chỉ bóc
+        # chữ số nên không đổi hành vi.
+        if isinstance(child, ast.Constant) and not isinstance(child.value, (int, float)):
+            raise ValueError(f"Hằng số không phải số: {child.value!r}")
         # Luỷ thừa được phép nhưng phải có GIỚI HẠN.
         if isinstance(child, ast.BinOp) and isinstance(child.op, ast.Pow):
             base = getattr(child.left, "value", None)
@@ -1013,6 +1022,56 @@ def _safe_eval(expr: str):
     return eval(compile(node, "<expr>", "eval"))  # noqa: S307
 
 
+# v7.8: `normalize_text()` giữ lại đúng nhóm ký tự `[^\w\s./:\-]` nên XOÁ `+`,
+# `*`, `(` `)` `^` và dấu phẩy thập phân. Với câu NÓI ("mười lăm cộng hai mươi
+# bảy") điều đó vô hại, nhưng với biểu thức gõ tay thì hậu quả nặng:
+#   * `--once "15 + 27"` (đúng ví dụ trong `--help`!) ra "15 27" -> không tính được;
+#   * "2,5 nhân 4" ra "2 5 * 4" -> bình chọn "5 * 4" = 20 thay vì 10 - TÍNH SAI
+#     mà không báo lỗi, còn tệ hơn hẳn việc không tính.
+# Toán tử và dấu phẩy được đổi tên thành "từ" (chỉ gồm ký tự \w nên sống sót
+# qua normalize_text) rồi khôi phục lại ngay sau đó.
+_MATH_PLUS = "zcongz"
+_MATH_TIMES = "znhanz"
+
+
+def _protect_math_syntax(text: str) -> str:
+    """Giữ toán tử + dấu phẩy thập phân qua bước `normalize_text`."""
+    guarded = _strip_thousands_separator(text)
+    guarded = re.sub(r"(?<=\d),(?=\d)", ".", guarded)  # "2,5" -> "2.5"
+    return guarded.replace("+", _MATH_PLUS).replace("*", _MATH_TIMES)
+
+
+# v7.8: dấu chấm là DẤU PHẨY NGHÌN trong cách viết số của Việt Nam - "1.234,5"
+# nghĩa là 1234.5, KHÔNG phải 1.234 rồi ,5. Trước đây "1.234,5 chia 3" ra
+# "234.5 / 3" = 78.17: phần "1." bị bỏ mất và câu trả về CON SỐ SAI mà vẫn
+# trông như kết quả hợp lệ. Cách duy nhất để phân biệt là quy tắc nhóm 3 chữ
+# số: "1.234" / "1.234.567" là nghìn, còn "1.5" / "12.75" (nhóm không đủ 3 số)
+# vẫn là thập phân kiểu Anh - giữ nguyên như cũ để không làm hỏng người gõ
+# kiểu quốc tế.
+_THOUSANDS_RE = re.compile(r"(?<!\d)(\d{1,3})((?:\.\d{3})+(?!\d))")
+
+
+def _strip_thousands_separator(text: str) -> str:
+    """Bỏ dấu chấm phân tách nghìn kiểu Việt Nam: "1.234.567,89" -> "1234567,89"."""
+    def _join(m: re.Match) -> str:
+        whole: str = m.group(0)
+        head: str = m.group(1)
+        tail: str = m.group(2)
+        joined = head + tail.replace(".", "")
+        # Nhóm đầu có số 0 ("0.250") không phải nhóm nghìn hợp lệ - người ta
+        # không viết "0.250" nghĩa là 250. Giữ nguyên để đọc thành 0.25; nếu
+        # bỏ dấu chấm, "0250" còn bị Python từ chối (số bát phân có chữ 8).
+        if len(joined) > 1 and joined[0] == "0":
+            return whole
+        return joined
+
+    return _THOUSANDS_RE.sub(_join, text)
+
+
+def _restore_math_syntax(text: str) -> str:
+    return text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
+
+
 def parse_math_expression(text: str):
     """
     Trích xuất và tính một biểu thức toán học đơn giản từ câu tiếng Việt.
@@ -1023,14 +1082,25 @@ def parse_math_expression(text: str):
     Ví dụ:
         "12 cộng 8 bằng bao nhiêu" -> ("12 + 8", 20.0)
         "căn bậc hai của 81"       -> ("căn bậc hai của 81", 9.0)
+
+    v7.8: hiểu được CẢ câu gõ KHÔNG DẤU, đúng như `parse_time_expression` và
+    đúng như điều README quảng cáo ("hiểu tiếng Việt có dấu lẫn không dấu").
+    Bản cũ ghép regex CHỈ có dấu nên "can bac hai cua 81", "15 phan tram cua
+    200", "16 binh phuong", "3 mu 2" đều trả `(None, None)` - người gõ không
+    dấu (rất hay gặp vì gõ nhanh, hoặc STT trả về không dấu) không tính được
+    câu căn/phần trăm/bình phương. Cách sửa: nhận diện trên bản BỎ DẤU rồi
+    hiển thị lại bằng tên CÓ DẤU, nên câu không dấu ra cùng kết quả và cùng
+    câu mô tả với câu có dấu (test parity bắt buộc điều này).
     """
-    t = normalize_text(text)
+    t = normalize_text(_protect_math_syntax(as_text(text)))
     # v6.2: đổi từ-số thành chữ số trước khi tách biểu thức - "mười lăm cộng
     # hai mươi bảy" giờ tính được (trước đây chỉ tính được số viết bằng chữ số).
-    t = replace_number_words(t)
+    t = _restore_math_syntax(replace_number_words(t))
+    # bản bỏ dấu: so khớp trên đây nên một từ khoá viết kiểu nào cũng nhận ra
+    u = strip_diacritics(t)
 
     # --- Căn bậc hai / bậc ba (v6.2 thêm bậc ba) ---
-    m = re.search(r"căn\s*(?:bậc\s*(hai|2|ba|3))?\s*(?:của)?\s*(-?\d+(?:[.,]\d+)?)", t)
+    m = re.search(r"can\s*(?:bac\s*(hai|2|ba|3))?\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
     if m:
         degree_word = m.group(1)
         num = float(m.group(2).replace(",", "."))
@@ -1043,24 +1113,26 @@ def parse_math_expression(text: str):
         return f"căn bậc hai của {num:g}", math.sqrt(num)
 
     # --- Bình phương / lập phương (v6.2 thêm lập phương) ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(bình phương|mũ 2|lập phương|mũ 3)", t)
+    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
     if m:
         num = float(m.group(1).replace(",", "."))
-        if m.group(2) in ("lập phương", "mũ 3"):
+        if m.group(2) in ("lap phuong", "mu 3"):
             return f"{num:g} lập phương", num ** 3
         return f"{num:g} bình phương", num ** 2
 
     # --- Phần trăm: "X phần trăm của Y" ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*phần trăm\s*(?:của)?\s*(-?\d+(?:[.,]\d+)?)", t)
+    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*phan tram\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
     if m:
         pct = float(m.group(1).replace(",", "."))
         base = float(m.group(2).replace(",", "."))
         return f"{pct:g}% của {base:g}", base * pct / 100
 
     # --- Phép tính cơ bản: thay từ toán tử bằng ký hiệu rồi bóc biểu thức số ---
-    expr_text = t
+    # So trên bản bỏ dấu: OPERATOR_WORDS viết có dấu ("cộng"), nên câu không
+    # dấu ("12 cong 8") không đổi được toán tử và rơi xuống nhánh cuối.
+    expr_text = u
     for pattern, symbol in OPERATOR_WORDS:
-        expr_text = re.sub(pattern, f" {symbol} ", expr_text)
+        expr_text = re.sub(strip_diacritics(pattern), f" {symbol} ", expr_text)
 
     # v6: cho phép toán tử ** (luỹ thừa) trong biểu thức - trước đây lớp ký
     # tự [+\-*/] không nhận "**" nên "2 mũ 10" không bao giờ ghép được biểu thức.
@@ -1192,8 +1264,22 @@ def _entity_chitchat(ctx: _EntityContext) -> str:
 
 
 def _entity_calculate(ctx: _EntityContext) -> str:
-    expr, _ = parse_math_expression(ctx.raw)
-    return expr or ctx.raw
+    # v7.8: ưu tiên câu GỐC, fallback câu đã normalize.
+    # `ctx.raw` đã qua `normalize_text`, mà hàm đó XOÁ `+`/`*` và dấu phẩy
+    # thập phân. Hai hậu quả đo được:
+    #   "15 + 27"   -> "15 27"        : mất hẳn toán tử, không ra biểu thức.
+    #   "12,75 + 1" -> "12 75 + 1"    : VẪN ra biểu thức, nhưng SAI - "75 + 1"
+    #                                  (=76). Tệ hơn hẳn lỗi "không ra gì", vì
+    #                                  target sai còn result lại đúng.
+    # `original` giữ nguyên văn người gõ; `parse_math_expression` tự bỏ dấu
+    # bên trong nên câu không dấu vẫn chạy được. Fallback `ctx.raw` giữ hành
+    # vi cũ cho câu mà câu gốc không parse được.
+    if ctx.original:
+        expr, _ = parse_math_expression(ctx.original)
+        if expr:
+            return str(expr)
+    fallback, _ = parse_math_expression(ctx.raw)
+    return str(fallback) if fallback else ctx.raw
 
 
 def _entity_search_web(ctx: _EntityContext) -> str:
@@ -1291,12 +1377,61 @@ def _has_literal_entity(s: str) -> bool:
     return bool(_URL_ENTITY_RE.search(s) or _PATH_ENTITY_RE.search(s))
 
 
+# v7.8: toán tử số - cùng lý do như trên: `normalize_text` xoá `+`/`*` và dấu
+# phẩy thập phân, nên biểu thức gõ tay chỉ còn sống trong câu GỐC, đúng như
+# URL/đường dẫn. Nhận diện ở đây để `predict_intent` ưu tiên câu gốc.
+_MATH_SYNTAX_RE = re.compile(r"\d\s*[+*/]\s*\d|\d,\d")
+
+
+def _has_math_syntax(s: str) -> bool:
+    return bool(_MATH_SYNTAX_RE.search(s or ""))
+
+
+# v7.8: chỉ cãi model khi model KHÔNG chắc. Trên 0.5 thì để model quyết - dù
+# sai thì câu vẫn bị hỏi lại chứ không bị thi hành sai (an toàn hơn).
+_MATH_INTENT_MIN_CONFIDENCE = 0.5
+
+
+def _rescue_calculate_intent(intent: str, confidence: float,
+                            raw_text: str | None) -> str:
+    """Câu toán bị đoán nhầm -> trả về "calculate", ngược lại giữ nguyên.
+
+    Vì `normalize_text` xoá toán tử, câu gõ tay đôi khi không còn dấu hiệu
+    toán học: "1.234 + 5" thành "1.234 5" và model đoán nhầm thành
+    system_control (tin sai rằng đó là số phiên bản).
+
+    Chỉ sửa khi CẢ BA điều kiện đúng:
+      1. model không đoán calculate,
+      2. model KHÔNG chắc (dưới _MATH_INTENT_MIN_CONFIDENCE) - nếu model chắc
+         thì để nó quyết, không cãi ý kiến đã vững,
+      3. câu gốc THẬT SỰ ra một biểu thức tính được (`parse_math_expression` là
+         bằng chứng quyết định, không phải suy đoán từ ký tự).
+
+    `parse_math_expression` không nhận nhầm câu thường (đã thử với "mo chrome",
+    "may bao gio", "mo file report.pdf", "tim bai hat abc"...), nên điều kiện 3
+    chặn được phần lớn rủi ro gọi nhầm.
+    """
+    if intent == "calculate" or not raw_text:
+        return intent
+    if confidence >= _MATH_INTENT_MIN_CONFIDENCE or not _has_math_syntax(raw_text):
+        return intent
+    expr, value = parse_math_expression(raw_text)
+    if not (expr and value is not None):
+        return intent
+    logger.info("Câu toán %r bị đoán nhầm thành %r (%.2f) -> calculate (%s = %s)",
+                raw_text, intent, confidence, expr, value)
+    return "calculate"
+
+
 def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     """
     Dự đoán ý định + trích xuất thực thể.
 
     raw_text (mới ở v6): câu GỐC người dùng nhập, trước khi chuẩn hoá - dùng
     riêng cho việc tách URL/đường dẫn (xem giải thích trong thân hàm).
+    v7.8: bỏ trống thì mặc định lấy chính `text`. Khi gọi trực tiếp
+    (`predict_intent("1.234 + 5")`) người gõ chính là câu gốc; còn
+    `nlu_advanced` luôn truyền cả hai nên không ảnh hưởng.
 
     Hỗ trợ cả model TF-IDF (Pipeline scikit-learn) lẫn model PhoBERT
     (phobert_model.PhoBertIntentClassifier) — tự nhận diện loại model.
@@ -1306,6 +1441,8 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     Với intent set_reminder có thêm khoá "time".
     Với intent calculate có thêm khoá "result" (kết quả phép tính, hoặc None).
     """
+    if raw_text is None:
+        raw_text = text if isinstance(text, str) else None
     if model is None:
         model = load_model()
 
@@ -1326,12 +1463,36 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
             confidence = float(max(proba))
         except AttributeError:
             confidence = 1.0
+        except (ValueError, IndexError, TypeError) as e:
+            # v7.8: `except AttributeError` bản cũ chỉ che một trong những lỗi
+            # có thể xảy ra ở bước này. Model trả hàng xác suất RỖNG (file .pkl
+            # bị sửa tay, model chỉ có 0 lớp) làm `max([])` nổ `ValueError: max()
+            # arg is an empty sequence` bay ra ngoài, giết cả câu lệnh. Thiếu
+            # xác suất thì coi như chưa biết -> 1.0, đúng như nhánh AttributeError
+            # (quyết định làm/hỏi thuộc về tầng NLU, không phải ở đây).
+            logger.warning("Không lấy được xác suất từ model: %s", e)
+            confidence = 1.0
 
     # v6: NGUỒN để trích xuất thực thể có thể khác nguồn để PHÂN LOẠI.
     # Tầng NLU đưa vào `text` đã chuẩn hoá (phục hồi dấu, hạ chữ thường, bỏ các
     # ký tự ? = & #) - rất tốt cho việc phân loại nhưng LÀM HỎNG URL thật. Nếu
     # câu gốc có chứa URL/đường dẫn thì ưu tiên lấy thực thể từ câu gốc.
-    entity_source = raw_text if (raw_text and _has_literal_entity(raw_text)) else text
+    # v7.8: thêm toán tử số - `normalize_text` xoá `+`/`*`/phẩy thập phân, nên
+    # "15 + 27" thành "15 27" và câu gốc là nơi duy nhất còn biểu thức.
+    entity_source = (
+        raw_text
+        if (raw_text and (_has_literal_entity(raw_text) or _has_math_syntax(raw_text)))
+        else text
+    )
+
+    # v7.8: cứu câu toán bị model đoán nhầm (xem `_rescue_calculate_intent`).
+    rescued = _rescue_calculate_intent(intent, confidence, raw_text)
+    if rescued != intent:
+        # Model đã sai, nên xác suất của nó vô nghĩa với câu này; đặt cao để
+        # câu tính đúng không bị hỏi lại vô lý.
+        intent = rescued
+        entity_source = raw_text
+        confidence = 1.0
 
     result = {
         "intent": intent,

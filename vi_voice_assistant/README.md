@@ -1,8 +1,21 @@
-# Trợ lý ảo tiếng Việt v7.7
+# Trợ lý ảo tiếng Việt v7.8
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
+> **v7.8 (2026-09-27)** - **lớp bảo vệ không được làm hỏng thứ nó bảo vệ**:
+> `normalize_text` xoá toán tử để câu dễ phân loại, rồi chính con số mất dấu trong
+> lớp bảo vệ đó. `"12,75 + 1"` báo `target = "75 + 1"` (=76) nhưng `result = 13.75`;
+> `"1.234,5 chia 3"` trả **78.17** thay vì 411.5 vì dấu chấm là dấu **phẩy nghìn**
+> kiểu Việt Nam; `"2,5 nhân 4"` bị tách thành hai lệnh nên ra 20 thay vì 10. Nay
+> `target` và `result` luôn khớp nhau, dấu chấm nhóm 3 số được đọc là nghìn
+> (`1.5`/`12.75` vẫn là thập phân), và phẩy thập phân không bị cắt lệnh.
+> `parse_math_expression` hiểu cả câu gõ **không dấu** (`"can bac hai cua 81"`).
+> `confidence: NaN` không còn đi thẳng qua ngưỡng an toàn (vì `nan < x` luôn
+> False, mà JSON mặc định chấp nhận `NaN`); `feedback.csv` rỗng mất dòng tiêu
+> đề khiến `train_nlu.py` bỏ qua toàn bộ phần dạy còn lại - nay tự sửa;
+> `data_path`/`voice_cache` không trèo ra ngoài thư mục dữ liệu. **609 test**.
+>
 > **v7.7 (2026-09-20)** - **biên kiểu ở những hàm chưa bị audit**:
 > `lite_model.predict("mở youtube")` lặp qua từng KÝ TỰ (model chấm chữ "ở", "y"
 > như cả câu nói) - nay một chuỗi = MỘT câu, kiểu không lặp được báo `TypeError`

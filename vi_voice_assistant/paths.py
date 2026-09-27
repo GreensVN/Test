@@ -38,10 +38,9 @@ v7.6 nâng cấp:
   bằng tay nên cần đúng một cách ghi an toàn; `atomic_write_json()` giờ gọi qua nó
   để KHÔNG còn hai bản sao thủ tục (fsync, dọn file tạm) lệch nhau được.
 
-v7.6 nâng cấp:
-- thêm `atomic_write_text()`: `voice_cache/index.csv` là file người dùng CŨNG sửa
-  bằng tay nên cần đúng một cách ghi an toàn; `atomic_write_json()` giờ gọi qua nó
-  để KHÔNG còn hai bản sao thủ tục (fsync, dọn file tạm) lệch nhau được.
+v7.8 nâng cấp:
+- `data_path()` chặn đường dẫn tuyệt đối và `..`: từ nay mọi file người dùng
+  đều nằm TRONG thư mục dữ liệu, không thể trèo ra ngoài chỉ bằng một tên file.
 
 v7.4 nâng cấp:
 - `atomic_write_json()`: ghi file tạm -> flush -> fsync -> `os.replace` -> fsync
@@ -156,8 +155,23 @@ def data_dir() -> Path:
 
 
 def data_path(filename: str | Path) -> Path:
-    """Đường dẫn một file dữ liệu (``data_path("config.json")``)."""
-    return data_dir() / Path(str(filename))
+    """Đường dẫn một file dữ liệu (``data_path("config.json")``).
+
+    v7.8: giữ file trong thư mục dữ liệu. Trước đây là `data_dir() / filename`
+    trần, mà `Path("/a") / "/etc/hosts"` ra `/etc/hosts` (đường dẫn tuyệt đối
+    thay thế hẳn phần trước) và `../..` trèo ra ngoài - tức một tên file đi vào
+    từ dữ liệu bên ngoài có thể ghi đè bất cứ thứ gì máy này cho phép. Mọi lời
+    gọi trong dự án đều truyền hằng số, nên nay đây là hàng rào an toàn quanh
+    ranh giới dữ liệu, không phải đổi hành vi. Tên chứa ký tự phân tách đường
+    dẫn bị từ chối thay vì bị cắt bớt, để lỗi lộ ra đúng chỗ gọi.
+    """
+    name = Path(str(filename))
+    if name.is_absolute() or ".." in name.parts:
+        raise ValueError(
+            f"data_path() nhận tên file trong thư mục dữ liệu, nhận được {str(filename)!r} "
+            f"(đường dẫn tuyệt đối hoặc chứa '..' sẽ thoát ra ngoài {data_dir()})."
+        )
+    return data_dir() / name
 
 
 def describe() -> dict[str, object]:

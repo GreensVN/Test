@@ -84,18 +84,44 @@ _voice_cache_index: dict[str, Path] | None = None
 logger = logging.getLogger(__name__)
 
 
+def _cached_file(directory: Path, fname: str) -> Path | None:
+    """Dòng `index.csv` -> file âm thanh, hoặc None nếu nó trỏ ra ngoài kho.
+
+    v7.8 - CHẶN LỐI ĐI RA NGOÀI THƯ MỤC CACHE. `index.csv` là file người dùng
+    được TỰ TAY sửa (đó là cách tài liệu dạy tạo kho giọng), nên cột thứ hai
+    là dữ liệu, không phải mã. Bản cũ là `directory / fname` rồi kiểm tra
+    `is_file()`: với `/etc/passwd` thì `Path("/kho") / "/etc/passwd"` ra
+    `/etc/passwd` (đường dẫn tuyệt đối thay thế hẳn phần trước), với
+    `../../...` thì trèo ra ngoài - và `_play_audio` sẽ PHÁT file đó khi trùng
+    câu. Nay so khớp bằng `relative_to` trên đường dẫn ĐÃ resolve (nên cũng
+    chặn luôn symlink trỏ ra ngoài), trả None cho dòng hỏng và ghi log để
+    người dùng biết dòng nào bị bỏ.
+    """
+    name = fname.strip()
+    if not name:
+        return None
+    try:
+        base = directory.resolve()
+        full = (directory / name).resolve()
+        full.relative_to(base)
+    except (OSError, ValueError):
+        logger.warning(
+            "Bỏ qua mục kho giọng trỏ ra ngoài thư mục cache: %r", name
+        )
+        return None
+    return full if full.is_file() else None
+
+
 def _load_voice_cache() -> dict[str, Path]:
     """index.csv trong mỗi thư mục cache -> {key_noi_dung: file mp3}.
 
     Đọc ở Cả HAI nơi (thư mục người dùng trước), file nào cầm trước thì thắng -
     không còn cách nào “đổ” một file .csv sang Path: đường dẫn được kiểm tra
-    tồn tại trước khi đưa vào bảng tra.
+    tồn tại (và nằm trong thư mục cache) trước khi đưa vào bảng tra.
     """
     global _voice_cache_index
     if _voice_cache_index is not None:
         return _voice_cache_index
-
-    import csv
 
     _voice_cache_index = {}
     for directory in _cache_dirs():
@@ -107,10 +133,9 @@ def _load_voice_cache() -> dict[str, Path]:
                 for row in csv.reader(f):
                     if len(row) < 2:
                         continue
-                    key, fname = _cache_key(row[0]), row[1]
-                    full = directory / fname
-                    if full.is_file():
-                        _voice_cache_index.setdefault(key, full)
+                    full = _cached_file(directory, row[1])
+                    if full is not None:
+                        _voice_cache_index.setdefault(_cache_key(row[0]), full)
         except OSError as e:
             logger.debug("Không đọc được voice_cache index: %s", e)
     return _voice_cache_index
@@ -702,8 +727,13 @@ def prewarm(texts: object, *, out_dir: str | Path | None = None, engine: str | N
     if not keys:
         return summary
 
-    cached = {_cache_key(k): f for k, f in _read_cache_index(directory)
-              if f and (directory / f).is_file()}
+    cached: dict[str, str] = {}
+    for row_key, row_file in _read_cache_index(directory):
+        # v7.8: dùng chung `_cached_file` với lúc ĐỌC cache, để một dòng
+        # index.csv trỏ ra ngoài thư mục bị bỏ ở cả hai chiều (đọc + ghi).
+        full = _cached_file(directory, row_file)
+        if full is not None:
+            cached[_cache_key(row_key)] = full.name
     additions: list[tuple[str, str]] = []
     for key in keys:
         if dry_run:

@@ -1,5 +1,5 @@
 """
-executor.py v7.7
+executor.py v7.8
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -43,6 +43,7 @@ import functools
 import inspect
 import json
 import logging
+import math
 import os
 import platform
 import random
@@ -1002,11 +1003,17 @@ def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = Tru
     reminder_id = f"{run_at.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
     timer = threading.Timer(delay, _fire_reminder, args=[task, reminder_id])
     timer.daemon = True
-    timer.start()
+    # v7.8: ĐĂNG KÝ MỤC VÀO DANH SÁCH TRƯỚC KHI BẬT TIMER. Bản cũ `timer.start()`
+    # đứng trước, nên với độ trễ rất ngắn (vài trăm phần nghìn giây, hợp lệ khi
+    # `--json` gửi "0.001" phút) timer nổ trước lúc mục được thêm vào
+    # ACTIVE_REMINDERS: `_fire_reminder` quét không thấy id của mình nên không
+    # gỡ gì, rồi mục mới được thêm vào - một lời nhắc "ma" không bao giờ tắt,
+    # cứ nằm trong `nhac nho` tới cuối phiên.
     with ACTIVE_REMINDERS_LOCK:
         ACTIVE_REMINDERS.append(
             {"id": reminder_id, "task": task, "at": run_at, "timer": timer}
         )
+    timer.start()
     if persist:
         _save_reminders()
     return reminder_id
@@ -1317,6 +1324,30 @@ def _handlers_with_data(handlers: dict[str, Any]) -> frozenset[str]:
 _HANDLERS_WITH_DATA = _handlers_with_data(HANDLERS)
 
 
+def _read_confidence(raw: object) -> float:
+    """Đọc `confidence` từ intent, trả số HỢP LỆ hoặc -1.0 (= không tin được).
+
+    v7.8 - SỬA LỖ BỎ QUA NGƯỠNG AN TOÀN. `json.loads` MẶC ĐỊNH CHẤP NHẬN
+    ``NaN``/``Infinity`` (đó là mở rộng của JSON, không phải JSON chuẩn), nên
+    ``--json '{"intent":"system_control","target":"shutdown","confidence":NaN}'``
+    cho ``confidence = nan``. Mọi phép so sánh với NaN đều cho False, nên
+    ``nan < CONFIDENCE_THRESHOLD`` là False và lệnh ĐI THẲNG qua - đúng cái
+    cổng mà con số này sinh ra để chặn. Lệnh nguy hiểm vẫn phải qua
+    ``_confirm``, nhưng ngưỡng "độ tự tin" thì đã bị vô hiệu hoàn toàn.
+    Giá trị không phải số, NaN, ±inf, hoặc ngoài [0,1] đều trả -1.0 để rơi
+    vào nhánh "từ chối" - im lặng chạy là thứ tệ hơn nói thẳng là không tin.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return -1.0
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return -1.0
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return -1.0
+    return value
+
+
 def execute_command(intent_json: dict[str, Any] | str) -> bool:
     if isinstance(intent_json, str):
         try:
@@ -1337,10 +1368,8 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
     # Ep kieu TRUOC khi strip: `target` co the la so (model goi len hoac intent
     # khac truyen vao), ma `(2026 or "").strip()` thi nang nhu chinh no.
     target = "" if raw_target is None else str(raw_target).strip()
-    try:
-        confidence = float(intent_json.get("confidence", 1.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
+    raw_confidence = intent_json.get("confidence", 1.0)
+    confidence = _read_confidence(raw_confidence)
 
     handler = HANDLERS.get(intent)
     if handler is None:
@@ -1349,8 +1378,21 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
         return action_unknown(target)
 
     if confidence < CONFIDENCE_THRESHOLD:
-        safe_print(f"[TỪ CHỐI] Độ tự tin quá thấp ({confidence:.2f}). Bạn nói rõ hơn giúp tôi nhé.")
-        logger.info("Từ chối vì độ tự tin thấp: %.2f < %.2f", confidence, CONFIDENCE_THRESHOLD)
+        if confidence < 0:
+            # Giá trị -1 = "độ tự tin không đọc được" (sai kiểu/NaN/vô hạn), khác
+            # hẳn "thấp thật". In "-1.00" như thể là đo được sẽ khiến người dùng
+            # đi tìm lỗi ở model, trong khi lỗi nằm ở dữ liệu đầu vào.
+            safe_print(
+                "[TỪ CHỐI] Trường 'confidence' không hợp lệ (cần là số trong [0,1]). "
+                "Kiểm tra lại JSON đầu vào."
+            )
+            logger.warning("Từ chối: confidence không hợp lệ = %r", raw_confidence)
+        else:
+            safe_print(
+                f"[TỪ CHỐI] Độ tự tin quá thấp ({confidence:.2f}). "
+                f"Bạn nói rõ hơn giúp tôi nhé."
+            )
+            logger.info("Từ chối vì độ tự tin thấp: %.2f < %.2f", confidence, CONFIDENCE_THRESHOLD)
         return False
 
     if _handler_wants_data(handler):

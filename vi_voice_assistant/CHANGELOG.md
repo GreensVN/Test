@@ -1,5 +1,78 @@
 # CHANGELOG
 
+## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 609 test
+
+Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi
+tìm được đều có cùng một dạng: **một lớp bảo vệ chạy trước làm hỏng thứ nó định
+bảo vệ**. `normalize_text` xoá toán tử để câu nói dễ phân loại, rồi chính con số
+bị mất dấu trong lớp bảo vệ đó.
+
+**Số học: `target` và `result` nói hai đằng khác nhau.** Câu `"12,75 + 1"` cho
+`target = "75 + 1"` (= 76) nhưng `result = 13.75` - vì `target` đi qua
+`extract_entity` → `_EntityContext.raw` (đã bị `normalize_text` nuốt mất `12,`)
+còn `result` đi qua `parse_math_expression(entity_source)`. Người dùng nhìn
+thấy "75 + 1" cùng đáp án 13.75, không cách nào tự kiểm được. Nay `_entity_calculate`
+ưu tiên câu GỐC, và `predict_intent` dùng câu gốc cho phần trích thực thể khi
+thấy toán tử số (đúng cách nó đã làm với URL/đường dẫn từ v6).
+
+**Dấu chấm là dấu PHẨY NGHÌN kiểu Việt Nam.** `"1.234,5 chia 3"` trả **78.17**
+(= 234.5 / 3) thay vì 411.5: phần `1.` bị mất, và kết quả sai vẫn trông như
+một phép tính bình thường - tệ hơn hẳn việc không tính được. Nay nhóm 3 chữ số
+sau dấu chấm được đọc là nghìn (`1.234.567,89` → 1234567.89), còn `1.5`/`12.75`
+(nhóm không đủ 3 số) vẫn là thập phân kiểu Anh như cũ. Nhóm đầu bắt đầu bằng `0`
+(`0.250`) giữ nguyên - không ai viết "0.250" nghĩa là 250.
+
+**`split_commands` cắt dấu phẩy thập phân.** `"2,5 nhân 4"` bị tách thành HAI
+lệnh (`"2"` và `"5 nhân 4"`), lệnh đầu không phải lệnh tính, và câu đó ra 20 thay
+vì 10. Nay phẩy chỉ tách khi không nằm giữa hai chữ số; `"mở chrome, phát nhạc"`
+vẫu tách đúng như cũ.
+
+**Câu toán hỏng dấu `+` còn bị model đoán nhầm intent.** `"1.234 + 5"` qua
+`normalize_text` thành `"1.234 5"`; model đoán `system_control` với 0.20 (tưởng
+là số phiên bản), người dùng gõ đúng biểu thức mà không bao giờ được tính. Nay
+`_rescue_calculate_intent` ép về `calculate` **chỉ khi cả ba** điều kiện đúng:
+model không đoán calculate, model không chắc (dưới 0.5), và câu gốc thật sự ra
+một biểu thức tính được. Model chắc thì để model quyết - không cãi ý kiến đã
+vững. `parse_math_expression` không nhận nhầm câu thường (đã thử "mở chrome",
+"mấy giờ", "mở file report.pdf", "tìm bài hát abc"...).
+
+**`parse_math_expression` hiểu cả câu gõ KHÔNG DẤU.** Bản cũ ghép regex CHỈ có
+dấu, nên `"can bac hai cua 81"`, `"15 phan tram cua 200"`, `"16 binh phuong"`,
+`"3 mu 2"` trả `(None, None)` - trong khi README quảng cáo "hiểu tiếng Việt có
+dấu lẫn không dấu" và người gõ nhanh (hay cả STT) hay bỏ dấu. Nay nhận diện trên
+bản bỏ dấu rồi hiển thị lại bằng tên CÓ DẤU; có test parity bắt buộc hai kiểu
+gõ cho cùng kết quả và cùng câu mô tả.
+
+**Ngưỡng tự tin: `NaN` đi thẳng qua cửa an toàn.** `nan < x` luôn False, nên
+`execute_command` với `"confidence": NaN` BỎ QUA ngưỡng rồi chạy lệnh - mà JSON
+của Python mặc định chấp nhận `NaN`/`Infinity`, và `--json` là đường dùng thật.
+Tương tự, `NLU._judge` trả "ok" cho NaN (lệnh ĐƯỢC THỰC THI) và nổ `TypeError`
+khi confidence là chuỗi. Nay `_read_confidence` chỉ nhận số hữu hạn trong `[0,1]`;
+còn `nlu_advanced` dùng `_as_confidence` và `last_intent` không còn nổ `KeyError`.
+
+**Dữ liệu bị đánh cắp bởi chính lớp bảo vệ.** `log_feedback` ghi vào một file
+CSV **RỖNG** (mất điện) không ghi dòng tiêu đề; `train_nlu.py` đọc bằng
+`csv.DictReader` nên ăn mất dòng đầu và **bỏ qua toàn bộ phần còn lại** - mọi câu
+người dùng đã dạy biến mất khỏi huấn luyện. File không có header nay được sửa
+lại trước khi ghi. Cùng kiểu: `lite_model` để lại file tạm khi ghi lỗi OSError
+(đúng nhánh lỗi hay xảy ra nhất: đĩa đầy, thiếu quyền), và nhắc nhở được đăng ký
+**sau** khi bộ đếm đã chạy nên lệnh huỷ ngay lập tức không tìm thấy nó.
+
+**Trèo khỏi thư mục dữ liệu.** `data_path("/etc/hosts")` và
+`voice_cache/index.csv` trỏ ra ngoài thư mục cache rồi bị phát - nay cả hai kiểm
+tra chứa trong thư mục gốc. `predict_proba` nhận hàng xác suất rỗng (file .pkl bị
+sửa tay) nổ `ValueError: max() arg is an empty sequence` giết cả câu lệnh.
+
+**Không đổi.** Không API nào bị bỏ; mọi câu hợp lệ cho kết quả y hệt; các chuỗi
+báo cho người dùng trong luồng hợp lệ giữ nguyên từng byte.
+
+**Kiểm chứng (đo, không ước lượng).** 609 test trên CẢ HAI đường: `pytest -q` →
+`609 passed`; `python run_tests.py -q` trên máy không pytest → `609 pass, 0 fail,
+0 skip`; `ruff check` 0; `mypy` 0 lỗi (44 file). Toán học kiểm cả 10 cặp câu có
+dấu/không dấu cho cùng kết quả, và `--once` chạy thật trên 9 câu: `15 + 27` → 42,
+`2,5 nhân 4` → 10.0, `1.234,5 chia 3` → 411.5, `1.234 + 5` → 1239.
+
+
 ## v7.7 (2026-09-20) - Bốn hàm chưa ai audit: cùng một họ lỗi kiểu: 518 test
 
 v7.5-v7.6 audit các điểm vào công cộng (CLI, config, TTS, runner). Vòng này soi

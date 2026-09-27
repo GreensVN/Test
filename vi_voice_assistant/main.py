@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.7
+main.py - Trợ lý ảo tiếng Việt v7.8
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import signal
 import sys
 from dataclasses import dataclass
@@ -53,7 +54,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.7"
+APP_VERSION = "7.8"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -222,6 +223,23 @@ def get_input(use_voice: bool) -> str:
         sys.exit(0)
 
 
+def _confidence_percent(result: dict) -> float:
+    """`confidence` ra phần trăm để in, chịu được mọi kiểu dữ liệu lạ.
+
+    v7.8: `result.get('confidence', 0):.0%` nổ `ValueError: Unknown format code
+    '%' for object of type 'str'` khi kết quả đến từ nơi khác (script đọc file
+    JSON của mình, model trả `None`) - xảy ra đúng ở dòng in sau câu hỏi
+    xác nhận nên người dùng thấy lỗi thay vì câu hỏi. Giá trị hỏng hiện 0%.
+    """
+    try:
+        value = float(result.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return min(1.0, max(0.0, value))
+
+
 def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
     status = result.get("status", "unknown")
     safe_print("Kết quả phân tích (JSON):")
@@ -241,7 +259,7 @@ def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
     if status in ("low_confidence", "need_confirm"):
         question = nlu.confirm_message(result)
         executor.respond(question)
-        safe_print(f"   [{result.get('confidence', 0):.0%} tự tin] ", end="")
+        safe_print(f"   [{_confidence_percent(result):.0%} tự tin] ", end="")
         try:
             answer = input("").strip().lower()
         except (KeyboardInterrupt, EOFError):
@@ -292,7 +310,7 @@ def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False) 
                 "-> {} | {} | {:.0%} | {}".format(
                     result.get("intent"),
                     result.get("target"),
-                    result.get("confidence", 0),
+                    _confidence_percent(result),
                     result.get("status"),
                 )
             )
@@ -668,7 +686,8 @@ def _suggest_control_command(text: str) -> str | None:
     """Gợi ý lệnh điều khiển gần đúng nhất khi người dùng gõ SAU chính tả.
 
     Chỉ áp cho câu NGẮN (<= 2 từ) - câu dài là lệnh nói bình thường, không phải
-    lệnh gõ sai._cutoff 0.8 để "mở youtube" không bị gợi ý thành... gì đó.
+    lệnh gõ sai. Cutoff 0.7 (không phải 0.8) để "hat" vẫn gần với lệnh nào đó
+    nhưng không gần với "thoat" tới mức gợi ý người dùng thoát phiên.
     """
     import difflib
 

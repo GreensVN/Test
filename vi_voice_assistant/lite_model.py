@@ -361,24 +361,37 @@ def dataset_fingerprint(texts: list[str], labels: list[str]) -> str:
 
 def save_lite_model(model: LiteIntentModel, path: Path | str = LITE_MODEL_PATH) -> bool:
     path = Path(path)
+    tmp: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".lite_tmp_", suffix=".pkl")
         with os.fdopen(fd, "wb") as handle:
             pickle.dump(model.to_state(), handle, protocol=4)
+            handle.flush()
+            # fsync trước khi rename: chỉ "ghi rồi rename" KHÔNG bảo đảm nội
+            # dung đã nằm trên đĩa - mất điện đúng lúc rename để lại file .pkl
+            # rỗng, và `load_lite_model` chỉ có thể im lặng huấn luyện lại. Đây
+            # cũng là mức mà `paths.atomic_write_*` đã giữ cho mọi file khác.
+            os.fsync(handle.fileno())
         Path(tmp).replace(path)
         return True
     except OSError:
         return False
     except Exception:  # pragma: no cover - pickle/encoding bi hong
-        # Goi bao luon `return False` truoc day, nen loi khac (pickling, duong
-        # dan toi han tren Windows) bay thang ra ngoai va lam mat ca lan huan
-        # luyen vua chay xong. Save model la buoc cuoi - khong duoc phep sap.
-        try:
-            Path(tmp).unlink(missing_ok=True)
-        except OSError:
-            pass
+        # Lỗi khác (pickling, đường dẫn tới hạn trên Windows) trước đây bay
+        # thẳng ra ngoài và làm mất cả lần huấn luyện vừa chạy xong. Save model là
+        # bước cuối - không được phép sập.
         return False
+    finally:
+        # v7.8: dọn file tạm TRÊN MỌI đường thoát. Bản cũ chỉ dọn trong
+        # `except Exception`, tức đúng nhánh `except OSError` - lỗi ĐẦY ĐĨA /
+        # THIẾU QUYỀN, tức lỗi hay xảy ra nhất - lại bỏ rác `.lite_tmp_*.pkl`
+        # lại trong thư mục dữ liệu, mỗi lần lại một file.
+        if tmp is not None:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def load_lite_model(

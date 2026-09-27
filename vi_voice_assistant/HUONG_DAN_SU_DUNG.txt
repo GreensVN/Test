@@ -1,8 +1,8 @@
 ================================================================================
           TRỢ LÝ ẢO TIẾNG VIỆT – INTENT RECOGNITION + ACTION EXECUTION
                     HƯỚNG DẪN SỬ DỤNG & HUẤN LUYỆN
-  (BẢN v7.7 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3-v7.4, 0-H muc 6: v7.5,
-   0-H muc 7-8: v7.6, 0-H muc 9: v7.7)
+  (BẢN v7.8 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3-v7.4, 0-H muc 6: v7.5,
+   0-H muc 7-8: v7.6, 0-H muc 9: v7.7, 0-H muc 10: v7.8)
 ================================================================================
 
 NGÔN NGỮ : Python 3.9+ để CÀI BẰNG PIP; Windows 7/Python 3.8 chạy từ source
@@ -191,9 +191,10 @@ GHÉP" bên dưới để biết những chỗ 2 nhánh xung đột đã đượ
 5. KIỂM THỬ: 220 test (tăng từ 200 ở v6.2).
 
 --------------------------------------------------------------------------------
-0-H. NÂNG CẤP Ở BẢN v7.3 - v7.7 (09/2026) - CÀI ĐẶT THẬT, CHẤT LƯỢNG NỀN
+0-H. NÂNG CẤP Ở BẢN v7.3 - v7.8 (09/2026) - CÀI ĐẶT THẬT, CHẤT LƯỢNG NỀN
      - v7.5 o muc 6 duoi day: cai gi khi may ban co file bi hong
      - v7.7 o muc 9 duoi day: viec can biet khi goi truc tiep cac ham cua goi
+     - v7.8 o muc 10 duoi day: lop bao ve lam hong thu no bao ve
 --------------------------------------------------------------------------------
 Bản v7.3 lo việc "cài xong có chạy được không"; bản v7.4 lo "chạy trên máy của
 bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho người dùng:
@@ -226,7 +227,7 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
      Mở Issue - đừng sửa requires-python rồi tưởng là xong.
 5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
-     python vi_voice_assistant/run_tests.py -q     # 518 test, KHONG cần pytest
+     python vi_voice_assistant/run_tests.py -q     # 609 test, KHONG cần pytest
      python -m pytest vi_voice_assistant/tests -q   # cũng 518
      python -m ruff check .                         # 0 cảnh báo
      python -m mypy                                 # 0 loi (xem [tool.mypy])
@@ -307,6 +308,34 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      - `config.save_config` báo "không nối được JSON" KÈM LÝ DO trước khi chạm đĩa và
        không để lại file tạm; `lite_model.from_state` bỏ qua field sai kiểu (model
        "trắng" -> tự huấn luyện lại) thay vì ném `AttributeError` lúc khởi động.
+
+   Nếu bạn chỉ gõ lệnh thì KHÔNG có gì thay đổi để học: đây là những chỗ thư viện
+   phải tự chịu khi bị gọi sai, không phải tính năng mới.
+
+10. LỚP BẢO VỆ KHÔNG ĐƯỢC LÀM HỎNG THỨ NÓ BẢO VỆ (mới v7.8)
+   Ba vòng trước soi chỗ NHẬN dữ liệu. v7.8 soi chỗ GIỮ dữ liệu. Lỗi tìm được
+   đều có cùng một dạng: `normalize_text` xoá toán tử để câu nói dễ phân loại,
+   rồi chính con số mất dấu trong lớp bảo vệ đó. Bạn KHÔNG cần làm gì cả - đây là
+   danh sách những câu đã tính đúng trước đây:
+
+     - Số học: "12,75 + 1" báo target "75 + 1" (=76) nhưng kết quả 13.75 - hai
+       thứ nói hai đằng. Nay target và kết quả luôn khớp nhau.
+     - Dấu chấm là dấu PHẨY NGHÌN kiểu Việt Nam: "1.234,5 chia 3" ra 78.17 thay
+       vì 411.5 (mất phần "1."). Nay "1.234.567,89" hiểu là 1234567.89, còn
+       "1.5"/"12.75" (nhóm không đủ 3 số) vẫn là thập phân kiểu Anh.
+     - "2,5 nhân 4" trước đây bị tách thành HAI lệnh nên ra 20 thay vì 10; nay
+       dấu phẩy thập phân không bị cắt, còn "mở chrome, phát nhạc" vẫn tách đúng.
+     - Câu toán gõ tay không dấu cũng tính được: "can bac hai cua 81", "15 phan
+       tram cua 200", "16 binh phuong", "3 mu 2" (trước đây trả về rỗng).
+     - `confidence: NaN` không còn đi thẳng qua ngưỡng an toàn. Lý do: `nan < x`
+       luôn False, và JSON của Python mặc định chấp nhận `NaN` - đường `--json`
+       là đường dùng thật. Cùng lý do, confidence sai kiểu nay bị hỏi lại thay vì
+       nổ lỗi hoặc - tệ hơn - được coi là "chắc chắn".
+     - `feedback.csv` rỗng (mất điện) từng làm mất dòng tiêu đề, khiến
+       `train_nlu.py` ĂN MẤT dòng đầu và bỏ qua toàn bộ phần còn lại - mọi câu bạn
+       đã dạy biến mất khỏi vòng huấn luyện sau. Nay file tự được sửa lại.
+     - `data_path("/etc/hosts")` và `index.csv` của kho giọng không còn trèo ra
+       ngoài thư mục dữ liệu.
 
    Nếu bạn chỉ gõ lệnh thì KHÔNG có gì thay đổi để học: đây là những chỗ thư viện
    phải tự chịu khi bị gọi sai, không phải tính năng mới.
