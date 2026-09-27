@@ -1,5 +1,5 @@
 """
-executor.py v7.5
+executor.py v7.7
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -14,6 +14,20 @@ v7.0 nâng cấp:
 - Thêm timeout cho subprocess, tránh treo
 - Thêm logging structured, metrics
 - Bảo mật: chặn thêm đuôi .lnk, kiểm tra symlink
+v7.7 nâng cấp:
+- `cancel_reminder` ép kiểu keyword qua `as_text` (trước: `cancel_reminder(123)`
+  nổ `AttributeError: 'int' object has no attribute 'strip'`).
+
+v7.6 nâng cấp:
+- `set_reminder` chịu được mọi kiểu `time` mà model/JSON gửi tới: trước đây
+  `time: "3 phút"` (chuỗi, không phải dict) làm crash cả lệnh bằng
+  ``AttributeError: 'str' object has no attribute 'get'``. Chuỗi/số được đưa qua
+  `parse_time_expression`, và `minutes`/`hour`/`minute` kiểu rác không còn làm
+  nổ `float()`/`int()` giữa chừng.
+- Trợ lý KHÔNG QUÊN nội dung cần nhắc khi phải hỏi lại "nhắc vào lúc nào?": lời
+  nhắc chờ được giữ 5 phút (`PENDING_REMINDER_TTL`), REPL nối câu trả lời thời
+  điểm vào đúng việc đang hẹn thay vì đặt lại từ đầu với "báo thức".
+
 v7.5 nâng cấp:
 - `CONFIG, CONFIG_ERROR = load_config_safe()`: `config.json` hỏng không còn giết
   cả ứng dụng (trước đây `import executor` raise nên không chạy nổi lệnh nào, kể cả
@@ -35,6 +49,7 @@ import random
 import re
 import subprocess
 import threading
+import time
 import urllib.parse
 import uuid
 import webbrowser
@@ -50,7 +65,7 @@ from platform_utils import (
     setup_console,
     windows_version_label,
 )
-from text_utils import strip_diacritics
+from text_utils import as_text, strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -1026,8 +1041,11 @@ def restore_reminders() -> int:
     return restored
 
 
-def cancel_reminder(keyword: str | None = None) -> list[dict[str, Any]]:
-    key = strip_diacritics((keyword or "").strip().lower())
+def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
+    # `as_text` (v7.5) chu khong phai `.strip()` tran: keyword den tu JSON nguoi
+    # dung viet hoac tu script co the la so/None, va `(123 or "")` khong co
+    # `.strip` -> sap ca lenh "huy nhac", tuc la mat luon cach huy mot lich sai.
+    key = strip_diacritics(as_text(keyword).strip().lower())
     removed: list[dict[str, Any]] = []
     with ACTIVE_REMINDERS_LOCK:
         for item in list(ACTIVE_REMINDERS):
@@ -1079,22 +1097,159 @@ def _fire_reminder(task: str, reminder_id: str | None = None) -> None:
         logger.warning("Không hiện được popup nhắc nhở: %s", e)
 
 
+# --- Thời điểm nhắc: chấp nhận dữ liệu THẬT, không phải dữ liệu lý tưởng ------
+
+# Một lời nhắc đang chờ người dùng trả lời "lúc nào?". Giữ 5 phút là đủ cho một
+# lượt gõ tiếp theo mà không để treo cả buổi: hết hạn thì câu nói kế tiếp được
+# xử lý bình thường, không bị "nối" vào chuyện đã quên từ lâu.
+PENDING_REMINDER_TTL = 300.0
+_PENDING_LOCK = threading.Lock()
+PENDING_REMINDER: dict[str, Any] | None = None
+
+
+def _to_number(value: object, default: float, low: float, high: float) -> float:
+    """Ép một giá trị bất kỳ về số trong đoạn cho phép; hỏng thì dùng `default`.
+
+    `float(time_info["minutes"])` với `minutes` là "5 phút" hay None ném ValueError
+    ra ngoài handler, và người dùng chỉ thấy "[LỖI] ...". Ở đây mọi kiểu rác đều
+    có đường về mặc định hợp lệ - đúng tinh thần v7.5 (điểm vào công cộng chịu
+    được dữ liệu thật).
+    """
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
+        return default
+    return max(low, min(high, number))
+
+
+def _coerce_time_info(raw: object) -> dict[str, Any]:
+    """Trả `time` về dict chuẩn; chuỗi/số thì đưa qua `parse_time_expression`.
+
+    Định dạng chuẩn là ``{"type": "delay"|"clock", ...}`` do NLU sinh ra, nhưng
+    `execute_command` cũng nhận JSON người dùng tự viết (`--json`), và ở đó
+    ``"time": "3 phút nữa"`` là chuyện bình thường.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if raw is None:
+        return {"type": None}
+    text = str(raw).strip()
+    if not text:
+        return {"type": None}
+    try:
+        from intent_model import parse_time_expression
+
+        parsed = parse_time_expression(text)
+    except Exception as e:  # module lite/model hỏng cũng phải còn đường đặt lịch
+        logger.debug("parse_time_expression(%r) lỗi: %s", text, e)
+        parsed = None
+    if isinstance(parsed, dict) and parsed.get("type"):
+        return parsed
+    try:
+        minutes = float(text.replace(",", "."))
+    except ValueError:
+        return {"type": None}
+    # Con số trần: "3" -> 3 phút. Chọn đơn vị này vì nó là thứ người dùng gõ khi
+    # nói vội, và `minutes` cũng là đơn vị nội bộ của `delay`.
+    return {"type": "delay", "minutes": minutes}
+
+
+def _reminder_when(time_info: dict[str, Any], now: datetime.datetime) -> datetime.datetime | None:
+    """Tính thời điểm chạy từ `time_info`; None nếu chưa đủ thông tin để nhắc."""
+    kind = time_info.get("type")
+    if kind == "delay":
+        minutes = _to_number(time_info.get("minutes"), 5.0, 0.0, 366 * 24 * 60)
+        return now + datetime.timedelta(minutes=minutes)
+    if kind == "clock":
+        hour = int(_to_number(time_info.get("hour"), 7.0, 0.0, 23.0))
+        minute = int(_to_number(time_info.get("minute"), 0.0, 0.0, 59.0))
+        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        day_offset = int(_to_number(time_info.get("day_offset"), 0.0, 0.0, 3660.0))
+        run_at += datetime.timedelta(days=day_offset)
+        if run_at <= now:
+            run_at += datetime.timedelta(days=1)
+        return run_at
+    return None
+
+
+def _remember_pending_reminder(task: str) -> None:
+    global PENDING_REMINDER
+    with _PENDING_LOCK:
+        PENDING_REMINDER = {"task": task, "until": time.monotonic() + PENDING_REMINDER_TTL}
+
+
+def _pop_pending_reminder() -> str | None:
+    """Lấy nội dung đang chờ (và xoá khỏi trạng thái); None nếu không có/hết hạn."""
+    global PENDING_REMINDER
+    with _PENDING_LOCK:
+        pending = PENDING_REMINDER
+        PENDING_REMINDER = None
+    if not pending:
+        return None
+    if pending.get("until", 0) < time.monotonic():
+        return None
+    task = pending.get("task")
+    return str(task) if task else None
+
+
+def clear_pending_reminder() -> None:
+    """Quên lời nhắc đang chờ (REPL dùng khi người đổi chủ đề hoặc gõ 'quên')."""
+    global PENDING_REMINDER
+    with _PENDING_LOCK:
+        PENDING_REMINDER = None
+
+
+def pending_reminder() -> dict[str, Any] | None:
+    """Bản sao trạng thái chờ, để REPL/test biết là còn câu hỏi đang treo."""
+    with _PENDING_LOCK:
+        return dict(PENDING_REMINDER) if PENDING_REMINDER else None
+
+
+def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool | None:
+    """Nối câu trả lời thời điểm vào lời nhắc đang chờ.
+
+    Trả về None khi KHÔNG có gì đang chờ hoặc câu vừa nói không chứa thời điểm
+    (khi đó câu nói được xử lý như bình thường); True/False là kết quả đặt lịch.
+    """
+    time_info = _coerce_time_info(text)
+    if not time_info.get("type"):
+        if pending_reminder():
+            _pop_pending_reminder()  # nguoi dung noi chuyen khac: dung "no" vao do
+        return None
+    task = _pop_pending_reminder()
+    if not task:
+        return None
+    now = datetime.datetime.now()
+    run_at = _reminder_when(time_info, now)
+    if run_at is None:
+        respond("Bạn muốn tôi nhắc vào lúc nào ạ?")
+        _remember_pending_reminder(task)
+        return False
+    delay = (run_at - now).total_seconds()
+    if delay <= 0:
+        respond("Thời điểm bạn đưa đã qua mất rồi.")
+        return False
+    if dry_run:
+        safe_print(f"   [TEST] Sẽ nhắc {task!r} lúc {run_at:%H:%M} (chế độ test: không đặt lịch)")
+        return True
+    _schedule_reminder(task, run_at)
+    logger.info("Đặt nhắc nhở (trả lời sau khi hỏi lại): %s lúc %s", task, run_at)
+    respond(f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút.")
+    return True
+
+
 def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool:
-    time_info = (data or {}).get("time") or {"type": None}
+    time_info = _coerce_time_info((data or {}).get("time"))
     task = target or "báo thức"
     now = datetime.datetime.now()
 
-    if time_info.get("type") == "delay":
-        minutes = float(time_info.get("minutes", 5))
-        run_at = now + datetime.timedelta(minutes=minutes)
-    elif time_info.get("type") == "clock":
-        hour = max(0, min(23, int(time_info.get("hour", 7))))
-        minute = max(0, min(59, int(time_info.get("minute", 0))))
-        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        run_at += datetime.timedelta(days=max(0, int(time_info.get("day_offset") or 0)))
-        if run_at <= now:
-            run_at += datetime.timedelta(days=1)
-    else:
+    run_at = _reminder_when(time_info, now)
+    if run_at is None:
+        # Chua co thoi diem thi giu lai noi dung: hoi "luc nao?" roi bon sau
+        # "5 phut nua" la luong tu nhien cua cuoc tro chuyen.
+        _remember_pending_reminder(task)
         respond("Bạn muốn tôi nhắc vào lúc nào ạ?")
         return False
 
@@ -1103,6 +1258,7 @@ def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool
         respond("Thời điểm bạn đưa đã qua mất rồi.")
         return False
 
+    clear_pending_reminder()
     _schedule_reminder(task, run_at)
     logger.info("Đặt nhắc nhở: %s lúc %s", task, run_at)
     respond(f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút.")

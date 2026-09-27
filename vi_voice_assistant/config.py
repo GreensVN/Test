@@ -26,6 +26,15 @@ v7.4 nâng cấp:
   giữ nguyên; cái được bỏ là ba bản thể sao chép ở ba file, mỗi bản thiếu một bước.
 - Giá trị sai kiểu trong các map (`app_map_*`, `*_cmd`) bị ép về `dict[str, str]`
   hoặc mặc định ngay khi nạp; trước đó chúng đi thẳng vào executor.
+v7.7 nâng cấp:
+- `save_config()` phát hiện sớm "nối JSON không nổi" và báo `TypeError` kèm lý do
+  thay vì để `json` ném từ bên trong; kiểu sai ở biên được trả lời bằng tên tham số.
+
+v7.6 nâng cấp:
+- `update_config()` từ chối kiểu không phải dict bằng `TypeError` kèm giá trị thật
+  (thay vì `AttributeError` từ bên trong `_deep_merge`), và không còn chia sẻ
+  object dict với người gọi.
+
 v7.5 nâng cấp:
 - `load_config_safe()` -> `(config, lỗi)`: `executor` nạp config lúc import, nên
   một file hỏng làm MỌI lệnh chết bằng traceback - kể cả `--doctor`. Giờ dùng giá
@@ -297,10 +306,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Gộp `override` vào `base` theo từng nhánh, KHÔNG sửa `base`.
+
+    v7.6: giá trị dict được copy khi gán. Trước đây `result[key] = value` chia sẻ
+    thẳng object của người gọi - sửa `updates["tts"]["rate"]` sau khi cập nhật sẽ
+    làm thay đổi config ĐANG DÙNG trong bộ nhớ, một kiểu "ma" rất khó lần.
+    """
     result = copy.deepcopy(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge(result[key], value)
+        elif isinstance(value, dict):
+            result[key] = copy.deepcopy(value)
         else:
             result[key] = value
     return result
@@ -434,7 +451,22 @@ def save_config(config: dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
 
     v7.4: phần ghi file được gộp về MỘT hàm chung với reminders/history - trước
     đây mỗi nơi tự viết một biến thể nên chỗ thiếu fsync, chỗ thiếu dọn file tạm.
+
+    v7.7: thử nối JSON TRƯỚC khi chạm đĩa. `save_config({"x": {1, 2}})` trước đây
+    để `json` ném ``TypeError: Object of type set is not JSON serializable`` từ
+    `encoder.py`, sau khi file tạm đã tạo xong - người dùng thấy traceback của thư
+    viện chuẩn thay vì "chỗ này sai, sửa đi". Một lần `dumps` thừa trên file config
+    vài KB là giá phải trả cho thông báo đúng chỗ.
     """
+    if not isinstance(config, dict):
+        raise TypeError(f"save_config cần dict, nhận được {type(config).__name__}.")
+    try:
+        json.dumps(config, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        raise TypeError(
+            "config chứa giá trị không ghi thành JSON được: " + str(e)
+            + " (key phải là chuỗi; giá trị chỉ nhận dict/list/str/số/bool/None)."
+        ) from e
     atomic_write_json(path, config, prefix=".config_tmp_")
 
 
@@ -445,7 +477,16 @@ def get_config_value(key: str, default: Any = None, config_path: str | Path = CO
 
 
 def update_config(updates: dict[str, Any], path: str | Path = CONFIG_PATH) -> dict[str, Any]:
-    """Cập nhật 1 phần config và lưu lại."""
+    """Cập nhật 1 phần config và lưu lại.
+
+    `updates` PHẢI là dict: `update_config("tts")` trước đây nổ bằng
+    ``'str' object has no attribute 'items'`` - một lỗi của NGƯỜI GỌI nhưng lại
+    hiện ra như lỗi của thư viện. Kiểm tra ngay ở biên để báo đúng tên tham số.
+    """
+    if not isinstance(updates, dict):
+        raise TypeError(
+            f"update_config cần dict, nhận được {type(updates).__name__}: {updates!r:.80}"
+        )
     cfg = load_config(path)
     merged = _deep_merge(cfg, updates)
     _validate_config(merged)

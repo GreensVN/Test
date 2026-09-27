@@ -1,5 +1,5 @@
 """
-paths.py - Nơi lưu DỮ LIỆU NGƯỜI DÙNG + ghi file an toàn (v7.3, v7.4)
+paths.py - Nơi lưu DỮ LIỆU NGƯỜI DÙNG + ghi file an toàn (v7.3 - v7.6)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -33,6 +33,16 @@ LƯU Ý TƯƠNG THÍCH
     nên test cũ và ``monkeypatch.setattr`` vẫn hoạt động;
   * không import gì ngoài stdlib -> dùng được cả khi chưa cài gì (hợp đồng
     "chỉ cần stdlib" của dự án).
+v7.6 nâng cấp:
+- thêm `atomic_write_text()`: `voice_cache/index.csv` là file người dùng CŨNG sửa
+  bằng tay nên cần đúng một cách ghi an toàn; `atomic_write_json()` giờ gọi qua nó
+  để KHÔNG còn hai bản sao thủ tục (fsync, dọn file tạm) lệch nhau được.
+
+v7.6 nâng cấp:
+- thêm `atomic_write_text()`: `voice_cache/index.csv` là file người dùng CŨNG sửa
+  bằng tay nên cần đúng một cách ghi an toàn; `atomic_write_json()` giờ gọi qua nó
+  để KHÔNG còn hai bản sao thủ tục (fsync, dọn file tạm) lệch nhau được.
+
 v7.4 nâng cấp:
 - `atomic_write_json()`: ghi file tạm -> flush -> fsync -> `os.replace` -> fsync
   thư mục, dọn file tạm khi lỗi, tự tạo thư mục cha, giữ nguyên quyền file gốc.
@@ -208,6 +218,45 @@ def _writable(directory: Path) -> bool:
         return False
 
 
+def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = None,
+                      encoding: str = "utf-8") -> None:
+    """Ghi một file VĂN BẢN theo cùng kiểu an toàn như ``atomic_write_json``.
+
+    Tồn tại vì ``voice_cache/index.csv`` (mới v7.6) là file mà người dùng và
+    chương trình CÙNG sửa: mở ``"w"`` trực tiếp sẽ cắt mất chỉ mục cũ, và một lần
+    ghi hỏng giữa chừng biến cả kho giọng thành "không tìm thấy file nào" - mất
+    công tạo lại mà không ai giải thích được vì sao.
+    """
+    target = Path(str(path))
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = prefix or f".{target.stem}_tmp_"
+    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=tmp_name, suffix=target.suffix)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError as cleanup_error:
+            logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
+        raise
+    if os.name != "nt":
+        try:
+            dir_fd = os.open(str(parent), os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
+
+
 def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = None,
                       indent: int = 2, trailing_newline: bool = True) -> None:
     """Ghi một file JSON sao cho file cũ KHÔNG BAO GIỜ hỏng giữa chừng.
@@ -223,38 +272,19 @@ def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = No
     (để chính bản thân rename nằm bền trên đĩa). Lỗi ở bước nào cũng dọn file
     tạm rồi ném lại, không để rác nằm chờ.
     """
+    # v7.6: phần ghi đĩa gộp về atomic_write_text() - MỘT chỗ duy nhất biết cách
+    # ghi an toàn (JSON chi khac cho chuoi + xuong dong). Truoc day hai ham PHAI
+    # giu dong bo tay, va do la noi loi lo ra: them mot kieu file la lai quyen
+    # "quen" fsync hoac quen don file tam.
+    #
+    # Đổi nhỏ có chủ đích: file JSON giờ dùng LF ở mọi nền tảng (trước đây
+    # Windows nhận CRLF do dịch ký tự xuống dòng). `json.load` đọc cả hai, và một
+    # thư mục dữ liệu có hai kiểu xuống dòng khó xử lý hơn.
     target = Path(str(path))
-    parent = target.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_name = prefix or f".{target.stem}_tmp_"
-    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=tmp_name, suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=indent)
-            if trailing_newline:
-                f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, target)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError as cleanup_error:
-            # File tạm sót lại không nguy hiểm bằng việc che mất lỗi chính.
-            logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
-        raise
-    if os.name != "nt":
-        # Windows không cho mở thư mục để fsync; bỏ qua (NTFS tự ghi metadata).
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(dir_fd)
-        except OSError:
-            pass
-        finally:
-            os.close(dir_fd)
+    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    if trailing_newline:
+        text += "\n"
+    atomic_write_text(target, text, prefix=prefix or f".{target.stem}_tmp_")
 
 
 if __name__ == "__main__":      # python paths.py -> in ra nơi sẽ lưu dữ liệu

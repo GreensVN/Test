@@ -5,15 +5,18 @@ chừng thì máy có pytest vẫn xanh (vì dùng pytest thật), còn người
 - đúng đối tượng mà runner sinh ra phục vụ - lại chạy phải code lỗi. Ba chỗ v7.5
 đã sửa:
 
-  1. `raises(E, fn)` (dang goi thang): shim chi la `@contextmanager` nen loi tra ve
-     generator, `fn` KHONG BAO GIO duoc goi => test PASS ma khong kiem gi ca;
-  2. `importorskip` khong ton tai trong shim => file test dung no che bang
-     `AttributeError` khi chay bang runner nhung;
-  3. `@parametrize` voi danh sach RONG => vong lap chay 0 lan, testbien "khong co
-     gi de kiem tra" thanh PASS.
+  1. `raises(E, fn)` (dạng gọi thẳng): shim chỉ là `@contextmanager` nên lời gọi
+     trả về generator, `fn` KHÔNG BAO GIỜ được chạy => test PASS mà không kiểm tra
+     gì cả;
+  2. `importorskip` không tồn tại trong shim => file test dùng nó chết bằng
+     `AttributeError` khi chạy bằng runner;
+  3. `@parametrize` với danh sách RỖNG => vòng lặp chạy 0 lần, test biến "không có
+     gì để kiểm tra" thành PASS;
+  4. v7.6: `raises` PHẢI trả `ExceptionInfo` (`.value`/`.type`/`.match()`) cho cả
+     hai dạng gọi, nếu không test viết đúng theo pytest chỉ chạy được một đường.
 
-Kiem tra cuoi la bat buoc tuong lai: moi `pytest.X` ma file test dung phai co trong
-shim - do la loi duy nhat o day ma nguoi ta rat de mac lai.
+Kiểm tra cuối cùng là bắt buộc với tương lai: mọi `pytest.X` mà file test dùng phải
+có trong shim - đó là lỗi duy nhất ở đây mà người ta rất dễ mắc lại.
 """
 import os
 import re
@@ -33,7 +36,15 @@ def _shim():
 
 
 def test_raises_dang_goi_thang_bat_duoc_loi():
-    """`raises(E, fn)` phai GOI fn va bat E - khong tra ve generator roi im lang."""
+    """`raises(E, fn)` phai GOI fn va bat E - khong tra ve generator roi im lang.
+
+    v7.6 that chat them buoc: ket qua phai la `ExceptionInfo` (co `.value`,
+    `.type`, `.match()`) nhu pytest. Tra ve tran exception thi test viet theo
+    pytest chay xanh tren may co pytest nhung do tren runner - hai duong chay
+    phai cho cung mot ket qua.
+    """
+    import pytest as _p  # module nay KHONG import pytest o dinh (xem ghi chu dau file)
+
     shim, _ = _shim()
     boom = RuntimeError("nope")
 
@@ -41,7 +52,13 @@ def test_raises_dang_goi_thang_bat_duoc_loi():
         raise boom
 
     caught = shim.raises(RuntimeError, fn)
-    assert str(caught) == "nope", caught
+    assert caught.value is boom
+    assert caught.type is RuntimeError
+    assert str(caught.value) == "nope"
+    assert caught.match(r"^no") is True                   # pytest: khop -> True
+    with _p.raises(AssertionError, match="did not match"):
+        caught.match(r"^yes")
+    assert "ExceptionInfo" in repr(caught)
 
 
 def test_raises_dang_goi_thang_bao_sai_khi_khong_co_loi():
@@ -74,13 +91,36 @@ def test_raises_match_dung_regex_nhung_dang_goi_thang():
 
     shim, _ = _shim()
     fn = lambda: (_ for _ in ()).throw(ValueError("nope"))  # noqa: E731
-    assert shim.raises(ValueError, fn, match=r"^no") is not None
+    info = shim.raises(ValueError, fn, match=r"^no")
+    assert info is not None and info.match(r"^no") is True
     try:
         shim.raises(ValueError, fn, match=r"^yes")
     except AssertionError as e:
-        assert "!~" in str(e), e
+        assert "Regex pattern did not match" in str(e), e
     else:
         raise AssertionError("match sai ma van xanh")
+
+
+def test_raises_dang_context_co_value_sau_khi_thoat_with():
+    """`with raises(E) as ei:` của pytest cho phép đọc `ei.value` SAU khối `with`.
+
+    shim cũ chỉ ``yield`` (không trả gì) nên tính năng này mất hẳn: mọi test đọc
+    `ei.value`/`ei.match` trong khối `with` chết bằng AttributeError trên runner,
+    mà runner mới là nơi bộ test này bắt buộc phải chạy được.
+    """
+    import pytest as _p
+
+    shim, _ = _shim()
+    boom = KeyError("duong-dan-hong")
+    seen = {}
+    with shim.raises(KeyError) as ei:
+        raise boom
+    seen["value"] = ei.value
+    assert seen["value"] is boom
+    assert ei.type is KeyError
+    assert ei.match("duong") is True
+    with _p.raises(AssertionError, match="did not match"):
+        ei.match("^khong")
 
 
 def test_importorskip_tra_module_hoac_bao_skip_khong_that_bai():

@@ -94,15 +94,19 @@ def test_understand_cau_rong_tra_ve_danh_sach_rong_khong_bia_lenh():
 # ---------------------------------------------------------------------------
 # 2. tts: khong crash, va khong in "None" nhu the tro ly vua noi
 # ---------------------------------------------------------------------------
-def test_speak_khong_chet_voi_dau_vao_khong_phai_chuoi(capsys):
+def test_speak_khong_chet_voi_dau_vao_khong_phai_chuoi(capsys, monkeypatch):
+    """`speak` khong duoc crash voi kieu khac chuoi.
+
+    v7.6: bat/tat bang `monkeypatch` thay vi `set_enabled(False)` o `finally` -
+    bang doi thu cu de `tts.ENABLED = False` lai cho ca phiên chay, nen moi test
+    doc cache/am thanh chay SAU no thay ket qua khac tuy thu tu (xanh khi chay
+    mot minh, do khi chay ca bo).
+    """
     import tts
 
-    tts.set_enabled(True)
-    try:
-        for value in (123, None, "", "   ", ["a", "b"], 0):
-            assert tts.speak(value) is None, value
-    finally:
-        tts.set_enabled(False)
+    monkeypatch.setattr(tts, "ENABLED", True)
+    for value in (123, None, "", "   ", ["a", "b"], 0):
+        assert tts.speak(value) is None, value
 
 
 def test_speak_khong_in_gi_khi_cau_rong(capsys):

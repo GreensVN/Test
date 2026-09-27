@@ -1,7 +1,8 @@
 ================================================================================
           TRỢ LÝ ẢO TIẾNG VIỆT – INTENT RECOGNITION + ACTION EXECUTION
                     HƯỚNG DẪN SỬ DỤNG & HUẤN LUYỆN
-  (BẢN v7.5 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3-v7.4, 0-H muc 6: v7.5)
+  (BẢN v7.7 - MỤC 0-E: v6, 0-F: v6.2, 0-G: v6.3, 0-H: v7.3-v7.4, 0-H muc 6: v7.5,
+   0-H muc 7-8: v7.6, 0-H muc 9: v7.7)
 ================================================================================
 
 NGÔN NGỮ : Python 3.9+ để CÀI BẰNG PIP; Windows 7/Python 3.8 chạy từ source
@@ -190,8 +191,9 @@ GHÉP" bên dưới để biết những chỗ 2 nhánh xung đột đã đượ
 5. KIỂM THỬ: 220 test (tăng từ 200 ở v6.2).
 
 --------------------------------------------------------------------------------
-0-H. NÂNG CẤP Ở BẢN v7.3 - v7.5 (09/2026) - CÀI ĐẶT THẬT, CHẤT LƯỢNG NỀN
+0-H. NÂNG CẤP Ở BẢN v7.3 - v7.7 (09/2026) - CÀI ĐẶT THẬT, CHẤT LƯỢNG NỀN
      - v7.5 o muc 6 duoi day: cai gi khi may ban co file bi hong
+     - v7.7 o muc 9 duoi day: viec can biet khi goi truc tiep cac ham cua goi
 --------------------------------------------------------------------------------
 Bản v7.3 lo việc "cài xong có chạy được không"; bản v7.4 lo "chạy trên máy của
 bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho người dùng:
@@ -224,8 +226,8 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
      Mở Issue - đừng sửa requires-python rồi tưởng là xong.
 5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
-     python vi_voice_assistant/run_tests.py -q     # 392 test, KHONG cần pytest
-     python -m pytest vi_voice_assistant/tests -q   # cũng 392
+     python vi_voice_assistant/run_tests.py -q     # 518 test, KHONG cần pytest
+     python -m pytest vi_voice_assistant/tests -q   # cũng 518
      python -m ruff check .                         # 0 cảnh báo
      python -m mypy                                 # 0 loi (xem [tool.mypy])
    - `VI_TESTS_FORCE_EMBEDDED=1` ép chạy bằng runner nhúng, kể cả khi máy đã có pytest
@@ -251,6 +253,63 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      COM1-9, LPT1-9 - OS từ chối ở mọi vị trí, kể cả có phần mở rộng) và cắt theo
      255 BYTE: tiếng Việt ~3 byte/ký tự nên một cái tên 90 ký tự từng gây
      `OSError [Errno 36]` khi ghi.
+
+7. NHẮC NHỞ CHỊU ĐƯỢC CÂU TRẢ LỜI THẬT (mới v7.6)
+    - `"time"` không bắt buộc còn là dict: `execute_command('{"intent":
+      "set_reminder", "time": "3 phút nữa"}')` từng làm CẢ LỆNH chết bằng
+      `AttributeError: 'str' object has no attribute 'get'`. Nay chuỗi/số được đưa
+      qua bộ phân tích thời điểm (số trần = phút), và `minutes`/`hour` kiểu rác
+      quay về mặc định hợp lệ thay vì nổ `float()`.
+    - Trợ lý hỏi "Bạn muốn tôi nhắc vào lúc nào ạ?" rồi bạn đáp "5 phút nữa": câu
+      đó KHÔNG còn bị hiểu thành lệnh mới. Trước v7.6, nội dung cần nhắc mất và
+      lệnh thành "Đã đặt nhắc nhở báo thức". Phần chờ tự hết hạn sau 5 phút, câu
+      không chứa thời điểm thì trả lại cho NLU như thường, và `quên` xoá sạch.
+    - Trong `test` (chỉ phân tích): in "[TEST] Sẽ nhắc ..." và KHÔNG đặt lịch.
+
+8. KHO GIỌNG ĐỌC SẴN: ĐÃ CÓ LỆNH TẠO (mới v7.6)
+   Từ v6 tới v7.5, <thư mục dữ liệu>/voice_cache/ chỉ có chiều ĐỌC: tài liệu bảo
+   "đặt mp3 vào đó" nhưng không còn lệnh nào tạo file + `index.csv` (công cụ cũ
+   `train_tts.py cache` đã bị bỏ). v7.6 thêm:
+
+     python -m vi_voice_assistant.tts --cache --text "mở youtube" --text "tắt máy"
+     python -m vi_voice_assistant.tts --cache --file danh_sach_cau.txt   # moi dong 1 cau
+     python -m vi_voice_assistant.tts --cache --text "chúc ngủ ngon" --dry-run
+     python -m vi_voice_assistant.tts --list       # kho đang có gì, nằm ở đâu
+     python -m vi_voice_assistant.tts --engines    # engine phát được + writer ghi file
+
+   - Writer thử theo thứ tự: gTTS (mp3, CẦN MẠNG) -> espeak-ng (wav, offline) ->
+     pyttsx3 (wav) -> piper (wav) -> `say` (macOS). Dự án vẫn chạy bằng thuần
+     stdlib; muốn CÓ cache thì cần ít nhất một trong số đó (dùng
+     --engine gtts|espeak|pyttsx3|piper|say để khoá, --force để tạo lại).
+   - Máy không có writer nào: lệnh in "[fail] ... vì: ..." kèm lý do thật (chưa cài
+     gTTS / không có espeak-ng) và thoát mã 1 - không "thành công" giả.
+   - File chỉ có header WAV (44 byte - lỗi hay gặp của espeak/pyttsx3) bị LOẠI và
+     xoá, không vào cache: cache "đủ" mà phát ra im lặng còn tệ hơn không có cache.
+   - `index.csv` được CẬP NHẬT, không ghi đè - dòng bạn tự đặt vẫn còn nguyên.
+   - `vi-doctor`, mục "Giọng nói", cho biết máy này tạo cache được bằng writer nào
+     (dấu [i] là thông tin, không phải lỗi).
+
+9. GỌI TRỰC TIẾP HÀM CỦA GÓI: BIÊN KIỂU ĐÃ ĐỦ (mới v7.7)
+   Hai vòng trước siết điểm vào công cộng (CLI, config, giọng nói). v7.7 soi phần
+   CÒN LẠI - hàm model, nhắc nhở, file học - và sửa bốn chỗ cùng họ lỗi kiểu:
+
+     - `lite_model.predict("mở youtube")` (THIẾU dấu ngoặc vuông: một chuỗi chứ không
+       phải danh sách) trước đây lặp qua TỪNG KÝ TỰ và trả về 11 hàng dự đoán "trông
+       được": model đang chấm chữ "ở", "y" như câu nói đầy đủ. Nay một chuỗi trần =
+       MỘT câu; danh sách/generator chạy y như cũ; truyền số thì báo
+       `TypeError: `texts` phải là danh sách chuỗi (hoặc một chuỗi), nhận được int.`
+     - `cancel_reminder(123)` từng nổ `AttributeError` TRƯỚC khi huỷ gì cả - tức là
+       mất luôn cách xoá một lịch đặt sai. keyword không phải chuỗi giờ được ép kiểu.
+     - `teach("a", 123)` báo "intent không hợp lệ" thay vì sập; `confirm_message({})`
+       hỏi chung "Bạn muốn tôi làm việc đó phải không?" thay vì `KeyError`;
+       `log_feedback(..., confidence=None)` ghi `0.0` thay vì làm hỏng `feedback.csv`
+       (file này là đầu vào của `train_nlu.py`, một dòng hỏng kéo theo vòng huấn luyện).
+     - `config.save_config` báo "không nối được JSON" KÈM LÝ DO trước khi chạm đĩa và
+       không để lại file tạm; `lite_model.from_state` bỏ qua field sai kiểu (model
+       "trắng" -> tự huấn luyện lại) thay vì ném `AttributeError` lúc khởi động.
+
+   Nếu bạn chỉ gõ lệnh thì KHÔNG có gì thay đổi để học: đây là những chỗ thư viện
+   phải tự chịu khi bị gọi sai, không phải tính năng mới.
 
 --------------------------------------------------------------------------------
 I. 11 NHÓM Ý ĐỊNH VÀ VÍ DỤ
@@ -313,7 +372,7 @@ vi_voice_assistant/
   |- __init__.py / __main__.py : để `pip install .` và `python -m vi_voice_assistant`` chạy được
 
   KIỂM THỬ & KHÁC
-  |- tests/                 : 392 unit test (chạy được CẢ KHI chưa cài pytest)
+  |- tests/                 : 518 unit test (chạy được CẢ KHI chưa cài pytest)
   |- requirements.txt       : thư viện cần cài (ghim bản cho Windows 7)
   |- HUONG_DAN_SU_DUNG.txt  : file bạn đang đọc
 
@@ -324,7 +383,8 @@ vi_voice_assistant/
   |- nlu_report.txt         : báo cáo chất lượng mô hình (từ train_nlu.py)
   |- feedback.csv           : câu máy chưa hiểu + câu bạn dạy lại
   |- voice_cache/           : kho giọng đọc sẵn (đặt trong THƯ MỤC DỮ LIỆU,
-  |                           xem mục 0-H) - không bỏ vào site-packages
+  |                           xem mục 0-H) - không bỏ vào site-packages. Tạo bằng:
+  |                           python -m vi_voice_assistant.tts --cache --text "..."
   |- my_voice/              : giọng bạn tự thu (python giong_noi_ai.py thu)
   |- logs/assistant.log     : nhật ký chạy chương trình
 
@@ -468,11 +528,18 @@ GIỌNG NÓI AI - HAI TẦNG (thay cho `train_tts.py` đã bỏ từ v7.x):
   python giong_nc.py kiem-tra | dong-y | cai | thu | so-sanh
       tầng phi thương mại (MMS/VITS mở) - PHẢI đọc giấy phép trước (`dong-y`)
 
-KHO GIỌNG ĐỌC SẴN (voice_cache) - ĐỊNH DẠNG THẬT, TỰ LÀM BẰNG PYTHON THUẦN
-  tts.py đọc <thư mục dữ liệu>/voice_cache/index.csv, mỗi dòng:
+KHO GIỌNG ĐỌC SẴN (voice_cache) - TẠO BẰNG LỆNH, HOẶC TỰ LÀM BẰNG PYTHON THUẦN
+  Cách khuyên dùng (mới v7.6) - để trợ lý tự sinh file + chỉ mục:
+      python -m vi_voice_assistant.tts --cache --file danh_sach_cau.txt
+      python -m vi_voice_assistant.tts --cache --text "mở youtube" --engine espeak
+  (cần một trong: gTTS / espeak-ng / pyttsx3 / piper / `say`; xem --engines)
+
+  Tự làm khi đã có sẵn mp3 từ nguồn khác: tts.py đọc
+  <thư mục dữ liệu>/voice_cache/index.csv, mỗi dòng:
       <câu nói>,<tên file âm thanh trong cùng thư mục>
-  Khoá TRUY CẬP là `text.strip().lower()` của câu nói - giữ nguyên dấu, KHÔNG
-  chuẩn hoá NFC/NFD. Vì vậy nên sinh khoá bằng chính Python (không gõ tay):
+  Khoá TRUY CẬP là câu nói sau `strip().lower()` và (từ v7.6) GỌI khoảng trắng liên
+  tiếp thành một dấu cách - giữ nguyên dấu, KHÔNG chuẩn hoá NFC/NFD. Vì vậy vẫn nên
+  sinh khoá bằng chính Python (không gõ tay):
       python - <<'PY'
       import csv, pathlib
       thu_muc = pathlib.Path("~/.local/share/vi_voice_assistant/voice_cache").expanduser()
@@ -484,11 +551,11 @@ KHO GIỌNG ĐỌC SẴN (voice_cache) - ĐỊNH DẠNG THẬT, TỰ LÀM BẰNG
               w.writerow([cau_noi.strip().lower(), f_mp3.name])
       print("đã ghi", len(list(thu_muc.glob("*.mp3"))), "mục")
       PY
-  Lưu ý THẬT: dự án chỉ ĐỌC kho giọng, không có lệnh tạo mp3 (công cụ tạo
-  `train_tts.py cache` đã bị bỏ). Cách nhanh nhất để có file mp3 cho một câu là
-  tầng pyttsx3/gTTS hoặc `python giong_noi_ai.py thu`; sau đó đặt vào thư mục trên.
-  Nếu index.csv có dòng trỏ tới file không tồn tại, dòng đó bị BỎ QUA (tự lành),
-  không phát lỗi giữa câu.
+  Hai chiều giờ KHỚP NHAU: khoá `prewarm()` sinh ra đúng là khoá `speak()` tìm,
+  và `index.csv` được cập nhật chứ không ghi đè. Nếu index.csv có dòng trỏ tới file
+  không tồn tại, dòng đó bị BỎ QUA (tự lành), không phát lỗi giữa câu. Muốn tạo
+  file cho một câu bằng giọng AI đã train: `python giong_noi_ai.py thu` rồi đặt vào
+  thư mục trên, hoặc để `--cache --engine piper` làm.
 
 stt.py có 2 lớp:
   - is_available()/listen_once(): nhanh, dùng SpeechRecognition (cần mạng)

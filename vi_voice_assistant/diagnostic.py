@@ -1,5 +1,5 @@
 """
-diagnostic.py - Chẩn đoán cài đặt & môi trường (mới ở v7.3)
+diagnostic.py - Chẩn đoán cài đặt & môi trường (v7.3 - v7.6)
 -----------------------------------------------------------
 
 Vì sao cần: trước đây người dùng mới chỉ có ``--sysinfo`` (báo cáo khả năng
@@ -13,6 +13,11 @@ in ra ĐÚNG LỆNH cần gõ để khắc phục (theo đúng nền tảng đan
 
 Chạy độc lập: ``python diagnostic.py`` hoặc ``vi-doctor`` (khi cài bằng pip).
 Không cần thư viện ngoài, không phát tiếng, không sửa gì - chỉ đọc.
+v7.6 nâng cấp:
+- mục "Giọng nói" nói về `voice_cache/` (số mục, máy này tạo được không, lệnh nào)
+  và có thêm nhãn `[i]` cho dòng THÔNG TIN - không đếm vào cảnh báo, vì "chưa tối
+  ưu giọng nói" không phải một cái hỏng.
+
 v7.4 nâng cấp:
 - Bỏ `platform.system().major` (AttributeError); một section raise thì được ghi
   `[X]` vào báo cáo thay vì làm mất cả báo cáo.
@@ -38,6 +43,10 @@ logger = logging.getLogger(__name__)
 OK = "[OK]  "
 WARN = "[!]  "
 BAD = "[X]  "
+# v7.6: dong "[i]" la thong tin thuan tuy (cach tao kho giong...). Co y KHONG
+# dung [!] vi `vi-doctor` dem canh bao thanh "can chu y", va nguoi dung dang
+# duoc huong dan cai dat them thi do la tuy chien, khong phai benh.
+INFO = "[i]  "
 
 # Lenh khac phuc in ra o cuoi bao cao. Viet chu don ben ngoai de khoi phai
 # escape dau nhay kep ben trong (doan `python -c "..."` luon chu"a nhay kep).
@@ -103,7 +112,7 @@ def _section_result(title: str, fn) -> tuple[list[tuple[str, str]], list[str]]:
     """
     try:
         result = fn()
-    except Exception as e:          # cý ý bất mọi loại lỗi: báo cáo phải in ra được
+    except Exception as e:          # cố ý bắt mọi loại lỗi: báo cáo phải in ra được
         logger.warning("Mục %s của --doctor lỗi: %s", title, e, exc_info=True)
         return ([(BAD, f"{title}: bộ kiểm tra lỗi ({type(e).__name__}: {e})")], [])
     rows, extra = result
@@ -233,6 +242,39 @@ def check_libraries() -> tuple[list[tuple[str, str]], list[str]]:
     return rows, fixes
 
 
+PREWARM_CMD = "python -m vi_voice_assistant.tts --cache"
+
+
+def _voice_cache_rows() -> list[tuple[str, str]]:
+    """Tình trạng kho giọng đọc sẵn + cách tạo nó (mới v7.6).
+
+    Trước đây `vi-doctor` không hề nhắc tới `voice_cache/`: tài liệu có nói về
+    thư mục này, người dùng tạo tay một file `index.csv` sai quy cách cũng không
+    được báo, và cả khi cache ĐẦY thì bác sĩ vẫn im. Ba dòng dưới trả lời đúng
+    ba câu hỏi: có bao nhiêu mục, máy này tạo được không, lệnh nào để tạo.
+    """
+    rows: list[tuple[str, str]] = []
+    try:
+        import tts
+
+        index = tts._load_voice_cache()
+        writers = tts.available_writers()
+        where = tts.VOICE_CACHE_DIR
+        if index:
+            rows.append((OK, f"kho giọng đọc sẵn: {len(index)} mục ({where})"))
+            if len(index) < 5:
+                rows.append((INFO, f'thêm câu thông dụng: {PREWARM_CMD} --text "câu nói"'))
+        elif writers:
+            rows.append((INFO, f"kho giọng trống; máy này tạo được bằng: {', '.join(writers)}"))
+            rows.append((INFO, f'chạy: {PREWARM_CMD} --text "mở youtube" --text "tắt máy"'))
+        else:
+            rows.append((INFO, "kho giọng trống và máy này chưa có writer nào ghi ra file "
+                               "(cần gTTS / espeak-ng / pyttsx3)"))
+    except Exception as e:  # loi kiem tra khong duoc bien `vi-doctor` thanh chet
+        rows.append((WARN, f"không kiểm tra được voice_cache: {e}"))
+    return rows
+
+
 def check_voice() -> tuple[list[tuple[str, str]], list[str]]:
     rows: list[tuple[str, str]] = []
     fixes: list[str] = []
@@ -244,6 +286,8 @@ def check_voice() -> tuple[list[tuple[str, str]], list[str]]:
         rows.append((OK if order else WARN, f"TTS engine={tts.ENGINE!r} -> {chain}"))
     except Exception as e:
         rows.append((BAD, f"TTS lỗi khi kiểm tra: {e}"))
+
+    rows.extend(_voice_cache_rows())
 
     try:
         import giong_noi_ai
@@ -278,7 +322,7 @@ def run_checks() -> dict:
         sections[title] = rows
         fixes.extend(extra)
 
-    # Trung lap xuat hien khi nhieu thieu thu cung cuong mot lenh cai -> gộp lại,
+    # Trùng lặp xuất hiện khi nhiều thư viện cùng gợi ý một lệnh cài -> gộp lại,
     # giu thu tu lan dau xuat de nguoi dung khong phai doc mot lenh 2 lan.
     fixes = list(dict.fromkeys(fixes))
 

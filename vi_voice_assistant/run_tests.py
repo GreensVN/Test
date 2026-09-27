@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_tests.py - Bo chay kiem thu KHONG can pytest cai san (v6).
+run_tests.py - Bo chay kiem thu KHONG can pytest cai san (v6 - v7.6).
 Cach dung:
     python3 run_tests.py            # chay tat ca
     python3 run_tests.py -k time    # chi chay test co 'time' trong ten
@@ -88,12 +88,56 @@ class _Approx:
         return abs(other - self.expected) <= self._rel * max(abs(self.expected), 1e-12)
     def __repr__(self): return "approx(%r)" % self.expected
 
+class _ExceptionInfo:
+    """Bản thay thế `pytest.ExceptionInfo` - thứ mà `raises(...)` PHẢI trả về.
+
+    shim trả về thẳng đối tượng exception là lệch hợp đồng: test viết theo pytest
+    ``e = raises(E, fn); assert e.value.args`` hoặc ``with raises(E) as ei:`` rồi
+    ``ei.match("...")`` sẽ chết bằng ``AttributeError`` trên runner nhưng xanh trên
+    máy có pytest - đúng kiểu "chỉ chạy được ở một môi trường" mà bộ test này
+    không được phép có.
+    """
+
+    __slots__ = ("traceback", "value")
+
+    def __init__(self, exc=None, tb=None):
+        self.value = exc
+        self.traceback = tb
+
+    @property
+    def type(self):
+        return type(self.value) if self.value is not None else None
+
+    def match(self, pattern):
+        """Đúng hợp đồng pytest: khớp thì trả ``True``, LỆCH thì ``AssertionError``.
+
+        Trả `False` khi lệch nhìn "tiện" hơn nhưng là một hợp đồng khác: test viết
+        ``ei.match(pat)`` (dựa vào việc pytest fail tại chỗ) chạy xanh trên shim mà
+        đỏ trên máy có pytest - mất đúng cái kiểm tra mà người viết test tưởng mình
+        có. Đo bằng test so sánh trực tiếp với pytest thật (test_v76_robustness).
+        """
+        message = str(self.value) if self.value is not None else ""
+        if re.search(pattern, message):
+            return True
+        raise AssertionError(
+            "Regex pattern did not match.\n  Expected regex: %r\n  Actual message: %r"
+            % (pattern, message)
+        )
+
+    def __repr__(self):
+        name = self.type.__name__ if self.type is not None else "?"
+        return "<ExceptionInfo %s>" % name
+
+
 @contextlib.contextmanager
 def _raises_ctx(exc_type, match=None):
-    try: yield
+    info = _ExceptionInfo()
+    try:
+        yield info
     except exc_type as e:
-        if match and not re.search(match, str(e)):
-            raise AssertionError("Msg %r !~ %r" % (str(e), match)) from e
+        info.value, info.traceback = e, e.__traceback__
+        if match:
+            info.match(match)      # khop -> None; lech -> AssertionError nhu pytest
     except Exception as e:
         raise AssertionError(
             "Expected %s, got %s: %s" % (exc_type.__name__, type(e).__name__, e)
@@ -111,6 +155,9 @@ def _raises(exc_type, *args, match=None, **kwargs):
     bản này dẹp). Ở đây: gọi `fn`, bắt đúng `exc_type`, soi `match` bằng
     `re.search` (giống pytest, không phải so chuỗi con), và để lỗi khác
     NGUYÊN VẸN đi lên để traceback còn đọc được.
+
+    Cả hai dạng đều trả về `_ExceptionInfo` (có `.value`/`.type`/`.match()`),
+    không trả về exception trần trụi - v7.6.
     """
     if not args and not kwargs:
         return _raises_ctx(exc_type, match=match)
@@ -118,9 +165,10 @@ def _raises(exc_type, *args, match=None, **kwargs):
     try:
         fn(*fargs, **kwargs)
     except exc_type as e:
-        if match and not re.search(match, str(e)):
-            raise AssertionError("Msg %r !~ %r" % (str(e), match)) from e
-        return e
+        info = _ExceptionInfo(e, e.__traceback__)
+        if match:
+            info.match(match)      # khop -> None; lech -> AssertionError nhu pytest
+        return info
     raise AssertionError("Expected %s but no exception (called %r)"
                          % (exc_type.__name__, getattr(fn, "__name__", fn)))
 
@@ -536,6 +584,31 @@ def _count_test_files(test_dir) -> int:
     return len(sorted(directory.glob("test_*.py")))
 
 
+def _keyword_matches(keyword: str, nodeid: str) -> bool:
+    """Giống `pytest -k`: khớp trên NODEID (tên file + tên test), hỗ trợ and/or/not.
+
+    Runner cũ chỉ so chuỗi với TÊN HÀM, nên `python run_tests.py -k v76` lọc ra 0
+    test trong khi `pytest -k v76` chạy 90 test - và 0 test lại in ra "0 pass, 0
+    fail" rồi exit 0: đúng kiểu "xanh giả" mà bản này đang dẹp. Hai việc đi cùng
+    nhau: khớp như pytest, và báo đỏ khi không khớp gì.
+    """
+    text = nodeid.lower()
+
+    def one(term: str) -> bool:
+        term = term.strip()
+        if term.startswith("not "):
+            return not one(term[4:])
+        return bool(term) and term in text
+
+    for or_part in keyword.lower().split(" or "):
+        terms = [term for term in or_part.split(" and ") if term.strip()]
+        if not terms:
+            continue
+        if all(one(term) for term in terms):
+            return True
+    return False
+
+
 def run(keyword=None, verbose=False, quiet=False):
     test_dir = pathlib.Path(__file__).parent / "tests"
     files = sorted(test_dir.glob("test_*.py"))
@@ -563,7 +636,8 @@ def run(keyword=None, verbose=False, quiet=False):
 
         file_start = (passed, failed, skipped)
         for name, fn in fns:
-            if keyword and keyword.lower() not in name.lower(): continue
+            if keyword and not _keyword_matches(keyword, "%s::%s" % (path.name, name)):
+                continue
 
             cases: list[Any] = [(name, fn, {})]
             if hasattr(fn, "__parametrize__"):
@@ -661,6 +735,14 @@ def run(keyword=None, verbose=False, quiet=False):
                 path.name, p_,
                 (", %d FAIL" % f_) if f_ else ("", ", %d skip" % s_)[bool(s_)]))
 
+    if keyword and not total:
+        # Khong test nao khop -k ma van exit 0 la bao "da kiem tra" xong trong khi
+        # chang co gi duoc chay. pytest tra loi 5 ("no tests ran"); o day cung do.
+        print("\n" + "=" * 58)
+        print("KHONG co test nao khop -k %r." % keyword)
+        print("  Kiem tra lai ten file/ten test:  python run_tests.py --list")
+        return 1
+
     print("\n" + "=" * 58)
     print("Ket qua: %d pass, %d fail, %d skip  (tong %d)" % (passed, failed, skipped, total))
     if failures:
@@ -683,11 +765,16 @@ def _delegate_to_pytest(argv: list[str]) -> int | None:
 
 
 def main(argv=None) -> int:
-    """Điểm vào CLI (mới v7.3) - cũng là console script ``vi-tests``.
+    """Điểm vào CLI của runner (mới v7.3), nhận ``argv`` tường minh để test gọi lại.
 
-    Tách khỏi khối ``__main__`` để: (a) ``pip install .`` tạo được lệnh
-    ``vi-tests``, (b) test khác gọi lại được runner mà không cần spawn tiến
-    trình con, (c) nhận ``argv`` tường minh cho test.
+    Tách khỏi khối ``__main__`` để: (a) test khác (kể cả test của chính bộ này) gọi
+    lại được runner mà không spawn tiến trình con, (b) nhận ``argv`` tường minh.
+
+    v7.6 sửa lại CHO ĐÚNG: docstring từng khẳng định đây là console script
+    ``vi-tests``, nhưng ``pyproject.toml`` không khai báo script đó - và cũng ĐÚNG
+    là không nên khai báo: wheel không kèm thư mục ``tests/`` (giữ cho gói nhẹ),
+    nên một lệnh ``vi-tests`` sau khi ``pip install .`` chỉ có thể in "không tìm
+    thấy test nào" và thoát 1. Chạy test là việc của source checkout/CI.
     """
     import argparse
 

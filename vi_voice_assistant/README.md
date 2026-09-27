@@ -1,8 +1,24 @@
-# Trợ lý ảo tiếng Việt v7.5
+# Trợ lý ảo tiếng Việt v7.7
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
 
+> **v7.7 (2026-09-20)** - **biên kiểu ở những hàm chưa bị audit**:
+> `lite_model.predict("mở youtube")` lặp qua từng KÝ TỰ (model chấm chữ "ở", "y"
+> như cả câu nói) - nay một chuỗi = MỘT câu, kiểu không lặp được báo `TypeError`
+> nêu đúng tên tham số; `cancel_reminder(123)`, `teach("a", 123)`, `confirm_message({})`
+> không còn `AttributeError`/`KeyError`; `log_feedback(..., confidence=None)` không
+> làm hỏng `feedback.csv` (đầu vào của lần huấn luyện sau); `save_config` báo lý do
+> không nối được JSON TRƯỚC khi chạm đĩa; `from_state` bỏ qua field sai kiểu thay
+> vì làm sập lúc khởi động. **518 test**.
+>
+> **v7.6 (2026-09-20)** - **kho giọng tạo được, nhắc nhở chịu được thời điểm kiểu
+> rác**: `python -m vi_voice_assistant.tts --cache` sinh file âm thanh +
+> `index.csv` cho các câu lặp lại hằng ngày (máy không có engine ghi file thì báo
+> rõ vì sao, không im lặng); `set_reminder` chấp nhận `"time": "3 phút nữa"`/`3`
+> thay vì `AttributeError`; trả lời "5 phút nữa" sau câu hỏi "nhắc vào lúc nào?"
+> giữ lại ĐƯỢC việc cần nhắc, chạy bằng pytest hoặc runner nhúng.
+>
 > **v7.5 (2026-09-20)** - **điểm vào chịu được dữ liệu thật**: `config.json` hỏng
 > không còn giết mọi lệnh (dùng giá trị mặc định + in rõ lỗi, `--doctor` vẫn chạy);
 > `tts.speak(123)`/`speak(None)` không crash và câu rỗng không in `"[TRỢ LÝ] None"`;
@@ -45,7 +61,7 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 - **11 ý định**: mở web, mở app, mở file, điều khiển hệ thống, tìm kiếm, phát nhạc/video, nhắc nhở, thời tiết, xem giờ/ngày, tính toán, chit-chat.
 - **Không cần thư viện ngoài**: `lite_model.py` - Naive Bayes n-gram ký tự thuần Python, huấn luyện <1s, ~97-98% chính xác. Tự dùng scikit-learn hoặc PhoBERT nếu có.
 - **Thông minh đời thường**: gõ không dấu, teencode, sai chính tả nhẹ, nhiều lệnh trong 1 câu, nhớ ngữ cảnh ("đóng nó lại"), học từ phản hồi, hiểu số viết bằng chữ.
-- **An toàn**: 
+- **An toàn**:
   - Không chạy chuỗi người dùng qua shell
   - Whitelist app/web/file trong `config.json`
   - Xác nhận trước hành động nguy hiểm

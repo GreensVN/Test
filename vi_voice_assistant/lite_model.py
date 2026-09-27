@@ -1,6 +1,14 @@
 """
 lite_model.py - Bộ phân loại nhẹ thuần Python (Naive Bayes + char n-grams)
 
+v7.7 nâng cấp:
+- `predict`/`predict_proba`/`score` chuẩn hoá đầu vào batch qua `_as_texts()`:
+  truyền vào MỘT chuỗi thì các hàm này lặp qua từng KÝ TỰ và trả về kết quả "trông
+  được" cho từng chữ cái - sai mà không báo. Kiểu không lặp được (số) nay báo
+  `TypeError` đúng tên tham số.
+- `from_state` kiểm kiểu của dict trạng thái; field sai kiểu bị bỏ qua
+  (model 'trắng' -> huấn luyện lại) thay vì ném `AttributeError` lúc khởi động.
+
 v7.0 nâng cấp:
 - Type hints đầy đủ
 - Dùng pathlib, dataclass-like state
@@ -20,7 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from paths import data_path
-from text_utils import normalize_text
+from text_utils import as_text, normalize_text
 
 BASE_DIR = Path(__file__).resolve().parent
 # v7.3: model cache nam trong thu muc du lieu (paths.py) - site-packages co the
@@ -66,6 +74,26 @@ def _featurize_cached(cleaned: str) -> tuple[str, ...]:
 def featurize(text: str | None) -> list[str]:
     cleaned = normalize_text(text or "")
     return list(_featurize_cached(cleaned))
+
+
+def _as_texts(texts: object) -> list[str]:
+    """Đổi đầu vào "batch" thành danh sách CÂU - một chuỗi trần là MỘT câu.
+
+    `predict_proba("mở youtube")` trước đây lặp qua TỪNG KÝ TỰ và trả về 11 hàng
+    dự đoán nhìn rất hợp lệ: không ai nghi ngờ gì, trong khi model đang chấm chữ
+    "ở", "y" như những câu nói đầy đủ. Im lặng trả kết quả sai còn tệ hơn cái
+    `TypeError: 'int' object is not iterable` mà đầu vào kiểu số từng gây.
+    Danh sách vẫn đi đường cũ, nên kết quả của tầng NLU/CLI không đổi.
+    """
+    if isinstance(texts, str):
+        return [texts]
+    if texts is None:
+        return []
+    if hasattr(texts, "__iter__"):
+        return [item if isinstance(item, str) else as_text(item) for item in texts]
+    raise TypeError(
+        f"`texts` phải là danh sách chuỗi (hoặc một chuỗi), nhận được {type(texts).__name__}."
+    )
 
 
 class LiteIntentModel:
@@ -230,8 +258,8 @@ class LiteIntentModel:
         label = max(probs, key=lambda k: probs[k])
         return label, probs[label] * self.evidence_ratio(text)
 
-    def predict(self, texts: list[str]) -> list[str]:
-        return [self.predict_one(t)[0] for t in texts]
+    def predict(self, texts: list[str] | str) -> list[str]:
+        return [self.predict_one(t)[0] for t in _as_texts(texts)]
 
     def predict_proba(self, texts: list[str]) -> list[list[float]]:
         """Xác suất theo từng lớp, đã NHÂN "bảo chứng từ điển" (evidence_ratio).
@@ -242,17 +270,18 @@ class LiteIntentModel:
         vẫn trả về softmax nguyên bản cho ai cần phân phối thật.
         """
         rows = []
-        for text in texts:
+        for text in _as_texts(texts):
             probs = self.predict_proba_dict(text)
             evidence = self.evidence_ratio(text)
             rows.append([probs.get(label, 0.0) * evidence for label in self.classes_])
         return rows
 
-    def score(self, texts: list[str], labels: list[str]) -> float:
-        if not texts:
+    def score(self, texts: list[str] | str, labels: list[str] | str) -> float:
+        items, targets = _as_texts(texts), _as_texts(labels)
+        if not items:
             return 0.0
-        hit = sum(1 for text, label in zip(texts, labels) if self.predict_one(text)[0] == label)
-        return hit / float(len(texts))
+        hit = sum(1 for text, label in zip(items, targets) if self.predict_one(text)[0] == label)
+        return hit / float(len(items))
 
     def explain(self, text: str, top_k: int = 5) -> list[tuple[str, float]]:
         """Trả về top_k đặc trưng đóng góp nhiều nhất cho nhãn dự đoán."""
@@ -279,13 +308,38 @@ class LiteIntentModel:
 
     @classmethod
     def from_state(cls, state: dict) -> LiteIntentModel:
-        model = cls(alpha=state.get("alpha", 0.15), temperature=state.get("temperature", 0.08))
-        model.format_version = state.get("format_version", 0)
-        model.classes_ = list(state.get("classes", []))
-        model.fingerprint = state.get("fingerprint")
-        model._log_prior = state.get("log_prior", {})
-        model._log_prob = state.get("log_prob", {})
-        model._log_default = state.get("log_default", {})
+        """Dựng model từ dict trạng thái của `to_state` (file model, cache).
+
+        v7.7: `state` phải là dict thì báo rõ như vậy, thay vì để `.get` trên
+        None/chuỗi ném ``AttributeError: 'NoneType' object has no attribute
+        'get'`` - traceback đó trông hệt như lỗi của model. Field nào sai kiểu
+        thì bỏ qua và dùng giá trị khởi tạo: một file bị viết dở (mất điện giữa
+        lúc lưu) phải cho ra model "trắng" để `get_lite_model` huấn luyện lại,
+        không phải làm sập lệnh đầu tiên của người dùng.
+        """
+        if not isinstance(state, dict):
+            raise TypeError(
+                f"from_state cần dict trạng thái, nhận được {type(state).__name__}."
+            )
+
+        def _num(key: str, default: float) -> float:
+            value = state.get(key, default)
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            return float(value) if ok else default
+
+        model = cls(alpha=_num("alpha", 0.15), temperature=_num("temperature", 0.08))
+        model.format_version = int(_num("format_version", 0.0))
+        classes = state.get("classes", [])
+        model.classes_ = [str(c) for c in classes] if isinstance(classes, (list, tuple)) else []
+        fingerprint = state.get("fingerprint")
+        model.fingerprint = fingerprint if isinstance(fingerprint, str) else None
+        for attr, key in (
+            ("_log_prior", "log_prior"),
+            ("_log_prob", "log_prob"),
+            ("_log_default", "log_default"),
+        ):
+            table = state.get(key)
+            setattr(model, attr, table if isinstance(table, dict) else {})
         return model
 
 

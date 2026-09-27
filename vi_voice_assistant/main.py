@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.5
+main.py - Trợ lý ảo tiếng Việt v7.7
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -53,7 +53,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.5"
+APP_VERSION = "7.7"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -554,6 +554,11 @@ def _cmd_sysinfo(ctx: ReplContext) -> None:
 def _cmd_forget_context(ctx: ReplContext) -> None:
     if ctx.nlu.context:
         ctx.nlu.context.clear()
+    # v7.6: "quên" phải xoá CẢ lời nhắc đang chờ trả lời thời điểm, nếu không một
+    # câu gõ sau đó có thể bị nối vào việc nhắc mà người dùng vừa huỷ.
+    if executor.pending_reminder():
+        executor.clear_pending_reminder()
+        safe_print("   (đã bỏ luôn lời nhắc đang chờ bạn trả lời thời điểm)")
     safe_print("[NGỮ CẢNH] Đã xoá trí nhớ hội thoại.")
 
 
@@ -680,6 +685,25 @@ def _suggest_control_command(text: str) -> str | None:
     return close[0]
 
 
+def _complete_pending_reminder(text: str, state: ReplState) -> bool | None:
+    """Thử nối một câu trả lời thời điểm vào lời nhắc đang chờ. None = bỏ qua.
+
+    Đặt ở main (không phải trong `get_input`) vì đây là bước TIÊU THỤ câu nói:
+    phím ↑/↓, lịch sử và `--once` đi qua đây nên hành vi giống nhau. Mọi lỗi của
+    executor được nuốt ở đây kèm log - một lời nhắc phụ không được phép làm chết
+    vòng REPL.
+    """
+    if not executor.pending_reminder():
+        return None
+    try:
+        done: bool | None = executor.try_complete_pending_reminder(text, dry_run=state.dry_run)
+        return done
+    except Exception as e:
+        logger.warning("Không nối được thời điểm cho lời nhắc đang chờ: %s", e)
+        executor.clear_pending_reminder()
+        return None
+
+
 def _run_repl(nlu: NLU, state: ReplState) -> int:
     if _setup_readline():
         safe_print("(Mẹo: phím ↑/↓ gọi lại lệnh cũ, phím Tab hoàn thành tên lệnh.)")
@@ -705,6 +729,15 @@ def _run_repl(nlu: NLU, state: ReplState) -> int:
 
         if state.mic_mode:
             safe_print(f"[MIC] Bạn nói: {text}")
+
+        # v7.6: "nhắc tôi uống nước" -> "Bạn muốn tôi nhắc vào lúc nào ạ?" ->
+        # "5 phút nữa". Trước đây câu trả lời bị phân tích như lệnh MỚI, nên lời
+        # nhắc mất luôn nội dung và thành "báo thức" - người dùng phải nói lại từ
+        # đầu. Có gì đang chờ thì nối thời điểm vào đó trước, rồi mới tới NLU.
+        outcome = _complete_pending_reminder(text, state)
+        if outcome is not None:
+            safe_print("=> " + ("Đã thực thi xong." if outcome else "Không thực thi được."))
+            continue
 
         try:
             commands = nlu.understand(text)

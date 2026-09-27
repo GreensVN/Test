@@ -1,12 +1,25 @@
-# Trợ lý ảo tiếng Việt v7.5
+# Trợ lý ảo tiếng Việt v7.7
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 392 pass](https://img.shields.io/badge/tests-392%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 518 pass](https://img.shields.io/badge/tests-518%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+
+**v7.7** soi bốn hàm CHƯA bị audit ở hai vòng trước và sửa đúng chỗ chúng im
+lặng trả kết quả sai: `lite_model.predict("mở youtube")` từng lặp qua TỪNG KÝ TỰ
+(một chuỗi bị hiểu là 11 câu!), `cancel_reminder(123)`/`teach("a", 123)`/
+`confirm_message({})` nổ `AttributeError`/`KeyError`, `log_feedback(..., confidence=None)`
+làm hỏng `feedback.csv` - tức hỏng dữ liệu huấn luyện lần sau, còn `save_config`
+thì báo lỗi từ bên trong `json` sau khi đã chạm đĩa. 518 test.
+
+**v7.6** bù hai chỗ trống cụ thể: kho giọng `voice_cache/` từ v6 tới nay chỉ có
+CHIỀU ĐỌC - nay có lệnh TẠO `python -m vi_voice_assistant.tts --cache` (sinh file
+âm thanh + `index.csv`, không cần thư viện mới); và lệnh nhắc nhở chịu được
+`"time": "3 phút nữa"` thay vì nổ `AttributeError`, kèm trí nhớ câu hỏi "nhắc vào
+lúc nào?" để câu trả lời không còn mất nội dung cần nhắc.
 
 **v7.5** siết các điểm vào công cộng: `config.json` hỏng không còn giết mọi lệnh
 (kể cả `vi-doctor`), `tts.speak()` không crash với số/`None` và không in
@@ -57,7 +70,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 392 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 518 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -118,17 +131,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (392 test)
-    └── tests/             # 392 test (hồi quy v7.2 + v7.3 + v74 compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (518 test)
+    └── tests/             # 518 test (v7.2 - v7.7 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 392 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 518 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 392 pass, 0 fail, 0 skip
+# Ket qua: 518 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
@@ -155,6 +168,8 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
+- v7.7 (2026-09-20): `lite_model` khong con hieu mot chuoi la batch ky tu, `cancel_reminder`/`teach`/`confirm_message`/`log_feedback` chiu duoc kieu rac, `save_config` bao ly do TRUOC khi ghi đĩa, `from_state` bo qua field sai kieu, 518 tests
+- v7.6 (2026-09-20): `tts.py --cache` sinh duoc voice_cache (truoc chi co doc), nhac nho chiu `time` kieu chuoi/so, REPL nho noi dung dang hoi `luc nao`, config `update_config` bao kieu, runner `raises`/`-k` khop hop dong pytest, 487 tests
 - v7.5 (2026-09-20): config hong khong giet ung dung, `speak`/`understand`/`--once` chiu duoc dau vao that, sanitize_filename theo Windows, 392 tests
 - v7.4 (2026-09-20): mypy 60->0 + job typecheck, ghi file atomic co fsync, sua loi sap tren Python 3.9, 367 tests
 - v7.3 (2026-09-20): `pip install .` chay that, paths.py, install.py, vi-doctor, 330 tests

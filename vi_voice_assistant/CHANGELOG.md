@@ -1,5 +1,128 @@
 # CHANGELOG
 
+## v7.7 (2026-09-20) - Bốn hàm chưa ai audit: cùng một họ lỗi kiểu: 518 test
+
+v7.5-v7.6 audit các điểm vào công cộng (CLI, config, TTS, runner). Vòng này soi
+những hàm **chưa** bị chạm tới, bằng cách đưa vào kiểu sai - số, `None`, bytes,
+dict rỗng - thay vì chỉ chuỗi. Cả bốn lỗi tìm được đều ở biên kiểu, không phải
+thuật toán; cả bốn đều nằm trên đường mà tài liệu đã mời người dùng tự gọi.
+
+**`lite_model`: một chuỗi là MỘT CÂU, không phải một batch ký tự.** `predict`,
+`predict_proba`, `score` khai `texts: list[str]` nhưng lặp thẳng
+`for text in texts`, nên `predict_proba("mở youtube")` trả về **11 hàng** dự đoán
+trông rất hợp lệ cho 11 chữ cái - người gọi không hề được báo. Im lặng trả kết quả
+sai còn tệ hơn `TypeError: 'int' object is not iterable` mà `predict(123)` gây ra.
+Nay có `_as_texts()`: chuỗi trần → `[chuỗi]`, `None` → `[]`, list/tuple/generator
+đi đường cũ (kết quả của tầng NLU/CLI không đổi một byte nào), phần tử lạc kiểu bị ép
+qua `as_text`, kiểu không lặp được → `TypeError` nêu đúng tên tham số.
+`from_state` cũng kiểm kiểu dict trạng thái: field sai kiểu bị bỏ qua để ra model
+"trắng" cho `get_lite_model` huấn luyện lại, thay vì `AttributeError` giữa lúc khởi
+động - tình huống thật là file model bị viết dở vì mất điện.
+
+**`executor.cancel_reminder`.** `strip_diacritics((keyword or "").strip())` nổ
+`AttributeError: 'int' object has no attribute 'strip'` với keyword kiểu số, và
+đường đó là cách duy nhất để xoá một lịch đặt sai. Nay keyword đi qua `as_text`
+rồi mới so; `None`/chuỗi rỗng vẫn nghĩa cũ (huỷ tất cả), `id` vẫn huỷ đúng một mục,
+và sau khi huỷ `reminders.json` không còn giữ mục đã huỷ.
+
+**`nlu_advanced`: dạy, hỏi lại, và file học.** `teach(text, intent)` gọi
+`(intent or "").strip()` → `teach("a", 123)` sập; `confirm_message` index thẳng
+`result["intent"]`/`result["target"]` → `confirm_message({})` trả `KeyError` cho
+người dùng thay vì một câu hỏi. Nay: ép kiểu qua `as_text`, thiếu `intent` thì hỏi
+chung "Bạn muốn tôi làm việc đó phải không? (có/không)" (không in "None"), câu hỏi
+cho kết quả hợp lệ **giữ nguyên từng byte**. `log_feedback(..., confidence=None)`
+từng hỏng ngay bước `round(float(...))` - mà `feedback.csv` là ĐẦU VÀO của
+`train_nlu.py` lần sau, nên một dòng hỏng kéo theo cả vòng huấn luyện; giá trị đọc
+không được nay thành `0.0`.
+
+**`config.save_config`.** `save_config({"x": {1, 2}})` để `json` ném
+`TypeError: Object of type set is not JSON serializable` từ `encoder.py`, **sau khi
+file tạm đã tạo xong**. Nay thử nối JSON trước: báo cùng lý do nhưng chỉ ra ngay
+đầu vào sai, và không để lại file tạm/file mồ côi. `save_config("str")` →
+`TypeError: save_config cần dict, nhận được str.`
+
+**Không đổi.** Không API nào bị bỏ; `predict`/`predict_proba`/`score` với danh sách
+cho kết quả y hệt (test parity); chuỗi báo cho người dùng trong các luồng hợp lệ giữ
+nguyên.
+
+**Kiểm chứng (đo, không ước lượng).** 518 test trên CẢ HAI đường: `pytest -q` →
+`518 passed`; `python run_tests.py -q` trên máy không pytest → `518 pass, 0 fail,
+0 skip`; `ruff check` 0; `mypy` 0 lỗi (43 file); parity batch từng câu
+`predict_proba(list) == [predict_proba([t])[0] ...]` trên 3 câu thật.
+
+**Sửa muộn (cùng ngày): một test phụ thuộc môi trường máy.**
+`test_adopt_shipped_data_is_noop_for_source_checkout` giả định `VI_ASSISTANT_HOME`
+không được đặt; ai làm theo hướng dẫn (đặt biến này trong shell) rồi chạy test từ
+source thấy 1 fail dù code đúng - và lần chạy thứ hai lại xanh vì file đã được chép
+(đúng hành vi "chép một lần"). Test nay tự xoá biến trước khi đo, và có thêm test
+đo chiều ngược lại: có biến → chép `config.json` ĐÚNG MỘT LẦN, không ghi đè file
+người dùng. Không đổi code sản phẩm. 518 test.
+
+
+## v7.6 (2026-09-20) - Kho giọng có lệnh tạo; nhắc nhở chịu được thời điểm thật: 487 test
+
+**Lệnh mới, đóng một khoảng trống để từ v6.** `voice_cache/` chỉ có CHIỀU ĐỌC:
+tài liệu bảo "đặt mp3 vào <thư mục dữ liệu>/voice_cache rồi ghi `index.csv`", nhưng
+công cụ tạo (`train_tts.py cache`) đã bị bỏ nên người dùng không có cách nào ngoài
+viết tay. v7.6 thêm `tts.prewarm()` + CLI:
+
+    python -m vi_voice_assistant.tts --cache --text "mở youtube" --text "tắt máy"
+    python -m vi_voice_assistant.tts --cache --file cau_thuong_dung.txt [--engine gtts] [--dry-run]
+    python -m vi_voice_assistant.tts --list        # xem kho hiện có gì
+
+- Writers: gTTS (mp3, cần mạng), espeak-ng (wav, offline), pyttsx3 (wav), piper
+  (wav), `say` (macOS). Không thêm dependency - thiếu thứ nào thì writer đó
+  không xuất hiện, module vẫn import bằng thuần stdlib.
+- `available_writers()` khác `available_engines()`: engine biết PHÁT không chắc
+  biết GHI RA FILE; `vi-doctor` bây giờ in dòng `[i]` nói đúng điều đó + lệnh cần
+  chạy (nhãn mới `[i]` KHÔNG bị đếm vào cảnh báo - có test buộc hai con số khớp).
+- `_file_written()` chặn "thành công giả": file WAV 44 byte (chỉ header) bị tính
+  là lỗi và bị xoá, thay vì vào cache rồi phát ra im lặng.
+- Khoá cache dùng CHUNG một hàm `_cache_key()` cho cả ghi lẫn đọc, có gộp khoảng
+  trắng: trước bản này `"Mở  YouTube"` (hai dấu cách) tìm hổng cache dù file đã
+  tồn tại.
+- `TTSWriteError` mang LÝ DO (chưa cài gì / cần mạng / file rỗng) lên tới CLI,
+  nên "[fail]" không còn là một từ vô nghĩa.
+- `paths.atomic_write_text()`: `index.csv` ghi theo cùng kiểu an toàn như JSON
+  (file tạm + fsync + rename), và `atomic_write_json()` gọi qua nó - một chỗ ghi
+  đĩa duy nhất, không còn hai bản sao thủ tục.
+
+**Nhắc nhở (`executor`).** `action_set_reminder` đọc `data["time"]` rồi gọi thẳng
+`.get("type")`: một model (hay file `--json` người dùng tự viết) gửi
+`"time": "3 phút nữa"` làm cả lệnh chết bằng `AttributeError: 'str' object has no
+attribute 'get'`. Nay `time` chuỗi/số được đưa qua `parse_time_expression`, số
+trần hiểu là phút, và `minutes`/`hour`/`minute`/`day_offset` kiểu rác/NaN/vô hạn đi
+qua `_to_number()` (mặc định + chặn biên) thay vì nổ `float()`/`int()`.
+- Trợ lý hỏi "Bạn muốn tôi nhắc vào lúc nào ạ?" rồi người dùng đáp "5 phút nữa"
+  THÌ TRƯỚC ĐÂY câu trả lời bị phân tích như lệnh MỚI: lời nhắc mất nội dung, đặt
+  thành "báo thức". Nay lời nhắc chờ 5 phút (`PENDING_REMINDER_TTL`), REPL nối thời
+  điểm vào đúng việc đang hẹn; câu không chứa thời điểm thì trả lại cho NLU và xoá
+  chờ; `quên`/`reset` xoá luôn phần chờ; `--dry-run` in `[TEST] Sẽ nhắc ...` và
+  KHÔNG đặt lịch.
+
+**`config.update_config`.** `update_config("tts")` từng nổ `'str' object has no attribute 'items'`;
+nay báo `TypeError: update_config cần dict, nhận được str: '...'`. `_deep_merge`
+copy giá trị dict, hết cảnh config trong bộ nhớ bị đổi khi người gọi sửa `updates`.
+
+**Runner nhúng (`run_tests.py`) - hai lệch hợp đồng với pytest thật.**
+- `raises` trả về thẳng exception: test viết `e.value`/`e.match()` theo pytest đỏ
+  trên runner mà xanh trên máy có pytest. Nay có `_ExceptionInfo`
+  (`.value`/`.type`/`.match()`) cho CẢ HAI dạng gọi; `match()` khớp → `True`, lệch
+  → `AssertionError` (đúng pytest 9, không phải `False`).
+- `-k` chỉ so với TÊN HÀM, còn pytest so với nodeid: `run_tests.py -k v76` chạy 0
+  test rồi báo "0 fail" = màu xanh giả. Nay `-k` hiểu `file.py::test_x` +
+  `and/or/not`, và nếu không test nào khớp thì exit 1 kèm cách kiểm tra.
+- Sửa lây nhiễm trạng thái làm test đổi kết quả theo thứ tự chạy:
+  `tts.set_enabled(False)` trong `finally` (v7.5) và `executor.SPEAK_ENABLED = False`
+  (v6) để lại trạng thái cho MỌI file chạy sau; chuyển sang `monkeypatch` để tự
+  phục hồi. Test mới cũng chặn timer thật của lịch nhắc để không nổ giữa phiên.
+
+**Kiểm chứng (đo, không ước lượng).** 487 test trên CẢ HAI đường: `pytest -q` →
+`487 passed`; `python run_tests.py -q` trên máy không pytest → `487 pass, 0 fail,
+0 skip`; parity `-k v76` → 94 test trên pytest và 94 trên runner; `ruff check` 0,
+`mypy` 0 lỗi (42 file); vòng tròn cache đo thật: `prewarm` → `speak()` phát file
+cache, không gọi engine; CLI báo đúng khi máy không có writer.
+
 ## v7.5 (2026-09-20) - Điểm vào công cộng chịu được dữ liệu thật: 392 test
 
 ### Vì sao bản này tồn tại

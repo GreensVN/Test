@@ -317,13 +317,25 @@ def test_dry_run_never_touches_the_network(capsys):
 # 5. VI-DOCTOR: CHẨN ĐOÁN TẬP TRUNG, LỆNH KHẮC PHỤC KHÔNG TRÙNG LẶP
 # ----------------------------------------------------------------------------
 def test_run_checks_shape():
-    report = importlib.import_module("diagnostic").run_checks()
+    """Danh dấu của báo cáo là MỘT TẬP ĐÓNG, và số đếm phải khớp với dấu.
+
+    v7.6 thêm "[i]" (dòng thông tin thuần, vd lệnh tạo kho giọng) - nên test này
+    không chỉ liệt kê nhãn mà còn buộc `problems`/`warnings` đúng bằng số dòng
+    [X]/[!] thực có. Nếu ai đó đánh dấu "[i]" thành "[!]" cho tiện, phần đếm sẽ
+    lệch và `vi-doctor` báo "cần chú ý" chỉ vì người dùng chưa tối ưu.
+    """
+    diagnostic = importlib.import_module("diagnostic")
+    report = diagnostic.run_checks()
     assert set(report) >= {"ok", "problems", "warnings", "sections", "fixes"}
     assert report["sections"], "phải có ít nhất một mục chẩn đoán"
-    for rows in report["sections"].values():
-        for mark, line in rows:
-            assert mark in ("[OK]  ", "[!]  ", "[X]  ")
-            assert isinstance(line, str) and line
+    rows_all = [(mark, line) for rows in report["sections"].values() for mark, line in rows]
+    for mark, line in rows_all:
+        assert mark in ("[OK]  ", "[!]  ", "[X]  ", "[i]  ")
+        assert isinstance(line, str) and line
+    marks = [m for m, _l in rows_all]
+    assert marks.count("[X]  ") == report["problems"]
+    assert marks.count("[!]  ") == report["warnings"]
+    assert report["ok"] == (report["problems"] == 0)
 
 
 def test_fix_list_is_deduplicated():
@@ -420,9 +432,32 @@ def test_info_flags_short_circuit_before_nlu(monkeypatch):
     assert assistant_main._run_info_command(args) == 0
 
 
-def test_adopt_shipped_data_is_noop_for_source_checkout():
-    """Chạy từ thư mục dự án: không được chép/xáo gì cả."""
+def test_adopt_shipped_data_is_noop_for_source_checkout(monkeypatch):
+    """Chạy từ thư mục dự án: không được chép/xáo gì cả.
+
+    Phải TỰ xoá VI_ASSISTANT_HOME: người dùng đặt biến này trong shell (như
+    hướng dẫn khuyên) rồi chạy test từ source thì data_dir != PACKAGE_DIR và
+    hàm chép config sang - đúng ý đồ, nhưng test này đo trường hợp KHÔNG có
+    biến, không phải đo môi trường của máy đang chạy.
+    """
+    monkeypatch.delenv(paths_env_key(), raising=False)
+    paths.reset_cache()
+    assert paths.describe()["from_source"] is True
     assert assistant_main._adopt_shipped_data() == []
+
+
+def test_adopt_shipped_data_copies_once_into_user_dir(tmp_path, monkeypatch):
+    """Có VI_ASSISTANT_HOME trỏ tới thư mục trống: config đi theo gói được chép
+    sang ĐÚNG MỘT LẦN, lần gọi sau là no-op và không ghi đè file người dùng."""
+    monkeypatch.setenv(paths_env_key(), str(tmp_path / "home"))
+    paths.reset_cache()
+    first = assistant_main._adopt_shipped_data()
+    assert "config.json" in first, first
+    (tmp_path / "home" / "config.json").write_text('{"gui": "cua toi"}', encoding="utf-8")
+    assert assistant_main._adopt_shipped_data() == []
+    assert json.loads((tmp_path / "home" / "config.json").read_text(encoding="utf-8")) == {
+        "gui": "cua toi"
+    }
 
 
 def test_readline_setup_is_optional(capsys):

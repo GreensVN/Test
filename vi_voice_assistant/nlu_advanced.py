@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.5
+nlu_advanced.py v7.7
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -31,6 +31,13 @@ Cách dùng nhanh:
     nlu = NLU()
     for cmd in nlu.understand("mo chrome roi phat nhac tru tinh"):
         safe_print(cmd)
+v7.7 nâng cấp:
+- `teach()`/`log_feedback()`/`confirm_message()` chịu được kiểu khác chuỗi:
+  `teach("a", 123)` từng nổ `AttributeError: 'int' object has no attribute
+  'strip'`, `confirm_message({})` nổ `KeyError: 'intent'`, và
+  `log_feedback(..., confidence=None)` làm hỏng feedback.csv ngay bước
+  `round(float(...))` - tức là hỏng luôn dữ liệu huấn luyện lần sau.
+
 v7.5 nâng cấp:
 - `understand()` trả `[]` cho câu rỗng thay vì một LỆNH BỊ BỊA
   (`open_website/unknown`): script lặp qua kết quả rồi thực thi đã đi mở thật một
@@ -399,9 +406,16 @@ def log_feedback(text: str, intent: str, confidence: float, correct: bool = Fals
             writer = csv.writer(f)
             if is_new:
                 writer.writerow(["time", "text", "intent", "confidence", "verified"])
+            # `round(float(confidence))` tung lam hong buoc ghi khi NLU truyen
+            # chuoi ("0.8") hoac None; file nay la Dau vao cua lan huan luyen ke
+            # tiep nen mot dong hong co the keo theo train_nlu.py.
+            try:
+                conf = round(float(confidence), 4)
+            except (TypeError, ValueError):
+                conf = 0.0
             writer.writerow([
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                text, intent, round(float(confidence), 4), 1 if correct else 0,
+                as_text(text), as_text(intent), conf, 1 if correct else 0,
             ])
     except OSError as e:
         # Hàm này được gọi TỰ ĐỘNG mỗi khi độ tự tin thấp (rất thường xuyên
@@ -508,14 +522,24 @@ class NLU:
     # ------------------------------------------------------------------
     def confirm_message(self, result: dict) -> str:
         """Câu hỏi lại bằng tiếng Việt cho trường hợp chưa chắc chắn."""
+        raw_intent = result.get("intent")
+        # khoa cua bang duoi la chuoi -> chuyen ve chuoi truoc khi tra: `intent`
+        # co the la so/None khi ket qua di qua tay noi khac (xem doan duoi).
         friendly = {
             "open_website": "mở trang", "open_app": "mở ứng dụng",
             "open_file": "mở file", "system_control": "thực hiện lệnh hệ thống",
             "search_web": "tìm kiếm", "play_media": "phát",
             "set_reminder": "đặt nhắc nhở", "get_weather": "xem thời tiết",
             "get_datetime": "xem giờ", "calculate": "tính", "chitchat": "trò chuyện",
-        }.get(result["intent"], result["intent"])
-        return f"Bạn muốn tôi {friendly} {result['target']} phải không? (có/không)"
+        }.get(str(raw_intent if raw_intent is not None else ""), as_text(raw_intent))
+        # `target`/`intent` co the thieu khi ket qua di qua tay noi khac (script
+        # doc file JSON): index thang vao do thi nguoi dung nhan duoc KeyError
+        # thay vi mot cau hoi "ban muon toi ... phai khong?". Khong co gi de hoi
+        # thi hoi chung, dung de in "None" vao mieng nguoi dung.
+        if not friendly:
+            return "Bạn muốn tôi làm việc đó phải không? (có/không)"
+        target = as_text(result.get("target")).strip()
+        return f"Bạn muốn tôi {friendly} {target} phải không? (có/không)"
 
     # ------------------------------------------------------------------
     def teach(self, text: str, intent: str):
@@ -527,7 +551,10 @@ class NLU:
         nhiễu (và train_test_split(stratify=...) có thể ném lỗi vì lớp quá
         ít mẫu).
         """
-        intent = (intent or "").strip()
+        # Ep kieu TRUOC khi strip: tu REPL thi la chuoi, ma goi truc tiep (script,
+        # `--json`) co the tra so/None - va `(123 or "")` thi khong co `.strip()`.
+        text = as_text(text)
+        intent = as_text(intent).strip()
         try:
             from dataset import INTENT_DATA
             valid_intents = sorted(INTENT_DATA.keys())

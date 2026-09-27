@@ -271,14 +271,14 @@ def test_reload_config_updates_in_place():
     assert "confidence_accept" in cfg  # khoá mới của v6
 
 
-def test_set_speech_enabled_roundtrip():
-    try:
-        assert executor.set_speech_enabled(True) is True
-        assert executor.SPEAK_ENABLED is True
-        assert executor.set_speech_enabled(False) is False
-        assert executor.SPEAK_ENABLED is False
-    finally:
-        executor.SPEAK_ENABLED = False
+def test_set_speech_enabled_roundtrip(monkeypatch):
+    """v7.6: `finally` cu gán `False` là để lộ trạng thái sang test chạy sau;
+    monkeypatch trả về ĐÚNG giá trị trước khi test chạy."""
+    monkeypatch.setattr(executor, "SPEAK_ENABLED", True)
+    assert executor.set_speech_enabled(True) is True
+    assert executor.SPEAK_ENABLED is True
+    assert executor.set_speech_enabled(False) is False
+    assert executor.SPEAK_ENABLED is False
 
 
 # ----------------------------------------------------------------------------
