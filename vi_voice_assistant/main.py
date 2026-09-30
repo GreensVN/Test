@@ -54,7 +54,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.8"
+APP_VERSION = "7.9"
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""

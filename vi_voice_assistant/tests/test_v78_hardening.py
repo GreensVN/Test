@@ -946,3 +946,134 @@ def test_noi_dung_nhac_giu_nguyen_phan_noi_dung_that(text, expected):
     from intent_model import _reminder_task
 
     assert _reminder_task(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# 18. `normalize_text` XOÁ mất `%` và `^` - hai ký hiệu toán người Việt dùng
+#     hằng ngày. Hệ quả: "12% của 200" và "2^10" không ra số nào, trong khi
+#     "15 + 27" (đúng ví dụ trong --help) thì chạy được - người dùng kết luận
+#     là máy tính toán lỗi. Cùng kiểu lỗi với #10 (dấu chấm là dấu phẩy nghìn):
+#     bước chuẩn hóa phía trước đã ăn mất ký hiệu trước khi parser kịp thấy.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ("12% của 200", 24.0),
+    ("15% cua 200", 30.0),
+    ("50% của 90", 45.0),
+    ("12 phần trăm của 200", 24.0),
+    ("2^10", 1024),
+    ("2 ^ 10", 1024),
+    ("3^2", 9),
+])
+def test_toan_hoc_hieu_phan_tram_va_luy_thua(text, expected):
+    from intent_model import parse_math_expression
+
+    _, result = parse_math_expression(text)
+    assert result == expected
+
+
+@pytest.mark.parametrize("text", [
+    "100% rồi", "tăng âm lượng 20%", "mua sắm 5%", "het",
+])
+def test_phan_tram_trong_cau_thuong_khong_bi_tinh_nham(text):
+    """`%` chỉ là toán tử khi đứng sau một CHỮ SỐ và trước "của"."""
+    from intent_model import parse_math_expression
+
+    assert parse_math_expression(text) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# 19. Mốc giờ tính bằng NGÀY/TUẦN/THÁNG bị bỏ trống. "nhắc tôi họp sau 3
+#     ngày" là câu rất tự nhiên, nhưng `parse_time_expression` chỉ biết
+#     phút/giây/giờ nên rơi xuống cuối hàm trả về type=None -> lệnh không
+#     hề đặt nhắc, im lặng, người dùng tưởng đã được nhớ.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ("nhắc tôi họp sau 3 ngày", 3 * 1440),
+    ("2 ngày nữa", 2 * 1440),
+    ("sau 2 tuần", 2 * 10080),
+    ("sau 1 tháng", 43200),
+    ("gọi mẹ ngày kia", 2 * 1440),
+    ("nhac toi hoc sau 3 ngay", 3 * 1440),
+])
+def test_moc_gio_tinh_bang_ngay_tuan_thang(text, expected):
+    from intent_model import parse_time_expression
+
+    result = parse_time_expression(text)
+    assert result["type"] == "delay"
+    assert result["minutes"] == expected
+
+
+def test_moc_gio_ngay_khong_duoc_anh_cong_chinh_noi_dung():
+    """Chốt chặn an toàn: đơn vị ngày/tuần/tháng chỉ thành mốc giờ khi câu có
+    dấu hiệu khoảng cách ("sau"/"nữa"); nếu không thì "câu này dài 3 ngày" -
+    một câu hỏi dài 3 ngày - cũng bị đọc thành nhắc nhở."""
+    from intent_model import parse_time_expression
+
+    for text in ("câu này dài 3 ngày", "mở chrome", "15 cộng 27"):
+        assert parse_time_expression(text)["type"] is None
+
+
+def test_moc_gio_ngay_khong_lam_hoi_moc_gio_that():
+    """Thêm ngày/tuần/tháng KHÔNG được cưỡng ép mọi câu có số - mốc giờ
+    thật (giờ cố định, độ trễ phút) vẫn phải thắng."""
+    from intent_model import parse_time_expression
+
+    assert parse_time_expression("nhắc tôi 5 phút nữa")["minutes"] == 5
+    assert parse_time_expression("nhắc tôi lúc 9 giờ sáng mai")["hour"] == 9
+    assert parse_time_expression("nhắc tôi họp lúc 3 giờ chiều")["hour"] == 15
+    assert parse_time_expression("30 giây nữa")["minutes"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# 20. Parser hiểu mốc giờ nhưng phần bóc nội dung thì không - dấu hiệu chung
+#     của #17. Nhắc vẫn được đặt đúng thời điểm, nhưng trợ lý đọc ra
+#     "Đến giờ rồi. Nhắc bạn: họp sau 3 ngày", tức tự nhắc lại chính mốc
+#     giờ như thể đó là việc cần làm.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ("nhắc tôi họp sau 3 ngày", "họp"),
+    ("nhắc tôi gọi mẹ sau 2 tuần", "gọi mẹ"),
+    ("nhắc tôi trả tiền sau 1 tháng", "trả tiền"),
+    ("nhắc tôi rửa xe ngày kia", "rửa xe"),
+    ("nhắc tôi uống thuốc 2 ngày nữa", "uống thuốc"),
+    ("nhắc tôi dậy lúc 6h30", "dậy"),
+    ("nhắc tôi nộp đơn 15h", "nộp đơn"),
+    ("nhắc tôi gặp bạn 7h tối nay", "gặp bạn"),
+    ("nhắc tôi mua đồ 8h sáng mai", "mua đồ"),
+    ("nhắc tôi gọi mẹ 7h30 tối", "gọi mẹ"),
+])
+def test_noi_dung_nhac_khong_con_moc_gio_ngay_va_gio_viet_tat(text, expected):
+    from intent_model import _reminder_task
+
+    assert _reminder_task(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# 21. Lời nhắc có động từ rõ ràng bị đoán thành HỎI NGÀY GIỜ. Chữ "ngày" trong
+#     mốc giờ ("ngày kia", "3 ngày nữa") kéo model về phía `get_datetime`, dù
+#     câu MỞ ĐẦU bằng "nhắc tôi" - dấu hiệu mạnh hơn hẳn. Hệ quả: câu lời
+#     nhắc không hề đặt nhắc, trợ lý chỉ đọc ngày giờ rồi im.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text", [
+    "nhắc tôi rửa xe ngày kia",
+    "nhắc tôi uống thuốc 3 ngày nữa",
+])
+def test_loi_nhac_co_dong_tu_roi_khong_bi_doan_thanh_hoi_ngay_gio(text):
+    from nlu_advanced import NLU
+
+    result = NLU().understand(text)[0]
+    assert result["intent"] == "set_reminder"
+    assert result["time"]["type"] == "delay"
+
+
+@pytest.mark.parametrize("text", [
+    "ngày kia là thứ mấy",       # câu hỏi thật, không có động từ nhắc
+    "hôm nay thứ mấy",
+    "mấy giờ rồi",
+    "nhắc tôi mai là thứ mấy",  # CÓ động từ nhắc nhưng là câu hỏi
+])
+def test_cau_hoi_ngay_gio_khong_bi_doi_thanh_loi_nhac(text):
+    """Chốt chặn: cứu nhắc không được nuốt mất một câu hỏi lịch thật."""
+    from nlu_advanced import NLU
+
+    assert NLU().understand(text)[0]["intent"] == "get_datetime"

@@ -33,7 +33,7 @@ if _HERE not in _sys.path:
     # CO MAT trong path.
     _sys.path.append(_HERE)
 
-__version__ = "7.8"
+__version__ = "7.9"
 __all__ = ["__version__", "main"]
 
 

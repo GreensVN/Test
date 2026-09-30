@@ -1,5 +1,82 @@
 # CHANGELOG
 
+## v7.9 (2026-09-30) - Sửa lỗi thật ngoài phạm vi test; 679 test
+
+Bộ test v7.8 xanh hoàn toàn, nên vòng này **không soi lại code cũ** mà đo trực
+tiếp trên câu lệnh tự nhiên rồi sửa những chỗ sai. Bốn nhóm lỗi dưới đây đều
+không có test nào chạm tới, và phần lớn cùng một dạng: **tính năng làm được
+một nửa** - tầng trên hiểu, tầng dưới không, hoặc hai tầng hiểu khác nhau.
+
+**Số học: `normalize_text` xoá mất `%` và `^`.** Hai ký hiệu này không khớp
+`[^\w\s./:\\-]` nên bị lớp chuẩn hóa xoá trước khi parser kịp thấy: `"12% của
+200"` và `"2^10"` trả `(None, None)`, trong khi `"15 + 27"` - đúng ví dụ trong
+`--help` - chạy được. Người dùng gõ phép tính đúng mà không bao giờ được tính,
+rồi kết luận máy hỏng. Cùng kiểu với lỗi dấu chấm ở v7.8: bước chuẩn hóa phía
+trước ăn mất ký hiệu trước khi parser kịp phân tích.
+
+Có hai chỗ phải sửa cùng lúc, vì chỉ sửa một chỗ thì `--once` vẫn hỏng:
+`_protect_math_syntax` (giữ ký hiệu qua `normalize_text`) **và** `_MATH_SYNTAX_RE`
+- mẫu này quyết định `entity_source` lấy từ câu gốc hay từ bản đã chuẩn hóa,
+nên bỏ sót `%`/`^` thì tầng NLU vẫn tính trên bản đã bị xoá ký hiệu. Luỹ thừa
+gộp thành MỘT token trước khi `*` bị đổi thành placeholder, nếu không `"2 ** 10"`
+thành `"2 * * 10"` và biểu thức ghép không được. Biểu thức trả về được đọc thành
+tiếng cho người dùng nên `**` đổi lại thành `^` ở chỗ hiển thị, **không** sửa
+`_restore_math_syntax` (hàm đó chạy **trước** bước `eval`). Chỉ nhận `%` khi nó
+đứng **sau một chữ số** và trước `"của"` - nên `"100% rồi"` và `"tăng âm lượng
+20%"` vẫn không bị tính nhầm.
+
+**Mốc giờ tính bằng ngày/tuần/tháng không tồn tại.** `"nhắc tôi họp sau 3 ngày"`
+là câu rất tự nhiên, nhưng `parse_time_expression` chỉ biết giây/phút/giờ nên
+rơi xuống cuối hàm và trả `type=None`. Nay `"sau 3 ngày"` → 4320 phút, `"2 ngày
+nữa"` → 2880, `"sau 2 tuần"` → 20160, `"sau 1 tháng"` → 43200, `"ngày kia"` →
+2880; đều phát ra dưới dạng `type="delay"` mà `executor._reminder_when()` đã xử
+lý sẵn, nên không phải sửa gì ở tầng thực thi. Giữ nguyên chốt chặn an toàn của
+`_parse_delay`: **bắt buộc có dấu hiệu khoảng cách** (`sau`/`nữa`), nếu không
+thì "câu này dài 3 ngày" - một câu hỏi dài 3 ngày - cũng bị đọc thành nhắc nhở.
+
+Chi tiết đáng ghi vì rất dễ làm sai: dấu hiệu `sau`/`nữa` được so trên bản **CÓ
+DẤU** khi câu gõ có dấu, và trên bản bỏ dấu khi gõ không dấu. So mẫu có dấu với
+bản bỏ dấu thì **không bao giờ trúng** (`nữa` → `nua`), và đó chính là lý do
+`"2 ngày nữa"` im lặng. Đổi chiều thì lại hỏng tên riêng ("Sáu" → "sau"), nên
+phải làm y hệt cách `_parse_delay` đang làm.
+
+**Parser hiểu mốc giờ, phần bóc nội dung thì không.** Nhắc vẫn được đặt đúng
+thời điểm, nhưng `_reminder_task` bóc mốc giờ bằng hai regex chỉ biết
+"giờ/phút/tiếng" nên bỏ lại phần thời gian trong nội dung, và trợ lý đọc thành
+*"Đến giờ rồi. Nhắc bạn: họp sau 3 ngày"* - tự nhắc lại chính mốc giờ như thể
+đó là việc cần làm. Nay bóc thêm khoảng cách theo ngày/tuần/tháng và giờ viết
+tắt kiểu tin nhắn (`"7h"`, `"6h30"`, `"7h tối nay"`), với đuôi hai từ giống hệt
+`_REMINDER_TIME_RE` để `"7h tối nay"` không còn sót chữ `nay`.
+
+**Lời nhắc có động từ rõ ràng bị đoán thành câu HỎI ngày giờ.** Chữ "ngày" trong
+mốc giờ kéo model về `get_datetime` (0.44): `"nhắc tôi rửa xe ngày kia"` không
+hề đặt nhắc, trợ lý chỉ đọc ngày giờ rồi im - trong khi người dùng đã nói rõ
+"nhắc tôi". Nay `_rescue_reminder_intent` ép về `set_reminder`, theo **đúng
+nguyên tắc an toàn đã dùng cho cứu câu toán ở v7.8**: chỉ sửa khi model **không
+chắc** (dưới 0.5) và cả năm điều kiện đúng - model đoán `get_datetime`, câu MỞ
+ĐẦU bằng động từ nhắc nhở, câu CÓ mốc giờ thật (`parse_time_expression` là bằng
+chứng quyết định, không phải suy đoán từ ký tự), và câu **không phải câu hỏi
+lịch**. Điều kiện cuối là chốt chặn quan trọng nhất: không có nó thì
+`"nhắc tôi mai là thứ mấy"` - một câu hỏi thật - sẽ bị đổi thành lời nhắc.
+
+**Còn lại, chưa sửa (cần quyền hoặc dữ liệu ngoài).** Lịch lặp lại
+(`reminders.json` chưa có trường `repeat`); `cuối tuần`/`cuối tháng`/`thứ hai
+tuần sau` - cần lịch, không suy từ câu rời; STT khi Google STT lỗi thì
+`_use_google` bị ghim vĩnh viễn, không tự thử lại; intent sai nhưng tự tin
+(`"mo trinh duyet"` → `open_app` với `target='unknown'` ở 0.97); `log`/`mod`; và
+75 khoá `ACCENT_MAP` mơ hồ về bản thân việc phục hồi dấu (xem v7.8).
+
+**Kiểm chứng (đo, không ước lượng).** 679 test: `pytest -q` → `679 passed`;
+`ruff check` 0; `mypy` 0 lỗi (45 file). 35 test mới, trong đó **24 test FAIL
+trên đúng file nguồn trước khi sửa** (đã kiểm chắc bằng `git stash push` chỉ
+hai file nguồn) - 11 test còn lại là các case phải giữ nguyên, đúng như thiết
+kế. Chạy thật qua `--once`: `12% của 200` → 24, `2^10` → 1024, `2 ** 10` →
+1024, `12 phần trăm của 200` → 24, `15 + 27` → 42, `1.234,5 chia 3` → 411.5,
+còn `100% rồi` vẫn báo không tính được. Hai lời nhắc ghi vào `reminders.json` đúng
+ngày và nội dung sạch: `họp` → 2026-10-03, `rửa xe` → 2026-10-02 (không còn
+dính "ngày kia").
+
+
 ## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 644 test
 
 Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi

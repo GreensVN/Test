@@ -810,6 +810,45 @@ def _parse_delay(t: str, u: str, plain_input: bool) -> dict | None:
     return _result(type="delay", minutes=round(_delay_minutes(durations, u), 4))
 
 
+# v7.8 (bổ sung): khoảng cách TÍNH BẰNG NGÀY.
+# `_DURATION_RE` chỉ biết giây/phút/tiếng/giờ, nên "nhắc tôi họp sau 3 ngày" -
+# câu rất tự nhiên và HOÀN TOÀN XÁC ĐỊNH - trả `type: None`, tức trợ lý không đặt
+# được nhắc và phải hỏi lại người dùng. Quy đổi ra phút rồi dùng lại đường
+# `delay` đã có sẵn, nên không phải đụng vào executor.
+_DAY_UNIT_MINUTES = {"ngay": 1440, "tuan": 10080, "thang": 43200}  # tháng ~30 ngày
+_RELATIVE_DAY_RE = re.compile(r"(\d+)\s*(ngay|tuan|thang)\b")
+_RELATIVE_DAY_MARKER_ACCENTED_RE = re.compile(r"\b(?:sau|nữa)\b|\bngày kia\b")
+_RELATIVE_DAY_MARKER_PLAIN_RE = re.compile(r"\b(?:sau|nua)\b|\bngay kia\b")
+
+
+def _parse_relative_day(t: str, u: str, plain_input: bool) -> dict | None:
+    """Dạng "sau N ngày" / "N ngày nữa" / "ngày kia" (v7.8).
+
+    Cùng nguyên tắc an toàn của `_parse_delay`: PHẢI có dấu hiệu khoảng cách
+    ("sau"/"nữa"), nếu không thì "câu này dài 3 ngày" cũng bị đọc thành nhắc nhở.
+
+    Vì sao kiểm tra dấu hiệu trên `t` (bản CÓ DẤU) mà không phải trên `u`: bản
+    bỏ dấu biến "nữa" thành "nua", nên so mẫu CÓ DẤU (\\b(?:sau|nữa)\\b) với
+    `u` là không bao giờ trúng - đó là lý do "2 ngày nữa" từng rơi xuống cuối
+    hàm. Còn tên riêng ("Sáu" bỏ dấu thành "sau") thì chỉ lo được khi câu gõ
+    hoàn toàn không dấu - cùng cách `_parse_delay` đang làm.
+    """
+    if plain_input:
+        if not _RELATIVE_DAY_MARKER_PLAIN_RE.search(u):
+            return None
+    elif not _RELATIVE_DAY_MARKER_ACCENTED_RE.search(t):
+        return None
+    # "ngày kia" = ngày kia (hôm kia là hôm qua), tức +2 ngày. Mẫu bỏ dấu nên
+    # so trên `u` - đúng cho cả hai kiểu gõ.
+    if re.search(r"\bngay kia\b", u):
+        return _result(type="delay", minutes=2 * 1440)
+    m = _RELATIVE_DAY_RE.search(u)
+    if not m:
+        return None
+    return _result(type="delay",
+                   minutes=int(m.group(1)) * _DAY_UNIT_MINUTES[m.group(2)])
+
+
 # Bảng quy tắc đổi giờ 12-hour -> 24-hour theo BUỔI, thay cho chuỗi if/elif lồng
 # nhau (bản cũ 11 nhánh trong một hàm; thêm một cách nói buổi là phải chen elif).
 def _shift_afternoon(hour: int) -> int:
@@ -955,6 +994,7 @@ def parse_time_expression(text: str) -> dict:
     return (
         _parse_half_hour(t, u, plain_input)
         or _parse_delay(t, u, plain_input)
+        or _parse_relative_day(t, u, plain_input)
         or _parse_clock(t, u, plain_input)
         or _parse_tomorrow_only(t, u, plain_input)
         or _result()
@@ -1032,12 +1072,30 @@ def _safe_eval(expr: str):
 # qua normalize_text) rồi khôi phục lại ngay sau đó.
 _MATH_PLUS = "zcongz"
 _MATH_TIMES = "znhanz"
+# placeholder luu thua, gop TRUOC khi "*" bi doi thanh _MATH_TIMES
+_MATH_POW = "zlumlz"
+# v7.8 (bổ sung): thêm hai toán tử nữa bị xoá cùng đợt.
+#   * `%` - dấu phần trăm: "12% của 200" bị đổi thành "12 của 200" rồi không
+#     khớp regex nào -> (None, None). Người dùng gõ đúng biểu thức, trợ lý
+#     im lặng không tính.
+#   * `^` - toán tử luỹ thừa kiểu máy tính: "2^10" -> (None, None). Python
+#     dùng `**` nên ta đổi thẳng `^` -> `**`.
+# Cả hai chỉ được giữ khi đứng SAU một chữ số, để câu thường ("100% rồi")
+# không bị biến thành biểu thức.
+_MATH_PERCENT = "zphantz"
 
 
 def _protect_math_syntax(text: str) -> str:
     """Giữ toán tử + dấu phẩy thập phân qua bước `normalize_text`."""
     guarded = _strip_thousands_separator(text)
     guarded = re.sub(r"(?<=\d),(?=\d)", ".", guarded)  # "2,5" -> "2.5"
+    guarded = re.sub(r"(?<=\d)\s*%", _MATH_PERCENT, guarded)  # "12%" -> "12zphantz"
+    # Luỹ thừa phải gộp thành MỘT token TRƯỚC khi `*` bị đổi thành `_MATH_TIMES`.
+    # Nếu đổi `*` trước, "2 ** 10" thành "2 * * 10" và biểu thức ghép không
+    # được (toán tử `**` phải liền, không có khoảng trắng ở giữa). Hai bước:
+    # gộp cặp trước ("**", "^ ^"), rồi mới đến dấu `^` lẻ ("2^10").
+    guarded = re.sub(r"[\^*]\s*[\^*]", _MATH_POW, guarded)  # "2 ** 10" -> "2zlumlz10"
+    guarded = re.sub(r"\s*\^\s*", _MATH_POW, guarded)       # "2^10" -> "2zlumlz10"
     return guarded.replace("+", _MATH_PLUS).replace("*", _MATH_TIMES)
 
 
@@ -1069,7 +1127,18 @@ def _strip_thousands_separator(text: str) -> str:
 
 
 def _restore_math_syntax(text: str) -> str:
-    return text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
+    return (text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
+            .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%"))
+
+
+def _math_display(expr: str) -> str:
+    """Chuẩn bị biểu thức để ĐỌC THÀNH TIẾNG cho người dùng.
+
+    `^` được đổi thành `**` để `eval` hiểu, nhưng `**` là cú pháp Python lọt
+    ra ngoài ("2**10 bằng 1024"). Chỉ đổi ở đây - chỗ trả về cho người dùng -
+    chứ không trong `_restore_math_syntax`, vì hàm đó chạy TRƯỚC bước `eval`.
+    """
+    return expr.replace("**", "^")
 
 
 def parse_math_expression(text: str):
@@ -1120,8 +1189,15 @@ def parse_math_expression(text: str):
             return f"{num:g} lập phương", num ** 3
         return f"{num:g} bình phương", num ** 2
 
-    # --- Phần trăm: "X phần trăm của Y" ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*phan tram\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
+    # --- Phần trăm: "X phần trăm của Y" VÀ "X% của Y" ---
+    # v7.8 (bổ sung): trước đây chỉ nhận dạng dấu `%` khi đi kèm TỪ ("12
+    # phần trăm của 200"). Người dùng gõ "12% của 200" - cách viết phổ biến nhất
+    # ngoài đời - thì `normalize_text` xoá `%`, câu thành "12 của 200" và không
+    # khớp nhánh nào -> (None, None): gõ đúng mà trợ lý im lặng không tính.
+    # Nhánh `%|phan tram` giữ nguyên hành vi cũ cho câu viết bằng chữ.
+    m = re.search(
+        r"(-?\d+(?:[.,]\d+)?)\s*(?:%|\s*phan tram)\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u
+    )
     if m:
         pct = float(m.group(1).replace(",", "."))
         base = float(m.group(2).replace(",", "."))
@@ -1147,7 +1223,7 @@ def parse_math_expression(text: str):
         result = _safe_eval(expr_clean)
     except Exception:
         return None, None
-    return expr_display, result
+    return _math_display(expr_display), result
 
 
 # --- Cụm regex cho từng intent (biên dịch 1 lần, v7.2) ---
@@ -1184,6 +1260,23 @@ _REMINDER_TIME_RE = re.compile(
 _REMINDER_TIME_DIGIT_RE = re.compile(
     r"(lúc\s*)?\d+\s*(giờ|phút|tiếng)\s*(\d+)?\s*"
     r"(sáng|trưa|chiều|tối|nữa|sau|mai)?"
+)
+# v7.8 (bổ sung): hai dạng mốc giờ mà `parse_time_expression` ĐÃ hiểu (nên
+# nhắc nhở vẫn được đặt đúng giờ) nhưng hai regex trên bóc không ra, nên mốc giờ
+# bị BỎ LẠI trong nội dung và trợ lý đọc thành "Đến giờ rồi. Nhắc bạn: họp sau
+# 3 ngày". Cùng một căn bệnh: parser hiểu, extractor không.
+#   * khoảng cách tính bằng ngày/tuần/tháng: "sau 3 ngày", "2 tuần nữa", "ngày kia"
+#   * giờ viết tắt kiểu tin nhắn: "7h", "6h30", "6h30 sáng mai"
+_REMINDER_REL_DAY_RE = re.compile(
+    r"\s*(?:sau\s+)?" + _NUMBER_WORD_RUN + r"\s*(?:ngày|ngay|tuần|tuan|tháng|thang)\b"
+    r"(?:\s*(?:nữa|nua))?"
+    r"|\s*(?:ngày|ngay)\s+kia\b"
+)
+_REMINDER_COMPACT_CLOCK_RE = re.compile(
+    r"\s*(?:lúc\s*)?\d{1,2}\s*h\s*\d{0,2}\s*"
+    r"(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)?"
+    # đuôi 2 từ giống hệt `_REMINDER_TIME_RE`: "7h tối nay" -> "nay" sót lại
+    r"(?:\s+(?:nay|mai|hôm|hom))?"
 )
 _REMINDER_TAIL_RES = (
     re.compile(r"^(sau|nữa|vào)\s+"),
@@ -1229,6 +1322,11 @@ def _reminder_task(raw: str) -> str:
     # trước đây "hẹn 8 giờ kém 15" để sót lại "kém 15" trong nội dung).
     task = _REMINDER_TIME_RE.sub("", task).strip()
     task = _REMINDER_TIME_DIGIT_RE.sub("", task).strip()
+    # v7.8 (bổ sung): bóc nốt khoảng cách theo ngày/tuần/tháng và giờ viết
+    # tắt kiểu tin nhắn, vì parser đã hiểu chúng (đặt nhắc đúng thời điểm) nhưng
+    # nếu bỏ sót thì trợ lý đọc thành "Nhắc bạn: họp sau 3 ngày".
+    task = _REMINDER_REL_DAY_RE.sub("", task).strip()
+    task = _REMINDER_COMPACT_CLOCK_RE.sub("", task).strip()
     for pattern in _REMINDER_TAIL_RES:
         task = pattern.sub("", task).strip()
     return task or "báo thức"
@@ -1388,7 +1486,10 @@ def _has_literal_entity(s: str) -> bool:
 # v7.8: toán tử số - cùng lý do như trên: `normalize_text` xoá `+`/`*` và dấu
 # phẩy thập phân, nên biểu thức gõ tay chỉ còn sống trong câu GỐC, đúng như
 # URL/đường dẫn. Nhận diện ở đây để `predict_intent` ưu tiên câu gốc.
-_MATH_SYNTAX_RE = re.compile(r"\d\s*[+*/]\s*\d|\d,\d")
+# v7.8 bổ sung `^` và `%`: hai ký hiệu này cũng bị `normalize_text` xoá, nếu
+# không khai ở đây thì `entity_source` rơi về bản đã bị xoá ký hiệu và phép tính
+# ra (None, None) - đúng cái lỗi v7.8 đã sửa cho `+`/`*`/phẩy thập phân.
+_MATH_SYNTAX_RE = re.compile(r"\d\s*(?:\*\*|[+*/^])\s*\d|\d,\d|\d\s*%")
 
 
 def _has_math_syntax(s: str) -> bool:
@@ -1429,6 +1530,66 @@ def _rescue_calculate_intent(intent: str, confidence: float,
     logger.info("Câu toán %r bị đoán nhầm thành %r (%.2f) -> calculate (%s = %s)",
                 raw_text, intent, confidence, expr, value)
     return "calculate"
+
+
+# Câu HỎI về ngày giờ, để cứu nhắc nhở không nuốt mất một câu hỏi thật.
+# "ngày kia là thứ mấy" KHÔNG phải lời nhắc, dù có chữ "ngày kia" trong đó.
+_DATE_QUESTION_RE = re.compile(
+    r"\b(?:la thu may|thu may|la ngay may|ngay may|may gio roi|"
+    r"la may gio|may nam|may ngay|la ngay bao nhieu|thoi gian nao|"
+    r"la thu may|co phai la thu may|hom nay la thu may)\b"
+)
+# Model KHÔNG chắc thì cho phép cứu, giống hẳn `_MATH_INTENT_MIN_CONFIDENCE`.
+_REMINDER_INTENT_MIN_CONFIDENCE = 0.5
+
+
+def _rescue_reminder_intent(intent: str, confidence: float,
+                            raw_text: str | None) -> str:
+    """Lời nhắc có động từ rõ ràng bị đoán thành hỏi ngày giờ -> "set_reminder".
+
+    "nhắc tôi rửa xe ngày kia" bị model đoán `get_datetime` (0.44) vì chữ
+    "ngày" trong mốc giờ kéo nó về phía hỏi lịch. Nhưng một câu MỞ ĐẦU bằng động
+    từ nhắc nhở rõ ràng ("nhắc tôi", "đặt báo thức", "hẹn giờ") thì gần như
+    không bao giờ là câu hỏi lịch - dấu hiệu đó MẠNH hơn chữ "ngày" nằm vô
+    tình giữa câu.
+
+    Cùng nguyên tắc an toàn của `_rescue_calculate_intent`, cả năm điều kiện
+    phải đúng:
+      1. model đoán `get_datetime`,
+      2. model KHÔNG chắc (dưới ngưỡng) - model chắc thì để model quyết,
+      3. câu MỞ ĐẦU bằng động từ nhắc nhở,
+      4. câu CÓ mốc giờ thật (`parse_time_expression` là bằng chứng quyết
+         định, không phải suy đoán từ ký tự),
+      5. câu KHÔNG phải câu hỏi về ngày/giờ.
+    """
+    if intent != "get_datetime" or not raw_text:
+        return intent
+    if confidence >= _REMINDER_INTENT_MIN_CONFIDENCE:
+        return intent
+    plain = strip_diacritics(raw_text).strip()
+    if not plain or not _REMINDER_LEAD_RE.match(plain):
+        return intent
+    if _DATE_QUESTION_RE.search(plain):
+        return intent
+    if parse_time_expression(raw_text).get("type") is None:
+        return intent
+    logger.info("Lời nhắc %r bị đoán nhầm thành %r (%.2f) -> set_reminder",
+                raw_text, intent, confidence)
+    return "set_reminder"
+
+
+# Thứ tự cố ý: toán trước, nhắc nhở sau. Mỗi hàm trả về `intent` khi không
+# can thiệp, nên gọi chồng vô hại. Gom vào một hàm để `predict_intent` không
+# phải thêm nhánh phụ (nó đã sát trần số phức tạp tối đa của ruff).
+_RESCUE_FUNCS = (_rescue_calculate_intent, _rescue_reminder_intent)
+
+
+def _rescue_intent(intent: str, confidence: float,
+                   raw_text: str | None) -> str:
+    """Cứu intent bị model đoán nhầm. Chỉ sửa khi model KHÔNG chắc."""
+    for rescue in _RESCUE_FUNCS:
+        intent = rescue(intent, confidence, raw_text)
+    return intent
 
 
 def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
@@ -1494,7 +1655,7 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     )
 
     # v7.8: cứu câu toán bị model đoán nhầm (xem `_rescue_calculate_intent`).
-    rescued = _rescue_calculate_intent(intent, confidence, raw_text)
+    rescued = _rescue_intent(intent, confidence, raw_text)
     if rescued != intent:
         # Model đã sai, nên xác suất của nó vô nghĩa với câu này; đặt cao để
         # câu tính đúng không bị hỏi lại vô lý.
