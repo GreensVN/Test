@@ -1440,15 +1440,48 @@ def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool |
         return True
     _schedule_reminder(task, run_at, repeat=repeat)
     logger.info("Đặt nhắc nhở (trả lời sau khi hỏi lại): %s lúc %s", task, run_at)
-    respond(_reminder_confirmation(task, run_at, repeat))
+    respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
 
 
+_WEEKDAY_VI = ["thứ hai", "thứ ba", "thứ tư", "thứ năm", "thứ sáu", "thứ bảy",
+               "chủ nhật"]
+
+
+def _reminder_when_phrase(run_at: datetime.datetime,
+                          now: datetime.datetime) -> str:
+    """Cụm chỉ NGÀY cho câu xác nhận, rỗng nếu nhắc ngay hôm nay.
+
+    V7.9: khi mốc giờ rơi sang ngày khác ("thứ hai", "cuối tuần", "cuối tháng")
+    thì câu xác nhận phải nói ra ngày. Trước đây nó chỉ đọc "9 giờ 0 phút",
+    nên câu "nhắc tôi họp 9 giờ sáng thứ hai" và câu "nhắc tôi họp 9 giờ sáng
+    mai" cho CÙNG một câu trả lời - người dùng không có cách nào biết mình
+    đặt nhầm ngày hay không, và phải tự mở danh sách nhắc kiểm lại.
+    """
+    days = (run_at.date() - now.date()).days
+    if days <= 0:
+        return ""
+    if days == 1:
+        return " ngày mai"
+    if days <= 7:
+        # "thứ X tuần sau" cũng rơi vào khoảng này và đọc đúng nghĩa.
+        return f" {_WEEKDAY_VI[run_at.weekday()]} tuần sau"
+    if run_at.month == now.month:
+        return f" ngày {run_at.day} tháng này"
+    if run_at.year == now.year:
+        return f" ngày {run_at.day} tháng {run_at.month}"
+    return f" ngày {run_at.day} tháng {run_at.month} năm {run_at.year}"
+
+
 def _reminder_confirmation(task: str, run_at: datetime.datetime,
-                           repeat: dict[str, Any] | None) -> str:
+                           repeat: dict[str, Any] | None,
+                           now: datetime.datetime | None = None) -> str:
     """Câu xác nhận đặt nhắc. Có nhịp lặp thì PHẢI nói ra, không nói thì
     người dùng tưởng mình đã hẹn cả tháng trong khi thực ra chỉ một lần."""
-    base = f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút."
+    now = now or datetime.datetime.now()
+    day_phrase = _reminder_when_phrase(run_at, now)
+    base = (f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ "
+            f"{run_at.minute} phút{day_phrase}.")
     label = _repeat_label(repeat)
     return f"{base} Lặp lại {label}." if label else base
 
@@ -1477,7 +1510,7 @@ def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool
     clear_pending_reminder()
     _schedule_reminder(task, run_at, repeat=repeat)
     logger.info("Đặt nhắc nhở: %s lúc %s (lặp %s)", task, run_at, repeat or "không")
-    respond(_reminder_confirmation(task, run_at, repeat))
+    respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
 
 

@@ -1,5 +1,62 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 5) - Nhắc theo ngày trong tuần; 853 test
+
+**Bug nguy hiểm nhất từ trước đến nay: nhắc nhớ SAI NGÀY mà không hề báo.**
+"nhắc tôi họp 9 giờ sáng thứ hai" cho `day_offset = 0`, tức đặt nhắc **ngay hôm
+nay**, dù câu nói rõ là thứ hai. Ngày đó chỉ còn nằm lại trong nội dung nhắc
+dưới dạng chữ, nên trợ lý đặt đúng giờ sai ngày - và người dùng tin là mình đã
+đặt nhầm. Cùng lớp lỗi với "sau 3 ngày" ở v7.8, chỉ khác ở chỗ dạng này cần
+**lịch thật** chứ không chỉ đếm số. Nay dùng `calendar` + `datetime.date.today()`.
+
+**Ba chỗ đã sửa, mỗi chỗ một kiểu sai khác nhau.**
+
+*Ngày trong tuần bị nuốt mất.* `_parse_relative_day` của v7.8 so mẫu
+`(\d+)\s*(ngay|tuan|thang)`, nên "9 giờ sáng thứ 4 **tuần sau**" ra "4 tuần"
+= **28 ngày**. Con số 4 là của "thứ 4"; "tuần sau" chỉ là dấu hiệu khoảng cách
+chứ không có số đi kèm. Câu có tên ngày nay thuộc về `_parse_clock` và được
+chặn lại ở cả `_parse_delay` lẫn `_parse_relative_day`.
+
+*`0` là falsy.* `map.get(k) or map.get(k2)` với "thứ hai" (giá trị 0) rơi xuống
+nhánh dự phòng rồi ra `None`, khiến **mọi** câu "thứ hai" đều ra offset 0. Cùng
+kiểu với `config.get("port") or 8000` mà cổng 0 không hợp lệ - ở đây 0 lại đúng.
+
+*"tôi" trùng "tới" khi bỏ dấu.* So `\b(?:toi|den|sau|next)\b` trên cả câu thì
+"nhắc **tôi** họp 9 giờ sáng thứ tư" bị đọc thành "thứ tư **tới**" và đẩy sang
+tuần sau. Nay từ này phải đứng liền sau tên ngày. Sai lệch đúng 7 ngày, và sai
+đúng vào hôm nay - tức nhắc sớm ngay lúc người dùng cố nói "TUẦN SAU".
+
+**Quy ước đã chọn, vì đều có cái giá.** "cuối tuần" lấy **Chủ nhật** chứ không
+phải thứ Bảy (thứ Bảy vẫn có thể làm việc, chọn nó là khiến người dùng phải
+đi làm cuối tuần). "cuối tháng" dùng `calendar.monthrange` nên tháng 2 năm
+nhuận ra 29, không phải 28. "đầu tuần" luôn ít nhất 1 ngày vì nói "đầu tuần" vào
+đúng thứ hai thì vô nghĩa.
+
+**Câu xác nhận phải nói ra ngày.** Nó vốn chỉ đọc "9 giờ 0 phút", nên câu
+"...thứ hai" và câu "...mai" cho **cùng một** câu trả lời. Nay thêm ngày khi
+mốc giờ không rơi vào hôm nay.
+
+**Một test cũ phải SỬA, vì nó đang giữ kỳ vọng sai.** "gặp bạn 3 giờ chiều
+thứ hai" từng được kỳ vọng giữ lại chữ "thứ hai" trong nội dung. Kỳ vọng đó
+đúng **khi parser chưa hiểu "thứ hai"** - ngày chỉ còn trong chữ, lịch rơi về
+hôm nay. Nay parser đã tra lịch thật nên chữ đó chỉ là nhiễu. Test không bị
+xóa mà được đổi thành kiểm tra cả hai vế: nội dung sạch **và** ngày rơi đúng
+thứ hai.
+
+**Kiểm chứng.** 853 test: `pytest -q` → `853 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **50** file. 65 test mới trong `test_v79_calendar_weekday.py`, **37 FAIL**
+trên `intent_model.py` trước khi sửa (đo bằng cách thay source cũ + 2 hàm giả
+để test import được). Bộ test lịch dùng `today` **CỐ ĐỊNH** cho các case
+"ngày cụ thể" - một bộ test lịch mà chạy đúng vào thứ Hai thì fail vào thứ Ba
+là bộ test vô dụng. Chạy thật: "9 giờ sáng thứ hai" → *"9 giờ 0 phút thứ hai tuần
+sau"*, "cuối tuần" → *"chủ nhật tuần sau"*, "thứ 4 tuần sau" → đúng 1 tuần.
+
+**Còn lại, chưa sửa.** `sqrt 144` (chưa có toán tử căn bậc hai viết tắt);
+75 khoá `ACCENT_MAP` mơ hồ (`"thoi tiet ha noi"` → `hà nói` thay vì `Hà Nội`) -
+đo thử quy tắc ưu tiên theo dataset cải thiện **0/75**, cần từ điển tần suất
+thật. GitHub Actions chưa từng chạy (token không có quyền Actions).
+
+
 ## v7.9 (bổ sung 4) - Logarit và phần dư; 788 test
 
 `log`, `ln`, `mod` thiếu khá lâu, và cái thiếu đó **im lặng**: người gõ đúng câu

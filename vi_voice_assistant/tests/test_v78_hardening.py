@@ -939,13 +939,31 @@ def test_noi_dung_nhac_khong_con_dau_noi_thoi_gian(text, expected):
     # Nội dung chứa các từ này ở GIỮA câu phải giữ nguyên.
     ("nhắc tôi hỏi thăm sức khỏe bà", "hỏi thăm sức khỏe bà"),
     ("nhắc tôi đi mua đồ trước khi về nhà", "đi mua đồ trước khi về nhà"),
-    ("nhắc tôi gặp bạn 3 giờ chiều thứ hai", "gặp bạn thứ hai"),
     ("nhắc tôi nghỉ trưa", "nghỉ trưa"),
 ])
 def test_noi_dung_nhac_giu_nguyen_phan_noi_dung_that(text, expected):
     from intent_model import _reminder_task
 
     assert _reminder_task(text) == expected
+
+
+# "gặp bạn 3 giờ chiều thứ hai" từng nằm trong danh sách trên và được kỳ vọng
+# giữ lại chữ "thứ hai" trong nội dung. Kỳ vọng đó ĐÚNG KHI parser chưa hiểu
+# "thứ hai": ngày đó chỉ còn trong chữ, và lịch đặt nhắc rơi về HÔM NAY. Nay
+# parser đã tra lịch thật, nên chữ "thứ hai" trong nội dung chỉ là nhiễu -
+# cùng loại "sau 3 ngày" đã bị bóc ở v7.8. Giữ lại chữ thì trợ lý đọc
+# "gặp bạn thứ hai" cho một lời nhắc đã trỏ sang thứ hai rồi.
+def test_ngay_trong_tuan_khong_con_lai_trong_noi_dung_nhac():
+    from intent_model import _reminder_task, parse_time_expression
+
+    assert _reminder_task("nhắc tôi gặp bạn 3 giờ chiều thứ hai") == "gặp bạn"
+    # ... và giờ đặt nhắc phải thật sự rơi vào thứ hai tương lai.
+    import datetime
+    target = datetime.date.today() + datetime.timedelta(
+        days=parse_time_expression("nhắc tôi gặp bạn 3 giờ chiều thứ hai")["day_offset"]
+    )
+    assert target.weekday() == 0
+    assert target > datetime.date.today()
 
 
 # ---------------------------------------------------------------------------

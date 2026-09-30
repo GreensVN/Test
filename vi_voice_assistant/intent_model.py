@@ -34,6 +34,8 @@ v7.5 nâng cấp:
 from __future__ import annotations
 
 import ast
+import calendar
+import datetime
 import json
 import logging
 import math
@@ -769,6 +771,99 @@ def _result(**kwargs) -> dict:
     return base
 
 
+# ---------------------------------------------------------------------------
+# Mốc NGÀY trong tuần / trong tháng (v7.9 bổ sung 5)
+# ---------------------------------------------------------------------------
+# "9 giờ sáng thứ hai" trước đây ra day_offset=0, tức nhắc NGAY HÔM NAY, dù câu
+# nói rõ là thứ hai. Ngày đó chỉ còn nằm lại trong nội dung nhắc dưới dạng chữ,
+# nên trợ lý báo đúng giờ sai ngày và người dùng tưởng mình đã đặt nhầm. Cùng
+# lớp lỗi với "sau 3 ngày" mà v7.8 đã sửa, chỉ khác ở chỗ dạng này cần LỊCH
+# THẬT chứ không chỉ đếm số.
+# Khoá là dạng BỎ DẤU, và phải có cả dạng chữ số vì replace_number_words() đã
+# biến "thứ hai" thành "thu 2" trước khi mọi regex bên dưới chạy.
+_WEEKDAY_MAP = {
+    "thu hai": 0, "thu 2": 0,
+    "thu ba": 1, "thu 3": 1,
+    "thu tu": 2, "thu 4": 2,
+    "thu nam": 3, "thu 5": 3,
+    "thu sau": 4, "thu 6": 4,
+    "thu bay": 5, "thu 7": 5,
+    "chu nhat": 6, "cn": 6,
+}
+_WEEKDAY_RE = re.compile(
+    r"\b(th[uư]\s*(?:hai|2|ba|3|tu|t[uư]|4|nam|5|sau|6|bay|7)|chu\s*nhat)\b"
+)
+# "cuối tuần" = hôm kế cuối trong tuần (thứ Bảy) hoặc Chủ nhật tuần này. Chọn
+# Chủ nhật: "cuối tuần" trong tiếng Việt nghĩa là ngày NGHỈ, mà Chủ nhật luôn
+# nghỉ còn thứ Bảy vẫn có thể làm việc.
+_WEEKEND_RE = re.compile(r"\b(?:cuoi|dau)\s*tuan\b")
+_MONTH_END_RE = re.compile(r"\bcuoi\s*thang\b")
+_MONTH_START_RE = re.compile(r"\b(?:dau|ngay\s+dau)\s*thang\b")
+# Chỉ tính là "TUẦN SAU" khi từ này ĐỨNG LIỀN sau tên ngày ("thứ hai tới",
+# "thứ hai tuần sau"). Trước đây so trên cả câu thì "nhắc TÔI họp 9 giờ
+# sáng thứ tư" bị đọc thành "thứ tư tới" và đẩy sang tuần sau - vì "tôi"
+# trùng chữ với "tới" khi bỏ dấu. Sai lệch đúng 7 ngày, và sai vào hôm nay.
+_NEXT_MARKER_AFTER_RE = re.compile(r"^\s*(?:tu[aâ]n\s*)?(?:t[oô]i|den|sau|next)\b")
+
+
+def _day_offset_for(u: str, today: datetime.date | None = None) -> int:
+    """Số ngày lệch cho mốc giờ, lấy mốc NGÀY THẬT khi câu có nói ra ngày.
+
+    "mai"/"ngày mai"/"hom sau" thì cộng cứng 1 ngày, không cần lịch. Còn "thứ
+    hai"/"cuối tuần"/"cuối tháng" thì phải tra LỊCH, nếu không sẽ nhắc sai
+    ngày - xem _weekday_day_offset.
+    """
+    u = strip_diacritics(u)
+    today = today or datetime.date.today()
+    if _TOMORROW_RE.search(u):
+        return 1
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u) or _MONTH_END_RE.search(u) \
+            or _MONTH_START_RE.search(u):
+        return _weekday_day_offset(today, u)
+    return 0
+
+
+def _weekday_day_offset(today: datetime.date, text: str) -> int:
+    """Số ngày từ hôm nay tới mốc ngày trong câu (0 nếu câu không nói gì).
+
+    "thứ hai" mà hôm nay ĐÃ là thứ hai thì 0 (hôm nay), vì đó là cách người
+    Việt nói. "thứ hai tới" / "thứ hai sau" luôn là tuần sau, kể cả hôm nay
+    đúng là thứ hai - nếu không, "thứ hai tới" vào đúng thứ hai sẽ ra hôm nay,
+    tức nhắc quá sớm đúng lúc người dùng cố nói "TUẦN SAU".
+    """
+    text = strip_diacritics(text)
+    if _WEEKEND_RE.search(text):
+        # "cuối tuần" = Chủ nhật tuần này (0 nếu hôm nay đã là chủ nhật);
+        # "đầu tuần" = thứ hai kế tiếp, và luôn ít nhất 1 ngày vì nói "đầu tuần"
+        # vào đúng thứ hai nghe vô nghĩa.
+        if re.search(r"\bdau\s*tuan\b", text):
+            return (0 - today.weekday()) % 7 or 7
+        return (6 - today.weekday()) % 7
+    if _MONTH_END_RE.search(text):
+        # Ngày cuối tháng, kể cả tháng 2 (năm nhuận thì 29, không nhuận 28).
+        last = calendar.monthrange(today.year, today.month)[1]
+        return max((last - today.day), 0)
+    if _MONTH_START_RE.search(text):
+        nxt = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+        return (nxt - today).days
+    m = _WEEKDAY_RE.search(text)
+    if not m:
+        return 0
+    key = re.sub(r"\s+", " ", m.group(1).strip())
+    # KHÔNG dùng `A or B` ở đây: "thứ hai" có giá trị 0, mà 0 là falsy, nên
+    # `map.get(k) or ...` rơi sang nhánh dự phòng rồi ra None. Đã xảy ra đúng
+    # một lần: mọi câu "thứ hai" đều ra day_offset=0.
+    target = _WEEKDAY_MAP.get(key)
+    if target is None:
+        target = _WEEKDAY_MAP.get(strip_diacritics(key))
+    if target is None:
+        return 0
+    delta = (target - today.weekday()) % 7
+    if delta == 0 and _NEXT_MARKER_AFTER_RE.match(text[m.end():]):
+        return 7
+    return delta
+
+
 def _parse_half_hour(t: str, u: str, plain_input: bool) -> dict | None:
     """"nửa tiếng / nửa giờ (nữa)" = 30 phút (v6.2).
 
@@ -814,6 +909,13 @@ def _parse_delay(t: str, u: str, plain_input: bool) -> dict | None:
     only_small_units = all(m.group(2) in ("phut", "giay") for m in durations)
     # "lúc 3 giờ" / "3 giờ" trần là GIỜ ĐỒNG HỒ, không phải khoảng chờ;
     # "5 phút" trần (vd "đặt hẹn giờ 5 phút") hiểu là đếm ngược (v6.2).
+    # Có TÊN NGÀY thì đây là mốc lịch, không phải khoảng đếm ngược: "9 giờ
+    # sáng thứ 4 tuần sau" có "sau" nhưng "4" là số thứ tự ngày, và "9 giờ"
+    # là giờ đồng hồ. Nếu không chặn, câu này ra delay 540 phút (9 giờ) tức
+    # nhắc sau 9 TIẾNG thay vì tuần sau - đúng kiểu đẩy người dùng tin mình đã
+    # đặt sai lịch.
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u):
+        return None
     if not (has_marker or (only_small_units and not preceded_by_luc)):
         return None
     return _result(type="delay", minutes=round(_delay_minutes(durations, u), 4))
@@ -846,6 +948,12 @@ def _parse_relative_day(t: str, u: str, plain_input: bool) -> dict | None:
         if not _RELATIVE_DAY_MARKER_PLAIN_RE.search(u):
             return None
     elif not _RELATIVE_DAY_MARKER_ACCENTED_RE.search(t):
+        return None
+    # Câu có TÊN NGÀY thuộc về _parse_clock, không thuộc về đây. Nếu không
+    # chặn, "9 giờ sáng thứ 4 TUẦN SAU" bị đọc thành "4 tuần" = 28 ngày: con
+    # số 4 là của "thứ 4", chứ "tuần sau" chỉ là dấu hiệu khoảng cách chứ không
+    # có số đi kèm. Người dùng đặt nhắc tuần sau và nhận thông báo sau 4 tuần.
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u):
         return None
     # "ngày kia" = ngày kia (hôm kia là hôm qua), tức +2 ngày. Mẫu bỏ dấu nên
     # so trên `u` - đúng cho cả hai kiểu gõ.
@@ -955,20 +1063,28 @@ def _parse_clock(t: str, u: str, plain_input: bool) -> dict | None:
         type="clock",
         hour=hour,
         minute=minute,
-        day_offset=1 if _TOMORROW_RE.search(u) else 0,
+        day_offset=_day_offset_for(u),
     )
 
 
 def _parse_tomorrow_only(t: str, u: str, plain_input: bool) -> dict | None:
     """Không kèm số giờ: chỉ "sáng mai", "trưa mai", "tối mai"..."""
-    if not _TOMORROW_RE.search(u):
+    if not _TOMORROW_RE.search(u) and not _WEEKDAY_RE.search(u) \
+            and not _WEEKEND_RE.search(u):
+        return None
+    if not _TOMORROW_RE.search(u) and not (_WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u)):
+        return None
+    if not _TOMORROW_RE.search(u) and not re.search(r"sang|trua|chieu|toi|dem", u):
+        # "thứ hai" trần, không có buổi: 9 giờ sáng là giờ làm việc mặc định
+        # hơn là 7 giờ - nhưng vẫn phải có buổi đi kèm để khác "thứ hai" trong
+        # câu không phải nhắc nhở ("ngày thứ hai nào đó").
         return None
     # v6.2: dùng _detect_period thay vì tìm chuỗi con - trước đây "toi"
     # trong "nhắc tôi" cũng bị tính là buổi tối ("sáng mai nhắc tôi dậy"
     # thành 19h thay vì 7h).
     hour_by_period = {"trua": 12, "chieu": 15, "toi": 19, "dem": 19, "khuya": 23}
     return _result(type="clock", hour=hour_by_period.get(_detect_period(t, u, plain_input), 7),
-                   day_offset=1)
+                   day_offset=_day_offset_for(u))
 
 
 def parse_time_expression(text: str) -> dict:
@@ -1395,6 +1511,29 @@ _REMINDER_REL_DAY_RE = re.compile(
     r"(?:\s*(?:nữa|nua))?"
     r"|\s*(?:ngày|ngay)\s+kia\b"
 )
+# v7.9: mốc giờ dạng "NGÀY/TUẦN" đứng trần, không có số đi kèm. Hai regex trên
+# bắt được "sau 3 ngày" nhưng không bắt được "sáng mai" / "tối mai" / "thứ hai
+# tới" / "cuối tháng", nên trợ lý đọc thành "Nhắc bạn: họp sáng mai" - tự nhắc
+# lại chính mốc giờ như thể đó là việc cần làm. Đây đúng là lỗi đã sửa cho
+# "sau 3 ngày" và "7h sáng mai", chỉ là chuỗi ở cuối chưa trọn.
+#
+# Cố Ý KHÔNG bắt "mai" trần: "gọi cho Mai" là TÊN NGƯỜI, và "Mai" đã được xử lý
+# ở chỗ khác vì lý do đó. Cũng không bắt "thứ" trần, vì "thứ" còn nghĩa
+# "thứ này" ("hôm nay") trong câu nói.
+_REMINDER_DAY_WORD_RE = re.compile(
+    # "sáng mai", "tối mai", "ngày kia", "tối nay"
+    r"\s*(?:(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+)?"
+    r"(?:mai|ngày mai|ngay mai|ngày kia|ngay kia|tối nay|toi nay)"
+    # "thứ hai", "thứ ba tới", "thứ năm" - kèm cả buổi đứng TRƯỚC ("sáng thứ
+    # hai") lẫn đứng sau ("thứ hai buổi sáng"). Cả hai dạng có dấu lẫn không dấu:
+    # `_reminder_task` chạy trên câu GỐC (có dấu) còn nhiều mẫu khác trong file
+    # viết không dấu, nên phải khai cả hai cho khớp hết.
+    r"|\s*(?:(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+)?thứ\s+\w+"
+    r"(?:\s+(?:buổi|buoi)\s+(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua))?"
+    r"(?:\s*(?:tới|toi|đến|den|này|nay|next))?"
+    # "cuối tuần", "đầu tháng"
+    r"|\s*(?:cuối|đầu)\s+(?:tuần|tuan|tháng|thang)"
+)
 _REMINDER_COMPACT_CLOCK_RE = re.compile(
     r"\s*(?:lúc\s*)?\d{1,2}\s*h\s*\d{0,2}\s*"
     r"(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)?"
@@ -1458,8 +1597,13 @@ def parse_repeat(text: str) -> dict | None:
 # thuốc mỗi ngày" thì vô nghĩa - người dùng muốn nhắc VIỆC, không muốn nhắc
 # CHÍNH TỪ "mỗi ngày".
 _REPEAT_STRIP_RE = re.compile(
-    r"\s*(?:mỗi|moi|hằng|hang)\s*(?:ngày|ngay|tuần|tuan|tháng|thang|"
+    r"\s*(?:mỗi|moi|hằng|hang|hàng)\s*(?:ngày|ngay|tuần|tuan|tháng|thang|"
     r"sáng|sang|chiều|chieu|tối|toi|trưa|trua)\b"
+    # "thứ hai hằng tuần" / "thứ 3 hàng tuần": NHỊP LẶP nằm ở cụm tên ngày +
+    # "hằng tuần". Cụm này parse_repeat() đã hiểu rồi, nên để lại trong nội
+    # dung là thừa - và nếu để lại, bóc mốc ngày ở trên sẽ bị nuốt mất, đúng
+    # kiểu rò rỉ chữ "thứ hai" đã sửa ở v7.8.
+    r"|\s*thứ\s+\w+\s*(?:hằng|hang|hàng)\s*(?:tuần|tuan)"
     r"|\s*mỗi\s+thứ\s+\w+"
 )
 _REMINDER_TAIL_RES = (
@@ -1511,6 +1655,13 @@ def _reminder_task(raw: str) -> str:
     # nếu bỏ sót thì trợ lý đọc thành "Nhắc bạn: họp sau 3 ngày".
     task = _REMINDER_REL_DAY_RE.sub("", task).strip()
     task = _REMINDER_COMPACT_CLOCK_RE.sub("", task).strip()
+    # "sáng mai" là mốc MỘT LẦN nên phải bóc khỏi nội dung. Nhưng với lời nhắc
+    # LẶP LẠI thì "mỗi thứ hai" / "thứ hai hằng tuần" chính là phần định nghĩa
+    # nhịp lặp: bóc đi thì nhắc thành "hẹn bạn thứ hai hằng tuần" nhưng phần
+    # định nghĩa nhịp đã mất, và người dùng phải tự suy ra lại. Vì vậy chỉ bóc khi
+    # câu KHÔNG mang từ lặp.
+    if not _REPEAT_STRIP_RE.search(task):
+        task = _REMINDER_DAY_WORD_RE.sub("", task).strip()
     task = _REPEAT_STRIP_RE.sub("", task).strip()
     for pattern in _REMINDER_TAIL_RES:
         task = pattern.sub("", task).strip()
