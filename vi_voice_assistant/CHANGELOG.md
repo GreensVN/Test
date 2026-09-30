@@ -1,5 +1,49 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 2) - STT: đừng đánh đổi vĩnh viễn vì một lần lỗi; 734 test
+
+Cả ba lỗi dưới đây cùng một dạng: **lỗi bị nuốt rồi biến thành hành vi sai**,
+không phải thành thông báo lỗi. Người dùng không biết trợ lý đã chuyển sang
+chế độ khác, và cũng không biết vì sao.
+
+**Một lần tải model hỏng thì bỏ offline VĨNH VIỄN.** `_load_model` ghim
+`_use_google` ngay lần thất bại đầu tiên, và `_load_model` mở đầu bằng
+`if self._pipe is not None or self._use_google: return` - nên một lần lỗi tải
+(mạng chập chờn lúc tải ~1GB, đĩa bận một lát) giáng phiên đó xuống STT đám
+mây **vĩnh viễn**, và âm thanh người dùng bắt đầu nằm trên máy người khác mà
+không ai báo. Nay thử tối đa 3 lần trước khi bỏ. Phải có giới hạn: thử vô hạn
+là treo máy lúc khởi động.
+
+**Nuốt mọi lỗi thành `return ""` khiến "mất mạng" nghe như "nói không ra".**
+`_google_from_array`/`_google_from_file` bắt `Exception` rồi trả `""` - người
+dùng nghe im và tưởng mình nói không ra, trong khi thật ra là mất mạng hoặc hết
+hạn mức. Hai chuyện cần hai cách xử lý khác nhau (nói lại vs gõ tay), và hàm
+`listen_once` ở tầng trên **vốn đã phân biệt được** (`UnknownValueError` vs
+`RequestError`); lớp `STT` thì không. Nay dùng chung cách phân biệt đó, và chỉ
+cảnh báo lần đầu + mỗi 10 lần liên tiếp để không thành spam trong lúc dùng.
+
+**Bộ đếm hỏng không được reset khi nghe lại được.** Lỗi của chính bản sửa đầu
+tiên: chỉ nhánh "không nghe rõ" mới reset, còn lúc thành công thì không - nên
+một lần mất mạng 3 giây giữa phiên làm bộ đếm leo lên mãi, và câu cảnh báo
+*"lần 1001"* xuất hiện ở một câu nói hoàn toàn bình thường. Bắt được nhờ test
+viết "hỏng rồi nghe lại được" thay vì chỉ kiểm chiều hỏng.
+
+**Lỗi giải mã offline làm SẬT cả câu lệnh.** `transcribe_array`/
+`transcribe_file` để lỗi từ `self._pipe(...)` nổ thẳng ra ngoài, trong khi đường
+Google gặp lỗi cùng tình huống thì trả `""` êm. Không công bằng: một file âm
+thanh hỏng đang giật người dùng về tận chỗ gõ lệnh.
+
+**Kiểm chứng (đo, không ước lượng).** 734 test: `pytest -q` → `734 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **47** file. 10 test mới, trong đó **7 FAIL
+trên `stt.py` trước khi sửa**.
+
+**Điểm yếu thật của bộ test này, nói thẳng:** máy CI không có
+`transformers`/`torch`/`speech_recognition`/`numpy`, nên các test dựng hậu bối
+giả cho đúng những chỗ v7.9 sửa. Nếu `_load_model` đổi tên biến, test vẫn xanh.
+Các đường thật (tải model 1GB, gọi Google) **không được kiểm ở đây** và phải
+thử tay trên máy có đủ thư viện.
+
+
 ## v7.9 (bổ sung) - Nhắc nhở lặp lại; 724 test
 
 "mỗi ngày" là câu người dùng hỏi rất nhiều mà bản trước không có nơi để lưu.
