@@ -32,8 +32,6 @@ Kết quả: ghi đè intent_model.pkl -> main.py dùng được ngay, không c�
 from __future__ import annotations
 
 import argparse
-import csv
-import logging
 import os
 import random
 import sys
@@ -73,6 +71,7 @@ except ImportError:  # pragma: no cover
     FeatureUnion = None
     Pipeline = None
 
+from csv_utils import read_keyed_csv
 from dataset import get_dataset_as_lists
 from nlu_advanced import TEEN_CODE, smart_normalize, strip_accents
 from paths import data_path
@@ -86,56 +85,16 @@ FEEDBACK_CSV = str(data_path("feedback.csv"))
 
 random.seed(42)
 
-logger = logging.getLogger(__name__)
-
 
 # ============================================================================
 # 1. GỐP DỮ LIỆU TỪ NHIỀU NGUỒN
 # ============================================================================
+# v7.8: đọc CSV đã có sẵn ở `csv_utils.read_keyed_csv` vì `dataset.py` cũng
+# dùng chung (và `train_nlu` import `dataset`, nên helper không thể nằm ở đây).
+# Hàm bọc giữ lại tên cũ cho các test và caller đã dùng.
 def _read_keyed_csv(path: str, required: tuple[str, ...], source: str):
-    """Đọc CSV mà chịu được cả file KHÔNG có dòng tiêu đề.
-
-    v7.8: `csv.DictReader` coi DÒNG ĐẦU TIÊN là tên cột, nên file không có
-    header thì: dòng dữ liệu đầu bị ăn mất thành tên cột, và mọi dòng sau đó
-    không còn khoá `text`/`intent`/`verified` - kết quả là `0 câu`, đúng bằng
-    câu "bạn chưa dạy gì". Người dùng không hề được báo, và toàn bộ phần dạy
-    của họ biến mất khỏi lần huấn luyện. Đây chính là file mà `log_feedback`
-    của bản cũ tạo ra khi ghi vào một file rỗng (đã sửa ở v7.8), nên người
-    dùng đã có sẵn những file hỏng như vậy trên đĩa.
-
-    Nay đọc theo vị trí cột khi thiếu header, và BÁO RÕ để người dùng biết
-    file của họ có vấn đề thay vì tưởng mình chưa dạy gì.
-    """
-    with open(path, encoding="utf-8-sig", newline="") as f:
-        rows = [r for r in csv.reader(f) if any((c or "").strip() for c in r)]
-    if not rows:
-        return []
-
-    header = [(c or "").strip().lower() for c in rows[0]]
-    # Chỉ cần CẶP KHOÁ "text"+"intent" để kết luận đây là file CÓ header. File
-    # thiếu cột phụ (ví dụ `verified`) vẫn đọc được theo header, phần thiếu để
-    # trống - thay vì rơi xuống nhánh "không có header" rồi lệch cột hỏng âm
-    # thầm (dòng tiêu đề bị đọc thành dữ liệu).
-    if all(key in header for key in ("text", "intent")):
-        pos = {name: i for i, name in enumerate(header)}
-        return [
-            {
-                key: (row[pos[key]] if key in pos and pos[key] < len(row) else "")
-                for key in required
-            }
-            for row in rows[1:]
-        ]
-
-    # Không có header: coi MỌI dòng (kể cả dòng đầu) là dữ liệu, đọc theo thứ
-    # tự cột mà `log_feedback` ghi ra.
-    safe_print(f"    [!] {source} KHÔNG có dòng tiêu đề -> đọc theo thứ tự cột.")
-    safe_print("        (nếu đây không phải ý bạn, hãy thêm dòng: "
-               + ",".join(required) + " ở đầu file)")
-    logger.warning("%s thiếu dòng tiêu đề: %s", source, path)
-    return [
-        {key: (row[i] if i < len(row) else "") for i, key in enumerate(required)}
-        for row in rows
-    ]
+    """Xem `csv_utils.read_keyed_csv`."""
+    return read_keyed_csv(path, required, source)
 
 
 # Thứ tự cột đúng như `nlu_advanced.log_feedback` ghi ra.

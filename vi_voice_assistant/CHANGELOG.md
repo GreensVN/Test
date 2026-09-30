@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 618 test
+## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 625 test
 
 Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi
 tìm được đều có cùng một dạng: **một lớp bảo vệ chạy trước làm hỏng thứ nó định
@@ -68,7 +68,17 @@ dùng đã có sẵn file hỏng trên đĩa, sửa nguồn ghi không cứu đ�
 chịu được cả bốn kiểu (header đầy đủ / thiếu cột phụ / không header), đọc theo
 vị trí cột khi thiếu header, và **báo rõ** để người dùng biết file của họ có vấn
 đề thay vì tưởng mình chưa dạy gì. `my_dataset.csv` (file người dùng tự viết
-tay) cũng qua cùng cách đọc.
+tay) nên thiếu dòng tiêu đề là chuyện rất bình thường.
+
+**Cùng lỗi đó lặp lại ở một chỗ nữa — và cùng một file.**
+`dataset.load_extra_csv` cũng dùng `csv.DictReader`, và nó đọc chính
+`my_dataset.csv` mà `train_nlu` đọc. Khi file thiếu tiêu đề, cả hai nơi
+cùng nhảy qua toàn bộ file và cùng in ra "0 câu" - đúng bằng câu "file
+của tôi rỗng". Vòng này gom cách đọc về `csv_utils.read_keyed_csv`
+(đặt ở module riêng vì `train_nlu` import `dataset`, đặt helper vào một
+trong hai sẽ tạo vòng import) và cho cả hai nơi dùng chung - sửa một bên
+thì bên kia không bị bỏ sót. Nhánh báo lỗi file Notepad kiểu Windows 7
+(lưu ANSI) được giữ nguyên.
 
 **Trèo khỏi thư mục dữ liệu.** `data_path("/etc/hosts")` và
 `voice_cache/index.csv` trỏ ra ngoài thư mục cache rồi bị phát - nay cả hai kiểm
@@ -78,9 +88,11 @@ sửa tay) nổ `ValueError: max() arg is an empty sequence` giết cả câu l�
 **Không đổi.** Không API nào bị bỏ; mọi câu hợp lệ cho kết quả y hệt; các chuỗi
 báo cho người dùng trong luồng hợp lệ giữ nguyên từng byte.
 
-**Kiểm chứng (đo, không ước lượng).** 618 test trên CẢ HAI đường: `pytest -q` →
-`618 passed`; `python run_tests.py -q` trên máy không pytest → `618 pass, 0 fail,
-0 skip`; `ruff check` 0; `mypy` 0 lỗi (44 file). Toán học kiểm cả 10 cặp câu có
+**Kiểm chứng (đo, không ước lượng).** 625 test trên CẢ HAI đường: `pytest -q` →
+`625 passed`; `python run_tests.py -q` trên máy không pytest → `625 pass, 0 fail,
+0 skip`; `ruff check` 0; `mypy` 0 lỗi (45 file). Vì CI chưa từng chạy được trên
+repo này, tương thích Python 3.9 được tự quét bằng AST trên toàn bộ module,
+và `python -m build` xác nhận `csv_utils.py` có thật trong wheel. Toán học kiểm cả 10 cặp câu có
 dấu/không dấu cho cùng kết quả, và `--once` chạy thật trên 9 câu: `15 + 27` → 42,
 `2,5 nhân 4` → 10.0, `1.234,5 chia 3` → 411.5, `1.234 + 5` → 1239.
 

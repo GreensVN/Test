@@ -794,3 +794,79 @@ def test_doc_csv_chiu_duoc_ca_bon_kieu_header(tmp_path, content, expected):
     p.write_text(content, encoding="utf-8")
     cols = ("time", "text", "intent", "confidence", "verified")
     assert _read_keyed_csv(str(p), cols, "f.csv") == [expected]
+
+
+# ---------------------------------------------------------------------------
+# 15. Cùng lỗi headerless xuất hiện ở HAI nơi khác nhau, mỗi nơi một bản sao.
+#     `my_dataset.csv` do NGUOI DUNG tu viet tay nen thieu tieu de la chuyen
+#     binh thuong - va no bi doc boi CA HAI `dataset.load_extra_csv` va
+#     `train_nlu.load_all_data`. Fix mot noi thi noi kia van boc qua.
+# ---------------------------------------------------------------------------
+def test_my_dataset_khong_co_tieu_de_khong_bi_boc_qua(tmp_path):
+    from dataset import load_extra_csv
+
+    p = tmp_path / "my_dataset.csv"
+    p.write_text("mở zed,open_app\nmở gimp,open_app\n", encoding="utf-8")
+    assert load_extra_csv(p) == 2
+
+
+def test_my_dataset_co_tieu_de_van_chay_dung(tmp_path):
+    from dataset import load_extra_csv
+
+    p = tmp_path / "my_dataset.csv"
+    p.write_text("text,intent\nmở inkscape,open_app\n", encoding="utf-8")
+    assert load_extra_csv(p) == 1
+
+
+def test_my_dataset_thieu_tieu_de_phai_bao_cho_biet(tmp_path, capsys):
+    from dataset import load_extra_csv
+
+    p = tmp_path / "my_dataset.csv"
+    p.write_text("mở zed,open_app\n", encoding="utf-8")
+    load_extra_csv(p)
+    assert "KHÔNG có dòng tiêu đề" in capsys.readouterr().out
+
+
+def test_my_dataset_rong_hoac_chi_tieu_de_khong_bi_canh_bao_thua(tmp_path, capsys):
+    from dataset import load_extra_csv
+
+    empty = tmp_path / "a.csv"
+    empty.write_text("", encoding="utf-8")
+    bare = tmp_path / "b.csv"
+    bare.write_text("text,intent\n", encoding="utf-8")
+    assert load_extra_csv(empty) == 0
+    assert load_extra_csv(bare) == 0
+    assert "KHÔNG có dòng tiêu đề" not in capsys.readouterr().out
+
+
+def test_my_dataset_van_chuyen_hoa_chu_thuong_nhu_cu(tmp_path):
+    """Bản cũ `.lower()`; sửa lỗi đọc file KHÔNG được đổi luôn hành vi này."""
+    from dataset import INTENT_DATA, load_extra_csv
+
+    p = tmp_path / "my_dataset.csv"
+    p.write_text("MỞ ZED,open_app\n", encoding="utf-8")
+    load_extra_csv(p)
+    assert "mở zed" in INTENT_DATA["open_app"]
+
+
+def test_my_dataset_khong_phai_utf8_van_bao_ro_khong_crash(tmp_path, capsys):
+    """Nhánh Notepad Windows 7 (lưu ANSI) phải còn nguyên sau khi đổi cách đọc."""
+    from dataset import load_extra_csv
+
+    p = tmp_path / "my_dataset.csv"
+    p.write_bytes(b"text,intent\nM\xf3\xf3 Zed,open_app\n")   # byte không hợp lệ UTF-8
+    assert load_extra_csv(p) == 0
+    out = capsys.readouterr().out
+    assert "UTF-8" in out and "Save As" in out
+
+
+def test_hai_no_dung_chung_mot_hang_doc_csv(tmp_path):
+    """Hai nơi phải cho CÙNG kết quả trên cùng file - nếu lệch, lỗi quay lại một bên."""
+    import train_nlu
+    from csv_utils import read_keyed_csv
+
+    p = tmp_path / "f.csv"
+    p.write_text("mở zed,open_app\n", encoding="utf-8")
+    expected = [{"text": "mở zed", "intent": "open_app"}]
+    shared = read_keyed_csv(p, ("text", "intent"), "f.csv")
+    assert train_nlu._read_keyed_csv(p, ("text", "intent"), "f.csv") == shared == expected
