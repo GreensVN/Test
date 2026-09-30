@@ -309,6 +309,15 @@ STOP_WORDS = {
 # (vd "mo google len" -> "mo" và "len" cũng cần được coi là stop-word)
 STOP_WORDS_ALL = STOP_WORDS | {strip_diacritics(w) for w in STOP_WORDS}
 
+# v7.9: chỉ những ĐỘNG TỪ LỆNH mà bỏ đi luôn được, kể cả khi đó là toàn bộ
+# câu. Stop-word đầy đủ còn chứa "trình"/"duyệt"/"máy" vì cần bỏ chúng ở câu
+# dài ("mở trình duyệt youtube" -> "youtube"); nhưng với câu NGẮN đúng bằng
+# chỗ đó ("mở trình duyệt") thì bỏ hết rồi không còn gì để gọi tên.
+_COMMAND_VERBS = {
+    "mở", "mo", "chạy", "chay", "bật", "bat", "khởi động", "khoi dong",
+    "dùng", "dung", "vào", "vao", "ra", "đi", "di", "làm", "lam",
+}
+
 # Từ khoá chuẩn hoá cho system_control -> hành động chuẩn
 # (pattern sẽ tự động được thử thêm bản không dấu, xem _match_any_pattern)
 SYSTEM_KEYWORDS = [
@@ -1486,6 +1495,14 @@ def _entity_system_control(ctx: _EntityContext) -> str:
 def _entity_default(ctx: _EntityContext) -> str:
     """Mặc định: bỏ stop-words, phần còn lại là tên đối tượng."""
     tokens = [w for w in ctx.raw.split() if w not in STOP_WORDS_ALL]
+    if tokens:
+        return " ".join(tokens).strip()
+    # v7.9: câu CHỈ gồm stop-word, ví dụ "mở trình duyệt" - và "trình duyệt"
+    # CHÍNH LÀ tên ứng dụng cần mở. Bản cũ bỏ hết rồi trả "unknown", nên
+    # trợ lý đáp "Chưa biết ứng dụng 'unknown', hãy thêm 'unknown' vào
+    # config.json" - vô nghĩa, và model vẫn tự tin 0.97. Bỏ hết stop-word mà
+    # rỗng thì bỏ tiếp động từ lệnh, giữ lại phần còn lại.
+    tokens = [w for w in ctx.raw.split() if w not in _COMMAND_VERBS]
     return " ".join(tokens).strip() or "unknown"
 
 

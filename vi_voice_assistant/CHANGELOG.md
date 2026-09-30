@@ -1,5 +1,46 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 3) - Chỗ để trống `unknown` không được lọt ra miệng người dùng; 749 test
+
+Lỗi cuối trong danh sách, và nặng hơn các lỗi "sai intent" khác vì nó **tự
+tin**: model đoán `open_app` với **0.97**, rồi `extract_entity` trả về chuỗi
+`"unknown"`. Trợ lý đáp *"Chưa biết ứng dụng 'unknown'. Hãy thêm 'unknown' vào
+config.json"* - vừa vô nghĩa, vừa dạy người dùng sửa sai file cấu hình.
+
+**Nguyên nhân không phải stop-word thừa, nên cũng không sửa bằng cách bớt đi.**
+`STOP_WORDS_ALL` phải chứa "trình"/"duyệt" để câu dài bỏ đúng phần đó ("mở
+trình duyệt youtube" → `youtube`). Nhưng với câu NGẮN đúng bằng chỗ đó thì bỏ
+hết rồi không còn gì để gọi tên. Bỏ bớt stop-word sẽ hỏng câu dài, mà câu dài
+là phần lớn các câu.
+
+Cách sửa là **bỏ dần**: `_entity_default` bỏ hết stop-word, và nếu ra chuỗi
+rỗng thì bỏ tiếp động từ lệnh (`mở`, `chạy`, `bật`...) rồi lấy phần còn lại.
+`"mở trình duyệt"` → `trình duyệt`, còn `"mở trình duyệt youtube"` vẫn ra
+`youtube` như cũ.
+
+**`system_control` in thẳng chỗ để trống ra cho người dùng đọc.** `"máy tính"`
+là câu lệnh nửa vời: `_system_action` không khớp từ khóa nào nên trả
+`"unknown"`, rồi executor in *"Không hỗ trợ lệnh hệ thống 'unknown' trên
+Linux"* - tự thừa nhận là không hiểu mà không giúp người dùng nói tiếp được.
+Nay hỏi lại đúng cách `action_search_web` đã làm sẵn từ trước cho chỗ để trống.
+
+**Kiểm chứng (đo, không ước lượng).** 749 test: `pytest -q` → `749 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **48** file. 15 test mới, trong đó **6 FAIL
+trên đúng hai file nguồn trước khi sửa**; 9 test còn lại là các case phải giữ
+nguyên (`"mở trình duyệt youtube"` vẫn phải ra `youtube`, lệnh hệ thống thật
+vẫn phải chạy). Chạy thật qua `--once`: `"mo trinh duyet"` ra *"Chưa biết ứng
+dụng 'trình duyệt'. Hãy thêm vào app_map_linux..."* (gọi đúng tên), `"may
+tinh"` ra *"Bạn muốn làm gì với máy tính ạ?"*.
+
+**Còn lại, chưa sửa.** Intent sai vẫn còn, chỉ là không còn tự tin đến mức vô
+lý nữa: `"chat giup toi"` → `play_media` 0.84, `"lac wifi"` → `play_media` 0.44,
+`"bat den"` → `play_media` 0.22 (ba câu này đều dưới ngưỡng nên bị hỏi lại, an
+toàn). `"thoi tiet ha noi"` ra target `hà nói` thay vì `Hà Nội` - thuộc 75 khoá
+`ACCENT_MAP` mơ hồ đã ghi ở v7.8, cần từ điển tần suất thật mới giải được.
+`log`/`mod` trong toán học; `"nhắc tôi họp sáng mai"` còn để lại "sáng mai" trong
+nội dung nhắc; `cuối tuần`/`thứ hai tuần sau` (cần lịch thật).
+
+
 ## v7.9 (bổ sung 2) - STT: đừng đánh đổi vĩnh viễn vì một lần lỗi; 734 test
 
 Cả ba lỗi dưới đây cùng một dạng: **lỗi bị nuốt rồi biến thành hành vi sai**,

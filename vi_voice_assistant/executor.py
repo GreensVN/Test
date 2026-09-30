@@ -850,6 +850,16 @@ def action_system_control(target: str) -> bool:
     hoặc nền tảng không hỗ trợ lệnh đó - KHÔNG bao giờ ném lỗi ra ngoài vì một
     lệnh hệ thống hỏng không được làm chết phiên trò chuyện.
     """
+    # v7.9: `target == "unknown"` là CHỖ ĐỂ TRỐNG bên trong, không phải thứ
+    # người dùng nói. Bản cũ in thẳng nó ra: "Không hỗ trợ lệnh hệ thống
+    # 'unknown' trên Linux" - tự thừa nhận là không hiểu, nhưng không giúp
+    # người dùng nói tiếp được. "máy tính" là câu lệnh nửa vời, hỏi lại thì
+    # hữu ích hơn nhiều.
+    if not target or target == "unknown":
+        respond("Bạn muốn làm gì với máy tính ạ? Ví dụ: tắt máy, khoá màn "
+                "hình, tăng âm lượng, chụp màn hình.")
+        return False
+
     if target in DANGEROUS_ACTIONS:
         if not _confirm(f"Bạn chắc chắn muốn '{target}'?"):
             safe_print("Đã huỷ lệnh.")
