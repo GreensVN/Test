@@ -1278,6 +1278,67 @@ _REMINDER_COMPACT_CLOCK_RE = re.compile(
     # đuôi 2 từ giống hệt `_REMINDER_TIME_RE`: "7h tối nay" -> "nay" sót lại
     r"(?:\s+(?:nay|mai|hôm|hom))?"
 )
+# "mỗi/hằng + đơn vị" và "mỗi thứ X": dấu hiệu lặp lại. Bóc ra riêng (không
+# phải mốc giờ) vì "nhắc tôi uống thuốc mỗi ngày lúc 8 giờ" cần CẢ HAI: mốc
+# giờ để hẹn, lặp lại để tự hẹn lại lần sau.
+_REPEAT_UNITS = {"ngay": "daily", "tuan": "weekly", "thang": "monthly",
+                 # "mỗi sáng" = sáng nào cũng vậy. Buộc phải có "mỗi/hằng"
+                 # đi trước, nếu không thì "sáng mai" (một buổi sáng tới) cũng
+                 # bị đọc thành lặp hằng ngày.
+                 "sang": "daily", "chieu": "daily", "toi": "daily", "trua": "daily"}
+_REPEAT_UNIT_RE = re.compile(r"\b(?:moi|hang)\s*(ngay|tuan|thang|sang|chieu|toi|trua)\b")
+# "thứ hai" = thứ 2. "chủ nhật" = Chủ Nhật. Số 1-7 cũng nhận vì người hay gõ
+# "mỗi thứ 2" hơn là "mỗi thứ hai".
+_REPEAT_WEEKDAYS = {
+    "hai": 0, "2": 0,
+    "ba": 1, "3": 1,
+    "tu": 2, "4": 2,
+    "nam": 3, "5": 3,
+    "sau": 4, "6": 4,
+    "bay": 5, "7": 5,
+    "chu nhat": 6, "cn": 6, "chunhat": 6,
+}
+_REPEAT_WEEKDAY_RE = re.compile(
+    r"\bthu\s*(hai|ba|tu|nam|sau|bay|chu\s*nhat|chunhat|cn|1|2|3|4|5|6|7)\b"
+    # Người ta nói "mỗi chủ nhật" nhiều hơn "mỗi thứ chủ nhật".
+    r"|\bchu\s*nhat\b"
+)
+
+
+def parse_repeat(text: str) -> dict | None:
+    """Đọc nhịp lặp của một lời nhắc: "mỗi ngày", "hằng tuần", "mỗi thứ hai".
+
+    Trả về dict (``{"kind": ...}``) hoặc ``None`` nếu câu không có nhịp lặp.
+
+    "mỗi thứ hai" LẤN sang "mỗi tuần" + thứ hai, vì người nói tiếng Việt luôn
+    hiểu "mỗi thứ hai" là lặp hằng tuần vào thứ Hai - nhưng chỉ khi câu còn lại
+    đủ ý (có việc cần nhắc); "thứ hai tuần này" là câu hỏi lịch, không phải
+    lịch lặp, nên chỉ nhận khi đi kèm "mỗi/hằng".
+
+    Vì sao không dùng luôn kết quả `parse_time_expression`: hàm đó trả về một
+    MỐC GIỜ, còn nhịp lặp là câu hỏi khác - "8 giờ sáng" trả về cả hai khả
+    năng, và chỉ "mỗi ngày" mới quyết định là lặp.
+    """
+    u = strip_diacritics(as_text(text)).lower()
+    if re.search(r"\b(?:moi|hang)\b", u):
+        m = _REPEAT_WEEKDAY_RE.search(u)
+        if m:
+            key = re.sub(r"\s+", " ", m.group(1)) if m.group(1) else "chu nhat"
+            return {"kind": "weekly", "weekday": _REPEAT_WEEKDAYS[key]}
+    m = _REPEAT_UNIT_RE.search(u)
+    if m:
+        return {"kind": _REPEAT_UNITS[m.group(1)]}
+    return None
+
+
+# Khoá lặp lại phải được gỡ khỏi nội dung nhắc, y hệt mốc giờ. "Nhắc bạn: uống
+# thuốc mỗi ngày" thì vô nghĩa - người dùng muốn nhắc VIỆC, không muốn nhắc
+# CHÍNH TỪ "mỗi ngày".
+_REPEAT_STRIP_RE = re.compile(
+    r"\s*(?:mỗi|moi|hằng|hang)\s*(?:ngày|ngay|tuần|tuan|tháng|thang|"
+    r"sáng|sang|chiều|chieu|tối|toi|trưa|trua)\b"
+    r"|\s*mỗi\s+thứ\s+\w+"
+)
 _REMINDER_TAIL_RES = (
     re.compile(r"^(sau|nữa|vào)\s+"),
     re.compile(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$"),
@@ -1327,6 +1388,7 @@ def _reminder_task(raw: str) -> str:
     # nếu bỏ sót thì trợ lý đọc thành "Nhắc bạn: họp sau 3 ngày".
     task = _REMINDER_REL_DAY_RE.sub("", task).strip()
     task = _REMINDER_COMPACT_CLOCK_RE.sub("", task).strip()
+    task = _REPEAT_STRIP_RE.sub("", task).strip()
     for pattern in _REMINDER_TAIL_RES:
         task = pattern.sub("", task).strip()
     return task or "báo thức"
@@ -1558,8 +1620,10 @@ def _rescue_reminder_intent(intent: str, confidence: float,
       1. model đoán `get_datetime`,
       2. model KHÔNG chắc (dưới ngưỡng) - model chắc thì để model quyết,
       3. câu MỞ ĐẦU bằng động từ nhắc nhở,
-      4. câu CÓ mốc giờ thật (`parse_time_expression` là bằng chứng quyết
-         định, không phải suy đoán từ ký tự),
+      4. câu CÓ bằng chứng hẹn thật: hoặc mốc giờ (`parse_time_expression`), hoặc
+         nhịp lặp ("mỗi ngày"). Cả hai đều là ý định LỊCH, không phải hỏi lịch.
+         Cần cả hai vì "nhắc tôi trả tiền mỗi tháng" không có giờ nào cả, nhưng
+         vẫn phải hỏi "mấy giờ?" chứ không phải đọc ngày,
       5. câu KHÔNG phải câu hỏi về ngày/giờ.
     """
     if intent != "get_datetime" or not raw_text:
@@ -1571,7 +1635,9 @@ def _rescue_reminder_intent(intent: str, confidence: float,
         return intent
     if _DATE_QUESTION_RE.search(plain):
         return intent
-    if parse_time_expression(raw_text).get("type") is None:
+    has_schedule = (parse_time_expression(raw_text).get("type") is not None
+                    or parse_repeat(raw_text) is not None)
+    if not has_schedule:
         return intent
     logger.info("Lời nhắc %r bị đoán nhầm thành %r (%.2f) -> set_reminder",
                 raw_text, intent, confidence)
@@ -1590,6 +1656,20 @@ def _rescue_intent(intent: str, confidence: float,
     for rescue in _RESCUE_FUNCS:
         intent = rescue(intent, confidence, raw_text)
     return intent
+
+
+def _reminder_extras(raw_text: str | None, entity_source: str) -> dict:
+    """Phần thông tin NHẮC NHỞ ngoài mốc giờ (v7.9): nhịp lặp.
+
+    Nhịp lặp là câu hỏi KHÁC với mốc giờ và chỉ đọc được từ câu GỐC: cả "mỗi
+    ngày" lẫn "mỗi thứ hai" đều bị `normalize_text` bóp mất (xem `_REPEAT_*`),
+nên đọc `entity_source` là đọc câu rỗng.
+
+    Trả dict rỗng thay vì None để `result.update(...)` được, và để
+    `predict_intent` không phải thêm nhánh (nó đã sát trần độ phức tạp của ruff).
+    """
+    repeat = parse_repeat(raw_text if raw_text else entity_source)
+    return {"repeat": repeat} if repeat else {}
 
 
 def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
@@ -1672,6 +1752,7 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     # Thêm thông tin thời gian cho lệnh nhắc nhở
     if intent == "set_reminder":
         result["time"] = parse_time_expression(entity_source)
+        result.update(_reminder_extras(raw_text, entity_source))
 
     # Thêm kết quả tính toán cho lệnh tính toán
     if intent == "calculate":

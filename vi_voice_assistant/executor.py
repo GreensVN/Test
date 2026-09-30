@@ -975,10 +975,122 @@ def _reminder_at(item: dict[str, Any]):
     return at if isinstance(at, datetime.datetime) else None
 
 
+# --- Nhịp lặp (v7.9) --------------------------------------------------------
+# "mỗi ngày" là một thứ mà người dùng hỏi rất nhiều mà bản trước không có nơi
+# để lưu: mỗi lần đến giờ thì nhắc xong là XOÁ, nên "uống thuốc mỗi ngày" chỉ
+# nhắc đúng MỘT lần rồi im - im đúng kiểu lỗi, vì người dùng tin là đã hẹn cả
+# tháng. Nay nhắc tự hẹn lại lần kế.
+_REPEAT_KINDS = ("daily", "weekly", "monthly")
+# threading.Timer trên Windows trần ở ~49.7 ngày; chia nhỏ để không phụ thuộc.
+_MAX_TIMER_SECONDS = 24 * 3600.0
+_WEEKDAY_NAMES = ("thứ hai", "thứ ba", "thứ tư", "thứ năm", "thứ sáu",
+                  "thứ bảy", "chủ nhật")
+
+
+def _coerce_repeat(repeat: object) -> dict[str, Any] | None:
+    """Chấp nhận mọi kiểu `repeat` mà model/JSON gửi tới, trả về dict chuẩn.
+
+    Không có `_coerce_repeat` thì `reminders.json` do người dùng sửa tay (hoặc
+    bản cũ ghi ra) có thể mang bất kỳ thứ gì và `_fire_reminder` sẽ lỗi NGAY
+    lúc bắn nhắc - tức đúng lúc người dùng cần nó nhất.
+    """
+    if not isinstance(repeat, dict):
+        return None
+    kind = repeat.get("kind")
+    if kind not in _REPEAT_KINDS:
+        return None
+    clean: dict[str, Any] = {"kind": kind}
+    if kind == "weekly":
+        weekday = repeat.get("weekday")
+        if isinstance(weekday, bool) or not isinstance(weekday, int):
+            return clean  # lặp hằng tuần, chưa chốt thứ mấy
+        if not 0 <= weekday <= 6:
+            return clean
+        clean["weekday"] = weekday
+    return clean
+
+
+def _next_occurrence(run_at: datetime.datetime,
+                     repeat: dict[str, Any]) -> datetime.datetime | None:
+    """Lần xuất hiện KẾ TIẾP sau `run_at`. None nếu không tính được.
+
+    Luôn trả về mốc **sau** `run_at`. Nếu vì lý do gì đó trả về mốc đã qua,
+    `_schedule_reminder` từ chối đặt (delay <= 0) và chuỗi lặp dừng lại - tức
+    lỗi sẽ thày một nhắc bị bỏ, chứ không thành vòng lặp treo máy.
+    """
+    kind = repeat.get("kind")
+    if kind == "daily":
+        nxt = run_at + datetime.timedelta(days=1)
+    elif kind == "weekly":
+        weekday = repeat.get("weekday")
+        if weekday is None:
+            nxt = run_at + datetime.timedelta(days=7)
+        else:
+            # run_at.weekday() là 0=thứ hai; weekday của người dùng cùng hệ.
+            ahead = (weekday - run_at.weekday()) % 7 or 7
+            nxt = run_at + datetime.timedelta(days=ahead)
+    elif kind == "monthly":
+        year, month = run_at.year, run_at.month + 1
+        if month > 12:
+            year, month = year + 1, 1
+        # Ngày 31 tháng 2 không tồn tại -> lùi về ngày cuối tháng đó thay vì nổ.
+        day = min(run_at.day, _days_in_month(year, month))
+        nxt = run_at.replace(year=year, month=month, day=day)
+    else:
+        return None
+    return nxt if nxt > run_at else None
+
+
+def _next_future_occurrence(run_at: datetime.datetime, repeat: dict[str, Any],
+                            now: datetime.datetime) -> datetime.datetime | None:
+    """Lần xuất hiện đầu tiên SAU `now`, cuộn từng bước.
+
+    Vì sao phải cuộn vòng chứ không gọi `_next_occurrence` một lần: máy tắt 3
+    ngày thì lịch "mỗi ngày" cần cuộn 3 bước mới tới tương lai. Cuộn đúng MỘT
+    bước thì vẫn nằm trong quá khứ, `_schedule_reminder` từ chối, và cả chuỗi
+    biến mất - đúng cái hỏng mà hàm này sinh ra để chặn.
+
+    Có chặn trên để đồng hồ hỏng (lùi hàng năm) không quay vô hạn.
+    """
+    nxt = run_at
+    for _ in range(400):
+        step = _next_occurrence(nxt, repeat)
+        if step is None:
+            return None
+        nxt = step
+        if nxt > now:
+            return nxt
+    logger.warning("Không cuộn được tới lần lặp kế tiếp cho %r", repeat)
+    return None
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        return 31
+    return (datetime.date(year, month + 1, 1)
+            - datetime.date(year, month, 1)).days
+
+
+def _repeat_label(repeat: dict[str, Any] | None) -> str:
+    """Cách nói tiếng Việt của nhịp lặp, để câu xác nhận nói ra được."""
+    if not repeat:
+        return ""
+    kind = repeat.get("kind")
+    if kind == "daily":
+        return "mỗi ngày"
+    if kind == "monthly":
+        return "mỗi tháng"
+    weekday = repeat.get("weekday")
+    if kind == "weekly" and isinstance(weekday, int) and not isinstance(weekday, bool):
+        return f"mỗi {_WEEKDAY_NAMES[weekday]}"
+    return "mỗi tuần"
+
+
+
 def _save_reminders() -> None:
     try:
         with ACTIVE_REMINDERS_LOCK:
-            data = []
+            data: list[dict[str, Any]] = []
             for item in ACTIVE_REMINDERS:
                 at = _reminder_at(item)
                 if at is None:
@@ -986,9 +1098,12 @@ def _save_reminders() -> None:
                         "Bỏ qua nhắc nhở không hợp lệ khi lưu (thiếu mốc giờ): %r", item
                     )
                     continue
-                data.append(
-                    {"id": item.get("id"), "task": item.get("task", ""), "at": at.isoformat()}
-                )
+                entry = {"id": item.get("id"), "task": item.get("task", ""),
+                         "at": at.isoformat()}
+                repeat = _coerce_repeat(item.get("repeat"))
+                if repeat:
+                    entry["repeat"] = repeat
+                data.append(entry)
         # Atomic write (paths.atomic_write_json) - chap nhận ca Path lan str de
         # test monkeypatch REMINDERS_PATH duoc de dang.
         atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
@@ -996,24 +1111,50 @@ def _save_reminders() -> None:
         logger.warning("Không lưu được danh sách nhắc nhở: %s", e)
 
 
-def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True) -> str | None:
+def _arm_timer(task: str, delay: float, reminder_id: str,
+               repeat: dict[str, Any] | None,
+               continuation: bool = False) -> threading.Timer:
+    """Bật một chặng đếm ngược.
+
+    `continuation=True` là CHẶNG NỐI TIẾP của một lịch dài hơn trần Timer (lặp
+    hằng tháng), KHÔNG phải lần nhắc thật: nó chỉ bật chặng kế tiếp, không báo,
+    không hẹn lại. Không phân biệt thì mỗi chặng bắn một lần nhắc và hẹn thêm
+    một lịch mới - nhắc hằng tháng thành nhắc vài lần mỗi tháng.
+    """
+    timer = threading.Timer(delay, _fire_reminder,
+                            args=[task, reminder_id, repeat, continuation])
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True,
+                       repeat: object = None) -> str | None:
+    clean_repeat = _coerce_repeat(repeat)
     delay = (run_at - datetime.datetime.now()).total_seconds()
     if delay <= 0:
         return None
     reminder_id = f"{run_at.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    timer = threading.Timer(delay, _fire_reminder, args=[task, reminder_id])
-    timer.daemon = True
     # v7.8: ĐĂNG KÝ MỤC VÀO DANH SÁCH TRƯỚC KHI BẬT TIMER. Bản cũ `timer.start()`
     # đứng trước, nên với độ trễ rất ngắn (vài trăm phần nghìn giây, hợp lệ khi
     # `--json` gửi "0.001" phút) timer nổ trước lúc mục được thêm vào
     # ACTIVE_REMINDERS: `_fire_reminder` quét không thấy id của mình nên không
     # gỡ gì, rồi mục mới được thêm vào - một lời nhắc "ma" không bao giờ tắt,
     # cứ nằm trong `nhac nho` tới cuối phiên.
+    entry: dict[str, Any] = {"id": reminder_id, "task": task, "at": run_at,
+                             "timer": None}
+    if clean_repeat:
+        entry["repeat"] = clean_repeat
     with ACTIVE_REMINDERS_LOCK:
-        ACTIVE_REMINDERS.append(
-            {"id": reminder_id, "task": task, "at": run_at, "timer": timer}
-        )
-    timer.start()
+        ACTIVE_REMINDERS.append(entry)
+    # Timer dài hơn trần của threading (Windows ~49.7 ngày) nổ OverflowError
+    # lúc khởi tạo; cắt thành nhiều chặng ngắn (chặng sau nối tiếp ở
+    # `_fire_reminder` nhờ `repeat`).
+    while delay > _MAX_TIMER_SECONDS:
+        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id, clean_repeat,
+                   continuation=True)
+        delay -= _MAX_TIMER_SECONDS
+    entry["timer"] = _arm_timer(task, delay, reminder_id, clean_repeat)
     if persist:
         _save_reminders()
     return reminder_id
@@ -1040,7 +1181,16 @@ def restore_reminders() -> int:
             logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
             continue
         task = str(item.get("task") or "báo thức")
-        if _schedule_reminder(task, run_at, persist=False):
+        repeat = _coerce_repeat(item.get("repeat"))
+        # v7.9: máy tắt rồi mở lại, mốc giờ lặp đã trôi qua trong lúc đó
+        # (ngủ qua giờ uống thuốc chẳng hạn). Không cuộn tới lần kế thì lời nhắc
+        # bị bỏ vĩnh viễn - và với "mỗi ngày" thì mất luôn cả chuỗi.
+        if repeat and run_at <= datetime.datetime.now():
+            rolled = _next_future_occurrence(run_at, repeat,
+                                             datetime.datetime.now())
+            if rolled is not None:
+                run_at = rolled
+        if _schedule_reminder(task, run_at, persist=False, repeat=repeat):
             restored += 1
     _save_reminders()
     if restored:
@@ -1079,12 +1229,34 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
     return removed
 
 
-def _fire_reminder(task: str, reminder_id: str | None = None) -> None:
+def _fire_reminder(task: str, reminder_id: str | None = None,
+                   repeat: object = None, continuation: bool = False) -> None:
+    clean_repeat = _coerce_repeat(repeat)
+    if continuation:
+        # Chặng nối tiếp: chuyển sang chặng kế tiếp, KHÔNG nhắc và KHÔNG hẹn lại.
+        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id or "", clean_repeat,
+                   continuation=True)
+        return
+    fired_at: datetime.datetime | None = None
     if reminder_id is not None:
         with ACTIVE_REMINDERS_LOCK:
             for item in list(ACTIVE_REMINDERS):
                 if item.get("id") == reminder_id:
+                    fired_at = _reminder_at(item)
                     ACTIVE_REMINDERS.remove(item)
+        # v7.9: nhắc có nhịp lặp tự hẹn lại lần kế thay vì biến mất. Làm
+        # TRƯỚC khi respond/popup để người dùng đang bị vỗ vẫn một giây mà
+        # `reminders.json` lỡ ghi hỏng không mất luôn lịch đã hẹn.
+        #
+        # `repeat` PHẢI truyền LẠI vào lịch mới. Bản đầu chỉ dùng nó để tính mốc
+        # kế tiếp rồi bỏ, nên nhắc hằng ngày chỉ nhắc ĐÚNG HAI LẦN rồi hạ
+        # xuống thành nhắc một lần - hỏng đúng kiểu khó phát hiện nhất, vì cả
+        # tháng đầu vẫn chạy ngon.
+        nxt = _next_occurrence(fired_at, clean_repeat) if (
+            fired_at is not None and clean_repeat) else None
+        if nxt is not None and _schedule_reminder(task, nxt,
+                                                  repeat=clean_repeat) is None:
+            nxt = None
         _save_reminders()
     respond(f"Đến giờ rồi. Nhắc bạn: {task}")
     try:
@@ -1181,21 +1353,34 @@ def _reminder_when(time_info: dict[str, Any], now: datetime.datetime) -> datetim
     return None
 
 
-def _remember_pending_reminder(task: str) -> None:
+def _remember_pending_reminder(task: str, repeat: object = None) -> None:
     global PENDING_REMINDER
     with _PENDING_LOCK:
         PENDING_REMINDER = {"task": task, "until": time.monotonic() + PENDING_REMINDER_TTL}
+        # v7.9: "mỗi ngày" mà không nói giờ thì hỏi lại giờ - nhưng phải GIỮ
+        # nhịp lặp qua câu hỏi, nếu không "uống thuốc mỗi ngày" rồi trả lời
+        # "8 giờ" sẽ ra một lời nhắc MỘT LẦN, đúng thứ người dùng đã tin là
+        # hằng ngày.
+        clean_repeat = _coerce_repeat(repeat)
+        if clean_repeat:
+            PENDING_REMINDER["repeat"] = clean_repeat
 
 
-def _pop_pending_reminder() -> str | None:
-    """Lấy nội dung đang chờ (và xoá khỏi trạng thái); None nếu không có/hết hạn."""
+def _pop_pending_reminder_full() -> dict[str, Any] | None:
+    """Lấy trạng thái chờ đầy đủ (kèm nhịp lặp) rồi xoá; None nếu hết hạn."""
     global PENDING_REMINDER
     with _PENDING_LOCK:
         pending = PENDING_REMINDER
         PENDING_REMINDER = None
-    if not pending:
+    if not pending or pending.get("until", 0) < time.monotonic():
         return None
-    if pending.get("until", 0) < time.monotonic():
+    return pending
+
+
+def _pop_pending_reminder() -> str | None:
+    """Lấy nội dung đang chờ (và xoá khỏi trạng thái); None nếu không có/hết hạn."""
+    pending = _pop_pending_reminder_full()
+    if not pending:
         return None
     task = pending.get("task")
     return str(task) if task else None
@@ -1225,14 +1410,16 @@ def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool |
         if pending_reminder():
             _pop_pending_reminder()  # nguoi dung noi chuyen khac: dung "no" vao do
         return None
-    task = _pop_pending_reminder()
-    if not task:
+    pending = _pop_pending_reminder_full()
+    if not pending or not pending.get("task"):
         return None
+    task = str(pending["task"])
+    repeat = _coerce_repeat(pending.get("repeat"))
     now = datetime.datetime.now()
     run_at = _reminder_when(time_info, now)
     if run_at is None:
         respond("Bạn muốn tôi nhắc vào lúc nào ạ?")
-        _remember_pending_reminder(task)
+        _remember_pending_reminder(task, repeat)
         return False
     delay = (run_at - now).total_seconds()
     if delay <= 0:
@@ -1241,22 +1428,34 @@ def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool |
     if dry_run:
         safe_print(f"   [TEST] Sẽ nhắc {task!r} lúc {run_at:%H:%M} (chế độ test: không đặt lịch)")
         return True
-    _schedule_reminder(task, run_at)
+    _schedule_reminder(task, run_at, repeat=repeat)
     logger.info("Đặt nhắc nhở (trả lời sau khi hỏi lại): %s lúc %s", task, run_at)
-    respond(f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút.")
+    respond(_reminder_confirmation(task, run_at, repeat))
     return True
 
 
+def _reminder_confirmation(task: str, run_at: datetime.datetime,
+                           repeat: dict[str, Any] | None) -> str:
+    """Câu xác nhận đặt nhắc. Có nhịp lặp thì PHẢI nói ra, không nói thì
+    người dùng tưởng mình đã hẹn cả tháng trong khi thực ra chỉ một lần."""
+    base = f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút."
+    label = _repeat_label(repeat)
+    return f"{base} Lặp lại {label}." if label else base
+
+
 def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool:
-    time_info = _coerce_time_info((data or {}).get("time"))
+    data = data or {}
+    time_info = _coerce_time_info(data.get("time"))
+    repeat = _coerce_repeat(data.get("repeat"))
     task = target or "báo thức"
     now = datetime.datetime.now()
 
     run_at = _reminder_when(time_info, now)
     if run_at is None:
         # Chua co thoi diem thi giu lai noi dung: hoi "luc nao?" roi bon sau
-        # "5 phut nua" la luong tu nhien cua cuoc tro chuyen.
-        _remember_pending_reminder(task)
+        # "5 phut nua" la luong tu nhien cua cuoc tro chuyen. Nhịp lặp đi kèm
+        # để câu trả lời sau vẫn lặp lại được.
+        _remember_pending_reminder(task, repeat)
         respond("Bạn muốn tôi nhắc vào lúc nào ạ?")
         return False
 
@@ -1266,9 +1465,9 @@ def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool
         return False
 
     clear_pending_reminder()
-    _schedule_reminder(task, run_at)
-    logger.info("Đặt nhắc nhở: %s lúc %s", task, run_at)
-    respond(f"Đã đặt nhắc nhở {task} vào lúc {run_at.hour} giờ {run_at.minute} phút.")
+    _schedule_reminder(task, run_at, repeat=repeat)
+    logger.info("Đặt nhắc nhở: %s lúc %s (lặp %s)", task, run_at, repeat or "không")
+    respond(_reminder_confirmation(task, run_at, repeat))
     return True
 
 

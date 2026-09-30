@@ -1,5 +1,70 @@
 # CHANGELOG
 
+## v7.9 (bổ sung) - Nhắc nhở lặp lại; 724 test
+
+"mỗi ngày" là câu người dùng hỏi rất nhiều mà bản trước không có nơi để lưu.
+Hệ quả là im lặng: mỗi lần đến giờ thì nhắc xong là **xoá hẳn khỏi danh sách**,
+nên "uống thuốc mỗi ngày" chỉ nhắc đúng MỘT lần rồi thôi - và người dùng tin
+là đã hẹn cả tháng, vì bản cũ chỉ hẹn một lần.
+
+Nhịp lặp được đọc bằng `parse_repeat` (`mỗi/hằng` + ngày/tuần/tháng, hoặc buổi:
+"mỗi sáng"), lưu thành trường `repeat` trong `reminders.json`, và mỗi lần nổ
+thì lời nhắc tự hẹn lại lần kế. Câu xác nhận **nói ra nhịp lặp** ("Lặp lại mỗi
+ngày") - không nói thì người dùng tưởng đã hẹn cả tháng trong khi thực ra chỉ
+một lần.
+
+**Nội dung nhắc nuốt mất môn đề.** `_reminder_task` không gỡ được "mỗi ngày",
+nên trợ lý đọc thành *"Nhắc bạn: uống thuốc mỗi ngày"*. Tệ hơn nữa: `"đặt báo
+thức 6 giờ sáng mỗi ngày"` để lại nội dung rỗng, rơi về mặc định `"mỗi ngày"` -
+tức người dùng dặn báo thức 6 giờ sáng mỗi ngày và nhận được lời nhắc tên là
+"mỗi ngày". Nay gỡ sạch, nên câu đó ra đúng `"báo thức"`.
+
+**Lần sau phải GIỮ nhịp lặp - lỗi âm thầm đắt nhất của vòng này.** Bản đầu tính
+mốc kế tiếp rồi bỏ luôn `repeat` khi gọi `_schedule_reminder`, nên nhắc hằng ngày
+chạy đúng **hai** lần rồi hạ xuống thành nhắc một lần. Cả tháng đầu vẫn ngon nên
+rất khó phát hiện bằng tay; chỉ lộ ra khi bắn hai lần liên tiếp rồi đọc lại
+`reminders.json`.
+
+**Lịch dài hơn trần `threading.Timer` phải chia chặng, và mỗi chặng phải được
+phân biệt.** Windows trần ở ~49.7 ngày nên lặp hằng tháng cần chia chặng. Nếu
+mỗi chặng bị coi là lần nhắc thật thì nó bắn tiếng và hẹn thêm một lịch mới -
+một nhắc hằng tháng thành nhắc vài lần mỗi tháng. Nay chặng nối tiếp mang cờ
+`continuation`: chỉ bật chặng kế, không báo, không hẹn lại.
+
+**Mở lại máy thì phải CUỘN vòng, không phải nhích một bước.** Mốc giờ đã trôi qua
+lúc máy tắt (ngủ qua giờ uống thuốc) phải cuộn tới lần kế tiếp. Cuộn đúng
+**một** bước thì với lịch "mỗi ngày" bỏ sót một ngày là vẫn nằm trong quá khứ,
+`_schedule_reminder` từ chối, và cả chuỗi biến mất - đúng cái hỏng mà hàm này
+sinh ra để chặn. Có chặn 400 bước để đồng hồ hỏng không quay vô hạn.
+
+**Nhịp lặp sống sót qua câu hỏi "mấy giờ?".** "uống thuốc mỗi ngày" chưa nói
+giờ thì trợ lý hỏi lại; nếu không mang nhịp lặp qua câu hỏi thì câu trả lời sau
+ra một lời nhắc một lần. Hành vi có ý thức sẵn có là người dùng nói sang chuyện
+khác thì bỏ câu hỏi đang treo ("mở nhạc" không phải giờ nhắc) - nhịp lặp đi theo
+cả hành vi này, không tự ý giữ lại.
+
+**Rác trong `reminders.json` bị chặn lúc ĐỌC.** `repeat` do người dùng sửa tay có
+thể là bất cứ thứ gì; lỗi đó phải bị `_coerce_repeat` chặn khi đọc chứ không phải
+lúc nhắc nổ. `bool` bị lo có chủ đích: trong Python `isinstance(True, int)` là
+True, nên `weekday=True` sẽ lọt vào phép tính ngày nếu không kiểm riêng. Ngày 31
+tháng không có (31/1) được lùi về ngày cuối tháng thay vì nổ `ValueError`.
+
+**Kiểm chứng (đo, không ước lượng).** 724 test: `pytest -q` → `724 passed`;
+`run_tests.py -q` → `724 passed`; `ruff check` 0; `mypy` 0 lỗi trên **46** file.
+45 test mới, trong đó **41 test FAIL trên đúng hai file nguồn trước khi sửa**
+(kiểm bằng `git stash push`); 4 test còn lại là các case phải giữ nguyên. Chạy
+thật: đặt lịch `uống thuốc` 8h daily, `họp` 9h thứ-Hai, `báo thức` 6h daily đều
+ghi `repeat` vào `reminders.json`; bắn thật một lời nhắc 2 giây thì tự hẹn lại
+ngày hôm sau **và giữ nguyên `repeat`**; lịch hằng tuần/tháng tính đúng (30/09 →
+05/10 cho thứ Hai, 31/01 → 28/02 không nổ).
+
+**Còn lại, chưa sửa.** "nhắc tôi họp sáng mai" để lại "sáng mai" trong nội dung
+(cùng họ với lỗi ở phần trên nhưng là mốc giờ dạng "sáng mai", chưa gỡ); `log`
+và `mod` trong toán học; STT ghim `_use_google` vĩnh viễn khi Google lỗi; intent
+sai nhưng tự tin (`"mo trinh duyet"` → `open_app` với `target='unknown'` ở 0.97);
+`cuối tuần`/`thứ hai tuần sau` (cần lịch thật); 75 khoá `ACCENT_MAP` mơ hồ (v7.8).
+
+
 ## v7.9 (2026-09-30) - Sửa lỗi thật ngoài phạm vi test; 679 test
 
 Bộ test v7.8 xanh hoàn toàn, nên vòng này **không soi lại code cũ** mà đo trực

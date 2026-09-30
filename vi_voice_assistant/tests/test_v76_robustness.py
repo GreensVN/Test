@@ -44,8 +44,12 @@ def iso(tmp_path, monkeypatch):
 
     scheduled: list[dict] = []
 
-    def fake_schedule(task, run_at, persist=True):
-        scheduled.append({"task": task, "at": run_at, "id": f"id{len(scheduled)}"})
+    # v7.9: `repeat` thêm vào sau `persist` (có giá trị mặc định) - hậu bối phải
+    # khớp chữ ký với hàm thật, nếu không lệnh `đặt nhắc nhở` nổ TypeError ngay
+    # trong test. Cũng ghi luôn `repeat` vào bản ghi để test đọc lại được.
+    def fake_schedule(task, run_at, persist=True, repeat=None):
+        scheduled.append({"task": task, "at": run_at, "repeat": repeat,
+                          "id": f"id{len(scheduled)}"})
         return f"id{len(scheduled) - 1}"
 
     monkeypatch.setattr(executor, "REMINDERS_PATH", str(tmp_path / "reminders.json"))
