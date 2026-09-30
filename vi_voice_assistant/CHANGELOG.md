@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 4) - Logarit và phần dư; 788 test
+
+`log`, `ln`, `mod` thiếu khá lâu, và cái thiếu đó **im lặng**: người gõ đúng câu
+toán rồi nhận về *"chưa tính được"* - y hệt lỗi `12% của 200` mà v7.8 đã sửa.
+
+**Mặc định của "log" là chỗ dễ sai nhất, và sai thì ra CON SỐ SAI chứ không
+ra lỗi.** Trong toán Việt, `log` không nói cơ số là cơ số **10**; còn phần lớn
+máy tính điện tử và mọi công cụ lập trình dùng `log` để chỉ ln. Theo quy ước
+kỹ thuật thì `"log 100"` ra 4.605 thay vì 2 - và câu mô tả nghe rất hợp lệ, nên
+người dùng rất dễ tin là mình sai. Đây là lý do chọn quy ước Việt: chọn sai thì
+ít nhất phải sai *đúng toán học*. Chỗ nào người dùng đã nói rõ thì theo họ:
+`ln` = cơ số e, `log2`/`log3` = cơ số viết liền, `"log 8 cơ số 2"`.
+
+**`fixed_base` nuốt chữ số đầu.** Cho phép mẫu số tùy ý không ràng buộc thì
+`"log 100"` bị tách thành cơ số `"10"` và số `"0"`, ra 10⁰ = 1 thay vì log₁₀(100)
+= 2. Nay cơ số viết liền chỉ nhận `10` hoặc `2`-`9`, đứng ngay sau `log`.
+
+**Phần dư có HAI thứ tự từ, thiếu một là ra số sai.** Tiếng Anh `"5 mod 3"` là
+(số, từ, số); tiếng Việt `"100 chia 7 lấy dư"` đặt cụm `"lấy dư"` ở **cuối**.
+Chỉ nhận thứ tự thứ nhất thì câu tiếng Việt rơi xuống nhánh `"chia"` và ra
+**14.28** thay vì 2 - sai mà vẫn trông như một phép chia bình thường.
+
+**Từ khoá toán KHÔNG THỂ nhầm thì cứu được, kể cả khi model tự tin.** Model đoán
+`system_control` cho `"log 8 cơ số 2"` (0.62) là sai hiển nhiên: không có cách đọc
+nào khác ngoài toán. Ngưỡng tự tin 0.5 của v7.8 **được giữ nguyên** cho câu mơ
+hờ như `"15 + 27"` (có thể là số phiên bản) - mở rộng cứu chỉ cho từ khoá rõ
+ràng, và vẫn cần câu đó thật sự ra một biểu thức tính được.
+
+**Chi tiết đáng ghi:** danh sách từ khoá rõ ràng phải so trên bản **bỏ dấu**.
+Câu `"100 chia 7 lấy dư"` viết có dấu còn các mẫu toán viết không dấu (đúng quy
+ước mọi mẫu khác trong file) - so trên câu gốc thì câu tiếng Việt không bao giờ
+khớp. Đây đúng là lỗi đã làm `"2 ngày nữa"` im lặng ở bổ sung trước, lặp lại ở
+chỗ khác vì cùng một nguyên nhân.
+
+**Kiểm chứng (đo, không ước lượng).** 788 test: `pytest -q` → `788 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **49** file. 39 test mới, trong đó **29 FAIL
+trên `intent_model.py` trước khi sửa**; 10 test còn lại là các case phải giữ
+nguyên (`"15 + 27"` vẫn được bảo vệ bởi ngưỡng tự tin của v7.8, `"5 chia 3"`
+vẫn là phép chia). Chạy thật qua `--once`: `log 100` → 2, `ln 100` → 4.6052,
+`log2 1024` → 10, `log 8 cơ số 2` → 3, `5 mod 3` → 2, `100 chia 7 lấy dư` → 2.
+
+**Còn lại, chưa sửa.** `"nhắc tôi họp sáng mai"` còn để lại `"sáng mai"` trong nội
+dung nhắc; `cuối tuần`/`cuối tháng`/`thứ hai tuần sau` (cần lịch thật); 75 khoá
+`ACCENT_MAP` mơ hồ (`"thoi tiet ha noi"` → `hà nói` thay vì `Hà Nội`) - đo thử
+quy tắc ưu tiên theo dataset cải thiện **0/75**, cần từ điển tần suất thật.
+
+
 ## v7.9 (bổ sung 3) - Chỗ để trống `unknown` không được lọt ra miệng người dùng; 749 test
 
 Lỗi cuối trong danh sách, và nặng hơn các lỗi "sai intent" khác vì nó **tự

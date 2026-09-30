@@ -1038,6 +1038,54 @@ _SAFE_AST_NODES = (
 MAX_POW_BASE = 10 ** 6
 MAX_POW_EXPONENT = 64
 
+# v7.9: số trong mọi mẫu toán học đều để dạng `(-?\d+(?:\.\d+)?)` - CHẤP NHẬN
+# DẤU CHẤM thập phân, không phải phẩy. Các mẫu cũ viết `[.,]\d+`, nên chạy trên
+# bản bỏ dấu mà câu gõ "1.234" (dấu CHẤM là dấu PHẨY NGHÌN kiểu Việt) bị hiểu
+# thành 1.234. Ở đây các mẫu mới chỉ cần nhận số đơn giản, nên chấp nhận cả hai
+# nhưng `_parse_math_number` bên dưới quyết định dấu nào là thập phân.
+_MATH_NUM = r"(-?\d+(?:[.,]\d+)?)"
+
+
+def _parse_math_number(raw: str) -> float:
+    """Số trong câu toán: dấu phẩy là thập phân nếu câu không có dấu chấm nào.
+
+    "2,5" -> 2.5 nhưng "1.234,5" -> 1234.5. Không có quy tắc này thì "log 1,5"
+    ra 1.5 còn "log 1.234,5" ra 1.234 - và chênh lệch đó im lặng.
+    """
+    if "," in raw and "." in raw:
+        # Cả hai dấu: dấu chấm là phân tách nghìn, phẩy mới là thập phân.
+        return float(raw.replace(".", "").replace(",", "."))
+    if "," in raw:
+        return float(raw.replace(",", "."))
+    return float(raw)
+
+
+# "log 100" -> cơ số 10 (quy ước toán Việt), "ln 100" -> cơ số e.
+# "log2 1024" và "log 8 cơ số 2" là người dùng đã nói rõ, thì theo họ.
+#
+# `fixed_base` CHỈ được là MỘT chữ số (2, 3, 10) và phải bám ngay "log", không
+# có khoảng trắng ("log10", "log2"). Nếu cho `\d+` không ràng buộc, regex ăn
+# mất chữ số đầu của số cần lấy: "log 100" ra "log cơ số 1**0**0" -> 10^0 = 1
+# thay vì log10(100) = 2 - ra số sai mà vẫn trông như kết quả đúng.
+_LOG_RE = re.compile(
+    r"\b(?P<fn>ln|log)(?P<fixed_base>10|[2-9])?\s*"
+    r"(?P<value>" + _MATH_NUM + r")"
+    r"(?:\s*(?:co so|base)\s*(?P<base>" + _MATH_NUM + r"))?"
+)
+# Thứ tự alternation có ý thứa: cụm dài trước, vì "chia lay du" phải thắng "chia".
+# Cả HAI thứ tự từ đều phải có: tiếng Anh "5 mod 3" (số, từ, số) và tiếng Việt
+# "100 chia 7 lấy dư" (số, "chia", số, rồi mới tới "lấy dư" ở CUỐI) - bỏ sót
+# thứ tự thứ hai thì "100 chia 7 lấy dư" rơi xuống nhánh "chia" và ra 14.28
+# thay vì 2, tức SAI mà vẫn trông như một phép chia bình thường.
+_MOD_RE = re.compile(
+    r"(?:so du cua|phan du cua)\s*(?P<a>" + _MATH_NUM + r")\s*(va|vao|voi)\s*"
+    r"(?P<b>" + _MATH_NUM + r")"
+    r"|(?P<a2>" + _MATH_NUM + r")\s*(?:mod|%|chialaydu|chia\s*lay\s*du|"
+    r"lay\s*du|phan\s*du)\s*(?P<b2>" + _MATH_NUM + r")"
+    r"|(?P<a3>" + _MATH_NUM + r")\s*chia\s*(?P<b3>" + _MATH_NUM + r")\s*"
+    r"(?:lay\s*du|phan\s*du|so\s*du)"
+)
+
 
 def _safe_eval(expr: str):
     """Tính biểu thức số học AN TOÀN: chỉ cho phép số, + - * / ** và dấu ngoặc.
@@ -1150,6 +1198,82 @@ def _math_display(expr: str) -> str:
     return expr.replace("**", "^")
 
 
+def _math_log(u: str):
+    """Logarit: "log 100", "ln 100", "log2 1024", "log 8 cơ số 2".
+
+    Trả None nếu câu không phải logarit - để thử mẫu kế tiếp.
+
+    CỐ Ý dùng quy ước toán Việt: "log" không nói cơ số là cơ số **10**, còn "ln"
+    mới là cơ số e. Đây là điểm dễ sai nhất: phần lớn máy tính điện tử và mọi
+    ứng dụng lập trình dùng "log" để chỉ ln, nên nếu theo đó thì "log 100" ra
+    4.605 thay vì 2 - CON SỐ SAI mà trông vẫn hợp lệ, tệ hơn hẳn việc không
+    tính được. Chỗ nào người dùng đã nói rõ (ln, log2, "cơ số") thì theo họ.
+    """
+    m = _LOG_RE.search(u)
+    if not m:
+        return None
+    value = _parse_math_number(m.group("value"))
+    # Thứ tự: "cơ số" người dùng nói rõ > "logN" viết liền > mặc định theo fn.
+    if m.group("base"):
+        base = _parse_math_number(m.group("base"))
+    elif m.group("fixed_base"):
+        base = float(m.group("fixed_base"))
+    elif m.group("fn") == "ln":
+        base = math.e
+    else:
+        base = 10.0
+    if base <= 0 or base == 1 or value <= 0:
+        # Trả (None, None) chứ đừng trả NaN/inf: JSON của Python mặc định chấp
+        # nhận NaN và đọc lại được, nên NaN lọt ra JSON dễ bị tưởng là số thật.
+        return None, None
+    # Ghi "e" thay vì 2.71828: câu này được ĐỌC THÀNH TIẾNG, và đọc "log cơ số
+    # 2.71828 của 100" nghe như người dùng sai.
+    base_text = "e" if base == math.e else f"{base:g}"
+    return f"log cơ số {base_text} của {value:g}", math.log(value, base)
+
+
+def _math_mod(u: str):
+    """Phần dư: "5 mod 3", "100 chia 7 lấy dư", "số dư của 100 và 7"."""
+    m = _MOD_RE.search(u)
+    if not m:
+        return None
+    left = _parse_math_number(m.group("a") or m.group("a2") or m.group("a3"))
+    right = _parse_math_number(m.group("b") or m.group("b2") or m.group("b3"))
+    if right == 0:
+        return None, None  # chia lấy dư 0 là vô nghĩa
+    # Giữ nguyên kiểu SỐ NGUYÊN khi cả hai toán hạng nguyên: "5 mod 3" nên ra
+    # `2` chứ không phải `2.0`, vì câu đọc ra thành tiếng sẽ đọc "2 phẩy 0".
+    result: float
+    if left == int(left) and right == int(right):
+        result = float(int(left) % int(right))
+    else:
+        result = math.fmod(left, right)
+    return f"phần dư của {left:g} và {right:g}", result
+
+
+def _math_root(u: str):
+    """Căn bậc hai/ba và bình phương/lập phương. None nếu câu không khớp."""
+    m = re.search(r"can\s*(?:bac\s*(hai|2|ba|3))?\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
+    if m:
+        degree_word = m.group(1)
+        num = float(m.group(2).replace(",", "."))
+        if degree_word in ("ba", "3"):
+            # Căn bậc ba của số âm vẫn tính được (khác căn bậc hai).
+            result = math.copysign(abs(num) ** (1.0 / 3.0), num)
+            return f"căn bậc ba của {num:g}", round(result, 10)
+        if num < 0:
+            return f"căn bậc hai của {num:g}", None
+        return f"căn bậc hai của {num:g}", math.sqrt(num)
+
+    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
+    if m:
+        num = float(m.group(1).replace(",", "."))
+        if m.group(2) in ("lap phuong", "mu 3"):
+            return f"{num:g} lập phương", num ** 3
+        return f"{num:g} bình phương", num ** 2
+    return None
+
+
 def parse_math_expression(text: str):
     """
     Trích xuất và tính một biểu thức toán học đơn giản từ câu tiếng Việt.
@@ -1177,26 +1301,10 @@ def parse_math_expression(text: str):
     # bản bỏ dấu: so khớp trên đây nên một từ khoá viết kiểu nào cũng nhận ra
     u = strip_diacritics(t)
 
-    # --- Căn bậc hai / bậc ba (v6.2 thêm bậc ba) ---
-    m = re.search(r"can\s*(?:bac\s*(hai|2|ba|3))?\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
-    if m:
-        degree_word = m.group(1)
-        num = float(m.group(2).replace(",", "."))
-        if degree_word in ("ba", "3"):
-            # Căn bậc ba của số âm vẫn tính được (khác căn bậc hai).
-            result = math.copysign(abs(num) ** (1.0 / 3.0), num)
-            return f"căn bậc ba của {num:g}", round(result, 10)
-        if num < 0:
-            return f"căn bậc hai của {num:g}", None
-        return f"căn bậc hai của {num:g}", math.sqrt(num)
-
-    # --- Bình phương / lập phương (v6.2 thêm lập phương) ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
-    if m:
-        num = float(m.group(1).replace(",", "."))
-        if m.group(2) in ("lap phuong", "mu 3"):
-            return f"{num:g} lập phương", num ** 3
-        return f"{num:g} bình phương", num ** 2
+    # --- Căn bậc hai/ba và bình phương/lập phương (v6.2) ---
+    got = _math_root(u)
+    if got is not None:
+        return got
 
     # --- Phần trăm: "X phần trăm của Y" VÀ "X% của Y" ---
     # v7.8 (bổ sung): trước đây chỉ nhận dạng dấu `%` khi đi kèm TỪ ("12
@@ -1211,6 +1319,12 @@ def parse_math_expression(text: str):
         pct = float(m.group(1).replace(",", "."))
         base = float(m.group(2).replace(",", "."))
         return f"{pct:g}% của {base:g}", base * pct / 100
+
+    # --- Logarit / phần dư (v7.9): tách riêng để hàm này không quá phức tạp ---
+    for matcher in (_math_log, _math_mod):
+        got = matcher(u)
+        if got is not None:
+            return got
 
     # --- Phép tính cơ bản: thay từ toán tử bằng ký hiệu rồi bóc biểu thức số ---
     # So trên bản bỏ dấu: OPERATOR_WORDS viết có dấu ("cộng"), nên câu không
@@ -1568,7 +1682,28 @@ def _has_literal_entity(s: str) -> bool:
 # v7.8 bổ sung `^` và `%`: hai ký hiệu này cũng bị `normalize_text` xoá, nếu
 # không khai ở đây thì `entity_source` rơi về bản đã bị xoá ký hiệu và phép tính
 # ra (None, None) - đúng cái lỗi v7.8 đã sửa cho `+`/`*`/phẩy thập phân.
-_MATH_SYNTAX_RE = re.compile(r"\d\s*(?:\*\*|[+*/^])\s*\d|\d,\d|\d\s*%")
+# v7.9: thêm `log`/`ln`/`mod`/`lấy dư` - mẫu này quyết định có cãi model
+# không. Không có nó, "log2 1024" bị model đoán `system_control` (0.05) và câu
+# toán rơi xuống đường bình thường, nơi target là câu đã bị `normalize_text`
+# xé vụn.
+_MATH_SYNTAX_RE = re.compile(
+    r"\d\s*(?:\*\*|[+*/^])\s*\d|\d,\d|\d\s*%"
+    r"|\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
+    r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
+)
+# v7.9: từ khoá toán KHÔNG THỂ nhầm sang intent nào khác. "15 + 27" thì có thể
+# là số phiên bản hay số tiền, nên v7.8 cố ý để ngưỡng tự tin bảo vệ nó. Nhưng
+# "log 8 co so 2" / "100 chia 7 lay du" không có cách đọc nào khác ngoài toán -
+# model đoán `system_control` cho chúng là sai hiển nhiên, và chặn nó bằng
+# ngưỡng 0.5 nghĩa là người dùng gõ đúng mà trợ lý điều khiển máy tính.
+_UNAMBIGUOUS_MATH_RE = re.compile(
+    r"\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
+    # "lấy dư" ở CUỐI câu ("100 chia 7 lấy dư"), không nằm giữa hai số như
+    # "5 chia lấy dư 3" - thiếu nhánh này thì câu tiếng Việt bị loại khỏi danh
+    # sách từ khoá rõ ràng và lại quay về bị model đoán nhầm.
+    r"|\d\s*chia\s*\d\s*(?:lay\s*du|phan\s*du|so\s*du)"
+    r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
+)
 
 
 def _has_math_syntax(s: str) -> bool:
@@ -1601,8 +1736,19 @@ def _rescue_calculate_intent(intent: str, confidence: float,
     """
     if intent == "calculate" or not raw_text:
         return intent
-    if confidence >= _MATH_INTENT_MIN_CONFIDENCE or not _has_math_syntax(raw_text):
-        return intent
+    # v7.9: từ khoá toán KHÔNG THỂ nhầm (log/ln/mod/lấy dư) thì cãi model dù nó
+    # tự tin đến mấy. "log 8 co so 2" bị model đoán `system_control` ở 0.62 là
+    # sai hiển nhiên - không có cách đọc nào khác ngoài toán. Ngưỡng 0.5 của
+    # v7.8 vẫn giữ nguyên cho câu MƠ HỜ như "15 + 27" (test của v7.8 chốt điều
+    # này: model chắc thì để model quyết).
+    # So trên bản BỎ DẤU: "100 chia 7 lấy dư" viết có dấu, mà các mẫu toán
+    # ở đây viết không dấu (theo đúng quy ước mọi mẫu khác trong file). So
+    # trên câu gốc thì câu tiếng Việt không bao giờ khớp - cùng lỗi đã làm
+    # "2 ngày nữa" im lặng ở v7.9 (bổ sung trước).
+    unambiguous = _UNAMBIGUOUS_MATH_RE.search(strip_diacritics(raw_text)) is not None
+    if not unambiguous:
+        if confidence >= _MATH_INTENT_MIN_CONFIDENCE or not _has_math_syntax(raw_text):
+            return intent
     expr, value = parse_math_expression(raw_text)
     if not (expr and value is not None):
         return intent
