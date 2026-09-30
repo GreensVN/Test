@@ -870,3 +870,79 @@ def test_hai_no_dung_chung_mot_hang_doc_csv(tmp_path):
     expected = [{"text": "mở zed", "intent": "open_app"}]
     shared = read_keyed_csv(p, ("text", "intent"), "f.csv")
     assert train_nlu._read_keyed_csv(p, ("text", "intent"), "f.csv") == shared == expected
+
+
+# ---------------------------------------------------------------------------
+# 16. `smart_normalize` sua loi go bang fuzzy - nhung no sua ca nhung tu DA
+#     DUNG, va tieu mat am tiet. Day la cua vao cua ca tang NLU: moi cau noi
+#     deu di qua day, nen cau ndoi nghia ma khong gi bao.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("word,corrupted", [
+    ("chơi", "cho"),        # mất hẳn "ơi"
+    ("chậm", "cảm"),
+    ("giấy", "giá"),
+    ("thường", "trường"),
+    ("trưởng", "trường"),
+    ("tiền", "thiền"),
+    ("khỏe", "khoẻ"),
+])
+def test_tu_co_dau_khong_bi_fuzzy_doi_thanh_tu_khac(word, corrupted):
+    """Bản cũ đổi 12/41 từ thông dụng. Từ đã có dấu là người dùng GÕ CỐ Ý."""
+    from nlu_advanced import smart_normalize
+
+    got = smart_normalize(word)
+    assert got == word, f"{word!r} -> {got!r} (bản cũ ra {corrupted!r})"
+
+
+def test_fuzzy_van_sua_duoc_loi_go_khong_dau():
+    """Tính năng phải còn chạy: đây đúng là ca nó sinh ra để sửa."""
+    from nlu_advanced import smart_normalize
+
+    for wrong, right in [("chorme", "chrome"), ("gogle", "google"),
+                         ("youutub", "youtube"), ("notpadd", "notepad")]:
+        assert smart_normalize(wrong) == right, wrong
+
+
+def test_sua_typo_khong_duoc_lam_thay_doi_du_lieu_dong_biet():
+    """Dataset là nguồn sự thật: `smart_normalize` không được đổi câu trong đó."""
+    from dataset import get_dataset_as_lists
+    from nlu_advanced import smart_normalize
+
+    texts, _ = get_dataset_as_lists(augment_no_diacritics=False)
+    changed = [(t, smart_normalize(t)) for t in texts if smart_normalize(t) != t]
+    # Còn đúng 3 câu, đều là KHÔNG DẤU nên nằm trong đúng ca đã sửa:
+    # "giup->giúp" (phục hồi dấu, đúng) và 2 ca va chạm bản đồ dấu.
+    assert len(changed) == 3, changed
+
+
+# ---------------------------------------------------------------------------
+# 17. Nội dung nhắc nhở dính dấu nối thời gian ở CUỐI.
+#     Người Việt đặt mốc giờ SAU nội dung ("uống nước SAU 10 phút"), nên sau
+#     khi bóc mốc giờ thì chữ nối bị bỏ lại và trợ lý đọc thành
+#     "Đến giờ rồi. Nhắc bạn: uống nước sau".
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ("nhắc tôi uống nước sau 10 phút", "uống nước"),
+    ("nhắc tôi họp sau 3 giờ", "họp"),
+    ("nhắc tôi mua thuốc trước 8 giờ tối", "mua thuốc"),
+    ("nhắc tôi ăn cơm khi 12 giờ", "ăn cơm"),
+    ("nhắc tôi gọi mẹ trong 15 phút", "gọi mẹ"),
+    ("nhắc tôi đi chơi vào 5 giờ chiều", "đi chơi"),
+])
+def test_noi_dung_nhac_khong_con_dau_noi_thoi_gian(text, expected):
+    from intent_model import _reminder_task
+
+    assert _reminder_task(text) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Nội dung chứa các từ này ở GIỮA câu phải giữ nguyên.
+    ("nhắc tôi hỏi thăm sức khỏe bà", "hỏi thăm sức khỏe bà"),
+    ("nhắc tôi đi mua đồ trước khi về nhà", "đi mua đồ trước khi về nhà"),
+    ("nhắc tôi gặp bạn 3 giờ chiều thứ hai", "gặp bạn thứ hai"),
+    ("nhắc tôi nghỉ trưa", "nghỉ trưa"),
+])
+def test_noi_dung_nhac_giu_nguyen_phan_noi_dung_that(text, expected):
+    from intent_model import _reminder_task
+
+    assert _reminder_task(text) == expected

@@ -1188,6 +1188,14 @@ _REMINDER_TIME_DIGIT_RE = re.compile(
 _REMINDER_TAIL_RES = (
     re.compile(r"^(sau|nữa|vào)\s+"),
     re.compile(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$"),
+    # v7.8: dấu nối thời gian CÒN DÍNH ở CUỐI nội dung. Người Việt nói
+    # "nhắc tôi uống nước SAU 10 phút" - mốc giờ đứng SAU câu, nên sau khi bóc
+    # "sau 10 phút" (nhánh trên) thì chữ "sau" bị bỏ lại dính đuôi và trợ lý đọc
+    # thành "Đến giờ rồi. Nhắc bạn: uống nước sau". Nhánh `^(sau|...)\s+` ở trên
+    # chỉ bắt đầu câu nên không bắt được dạng này.
+    # Danh sách giữ nguyên phần trọn vẹn của nội dung: "trước" chỉ bị gỡ khi
+    # nó là từ cuối cùng, nên câu hợp lệ "đi mua đồ trước khi về nhà" còn nguyên.
+    re.compile(r"\s*(?:sau|trước|trong|vào|nữa|khi)\s*$"),
 )
 _DATE_WORDS_RE = re.compile(r"ngày|thứ|tháng|năm|lịch")
 

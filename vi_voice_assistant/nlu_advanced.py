@@ -300,7 +300,26 @@ def smart_normalize(text: str) -> str:
             out.append(ACCENT_MAP[word])
             continue
         # (d) sai chính tả nhẹ -> tìm từ gần giống nhất
-        if len(word) >= 4:
+        #
+        # v7.8 - CHỈ chạy khi từ KHÔNG DẤU. Bản cũ áp cho MỌI từ dài ≥4 ký tự,
+        # kể cả từ người dùng đã gõ CÓ DẤU đúng - và đo được 12/41 từ thông dụng
+        # bị đổi thành MỘT TỪ KHÁC, trong đó có từ mất hẳn âm tiết:
+        #
+        #   "chơi" -> "cho"      (chơi -> cho,   ratio 0.86)
+        #   "nhanh" -> "nhân"    "chậm" -> "cảm"   "xinh" -> "xin"
+        #   "giấy" -> "giá"      "thường" -> "trường"   "tiền" -> "thiền"
+        #
+        # Nguyên nhân: `difflib` so độ TƯƠNG ĐỒNG, nên một từ 4 ký tự và một từ
+        # 3 ký tự chung 3 ký tự vẫn đạt 2*3/7 = 0.86 > 0.82. Cắt/thêm một nguyên
+        # âm tiết vẫn "giống nhau" theo thang đo đó - và kết quả là câu nói đổi
+        # NGHĨA mà không có gì báo: "chơi nhạc" -> "cho nhạc".
+        #
+        # Sửa: từ đã CÓ DẤU thì giữ nguyên. Người gõ dấu là cố ý, nên gần đúng
+        # với một từ khác nhiều khả năng là từ khác thật chứ không phải lỗi gõ;
+        # còn lỗi gõ thật sự (gõ nhanh, STT) đều ra từ KHÔNG dấu - đúng cái mà
+        # nhánh này sinh ra để sửa. Sửa sai còn tệ hơn không sửa: sai thì người
+        # dùng gõ lại được, còn đổi nghĩa thì trợ lý làm sai việc.
+        if len(word) >= 4 and strip_accents(word) == word:
             near = difflib.get_close_matches(word, VOCAB, n=1, cutoff=0.82)
             if near:
                 out.append(near[0])

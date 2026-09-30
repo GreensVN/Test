@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 625 test
+## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 644 test
 
 Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi
 tìm được đều có cùng một dạng: **một lớp bảo vệ chạy trước làm hỏng thứ nó định
@@ -80,6 +80,37 @@ trong hai sẽ tạo vòng import) và cho cả hai nơi dùng chung - sửa m�
 thì bên kia không bị bỏ sót. Nhánh báo lỗi file Notepad kiểu Windows 7
 (lưu ANSI) được giữ nguyên.
 
+**Trợ lý sửa lỗi gõ đang phá câu người dùng gõ đúng.** `smart_normalize` là cửa
+vào của cả tầng NLU, nên mọi câu nói đều đi qua nó. Nhánh "sửa lỗi gõ nhẹ bằng
+fuzzy" bản cũ áp cho **mọi** từ dài ≥4 ký tự, kể cả từ người dùng đã gõ CÓ DẤU
+đúng. Đo trên 41 từ thông dụng: **12 từ bị đổi thành một từ khác**, trong đó có
+từ mất hẳn âm tiết:
+
+    "chơi" -> "cho"    "nhanh" -> "nhân"   "chậm" -> "cảm"   "giấy" -> "giá"
+    "thường" -> "trường"   "trưởng" -> "trường"   "tiền" -> "thiền"
+
+Nguyên nhân: `difflib` so độ tương đồng, nên từ 4 ký tự và từ 3 ký tự chung 3 ký
+tự vẫn đạt 2*3/7 = 0.86 > 0.82. Cắt/thêm một nguyên âm tiết vẫn "giống nhau"
+theo thang đo đó. Nay chỉ sửa nhánh này khi từ **không dấu** - người gõ dấu là cố
+ý, nên gần đúng với một từ khác nhiều khả năng là từ khác thật; còn lỗi gõ thật
+(gõ nhanh, STT) đều ra từ không dấu, đúng cái nhánh này sinh ra để sửa. Sửa sai
+còn tệ hơn không sửa. Đo lại: còn 3/41, và tính năng sửa lỗi vẫn chạy
+(`chorme`->`chrome`, `notpadd`->`notepad`).
+
+**Nội dung nhắc nhở dính dấu nối thời gian ở cuối.** Người Việt đặt mốc giờ
+SAU nội dung - "nhắc tôi uống nước **sau** 10 phút" - nên sau khi bóc mốc giờ thì
+chữ nối bị bỏ lại, và trợ lý đọc thành "Đến giờ rồi. Nhắc bạn: uống nước sau".
+Biểu thức cũ chỉ bắt đầu câu nên không bắt được dạng này. Nay gỡ phần dính đuôi
+(`sau`/`trước`/`trong`/`vào`/`nữa`/`khi`) khi nó là từ cuối cùng - nên câu hợp lệ
+"nhắc tôi đi mua đồ trước khi về nhà" còn nguyên.
+
+**Hạn chế đã biết, cố ý không sửa.** `ACCENT_MAP` có 75 khoá không dấu mà 2 từ có
+dấu cùng gốc ("nhac" -> `nhắc` hay `nhạc`; "can" -> `cần` hay `căn`). Đây là mơ
+hồ bản thân của việc phục hồi dấu, không phải lỗi code: đo thử quy tắc ưu tiên
+từ có tần suất cao nhất trong dataset thì cải thiện **0/75** khoá - lựa chọn
+hiện tại đã là tốt nhất theo dữ liệu sẵn có. Cần từ điển tần suất thật mới giải
+được; đụng vào đây chỉ là đoán mò.
+
 **Trèo khỏi thư mục dữ liệu.** `data_path("/etc/hosts")` và
 `voice_cache/index.csv` trỏ ra ngoài thư mục cache rồi bị phát - nay cả hai kiểm
 tra chứa trong thư mục gốc. `predict_proba` nhận hàng xác suất rỗng (file .pkl bị
@@ -88,8 +119,8 @@ sửa tay) nổ `ValueError: max() arg is an empty sequence` giết cả câu l�
 **Không đổi.** Không API nào bị bỏ; mọi câu hợp lệ cho kết quả y hệt; các chuỗi
 báo cho người dùng trong luồng hợp lệ giữ nguyên từng byte.
 
-**Kiểm chứng (đo, không ước lượng).** 625 test trên CẢ HAI đường: `pytest -q` →
-`625 passed`; `python run_tests.py -q` trên máy không pytest → `625 pass, 0 fail,
+**Kiểm chứng (đo, không ước lượng).** 644 test trên CẢ HAI đường: `pytest -q` →
+`644 passed`; `python run_tests.py -q` trên máy không pytest → `644 pass, 0 fail,
 0 skip`; `ruff check` 0; `mypy` 0 lỗi (45 file). Vì CI chưa từng chạy được trên
 repo này, tương thích Python 3.9 được tự quét bằng AST trên toàn bộ module,
 và `python -m build` xác nhận `csv_utils.py` có thật trong wheel. Toán học kiểm cả 10 cặp câu có
