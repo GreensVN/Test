@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 6) - Căn bậc N: `sqrt`, `√`, và lỗi đọc SAI SỐ; 907 test
+
+**Nguy hiểm ở đây không phải là thiếu, mà là SAI.** "căn 2 của 8" cho 1.4142 -
+nghĩa là đọc nhầm **số bị căn**: người Việt viết tắt "căn 2" cho "căn bậc 2",
+nhưng bản cũ chỉ nhận đúng cụm "căn bậc 2". Thiếu chữ "bậc" thì con số 2 bị
+nuốt làm số bị căn. Tệ hơn hẳn "chưa tính được": sai mà vẫn trông như một kết
+quả hợp lệ, nên người dùng không có gì để nghi ngờ. Cùng cả "căn bậc 3 của 27"
+ra 1.7321 thay vì 3.
+
+**`√` bị `normalize_text()` XOÁ MẤT trước khi ai kịp nhìn thấy.** `_KEEP_RE`
+lọc "mọi thứ ngoài `\w\s./:\-`", nên "√16" thành "16" - mất trọn dấu hiệu
+"đây là căn bậc hai", và trợ lý báo *"chưa tính được phép tính 16"*. Vá ở
+`_KEEP_RE` (tầng chuẩn hoá chung) chứ không riêng trong parser toán, vì
+`predict_intent` cũng dựng entity từ chính câu đã chuẩn hoá - vá trong parser
+thì parser nhìn thấy `√` mà tầng trên đã xoá mất. Sau khi vá: "√16" → 4.
+
+**`square root of 16` bị model đoán thành `get_datetime`.** Chữ "time" trong
+"root" đủ để model bịa ra ý nghĩa về giờ, và câu toán hoàn toàn xác định thì
+đáng lẽ không có cách đọc nào khác. Đã thêm vào danh sách từ khoá toán rõ ràng.
+
+**Nghiệm không tồn tại thì trả `None`, không bịa số.** Căn bậc chẵn của số âm
+(căn bậc 2 của -4) không có nghiệm - bản cũ trả `None` và đúng, giữ nguyên.
+Căn bậc lẻ của số âm thì CÓ nghiệm âm (căn bậc 3 của -8 = -2), nay tính đúng.
+Căn bậc 4, 5 cũng nhận, vì "căn 4 của 16" là câu hỏi thật chứ không phải lỗi gõ.
+
+**Một kỳ vọng test của tôi sai, đã sửa chứ không vòng qua.** Tôi viết
+`căn bậc hai của căn bậc hai của 256` = 4, nhưng hành vi có từ trước (và hợp lý
+hơn) là 16 - chỉ căn NGOÀI cùng được tính. Sửa kỳ vọng, không sửa hành vi.
+
+**Kiểm chứng.** 907 test: `pytest -q` → `907 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **51** file. 54 test mới trong `test_v79_math_root.py`, **21 FAIL** trên
+`intent_model.py` + `text_utils.py` trước khi sửa. Bộ test có phần bảo vệ
+`_KEEP_RE` không hỏng đường dẫn và tên biến (`a-b_c`, `C:\Users\me`, `./run.sh`)
+vì lần vá đầu làm rơi dấu `-`, làm hỏng đúng những thứ đó.
+
+
 ## v7.9 (bổ sung 5) - Nhắc theo ngày trong tuần; 853 test
 
 **Bug nguy hiểm nhất từ trước đến nay: nhắc nhớ SAI NGÀY mà không hề báo.**

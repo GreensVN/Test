@@ -1258,6 +1258,9 @@ _MATH_POW = "zlumlz"
 _MATH_PERCENT = "zphantz"
 
 
+_MATH_ROOT_SQRT = "canducthu"   # token tạm cho dấu "√" (không phải từ tiếng Việt)
+
+
 def _protect_math_syntax(text: str) -> str:
     """Giữ toán tử + dấu phẩy thập phân qua bước `normalize_text`."""
     guarded = _strip_thousands_separator(text)
@@ -1269,6 +1272,11 @@ def _protect_math_syntax(text: str) -> str:
     # gộp cặp trước ("**", "^ ^"), rồi mới đến dấu `^` lẻ ("2^10").
     guarded = re.sub(r"[\^*]\s*[\^*]", _MATH_POW, guarded)  # "2 ** 10" -> "2zlumlz10"
     guarded = re.sub(r"\s*\^\s*", _MATH_POW, guarded)       # "2^10" -> "2zlumlz10"
+    # v7.9: dấu "√" (và chữ "căn" dạng ký hiệu quen dùng trong sách vở) bị
+    # `_KEEP_RE` của normalize_text() xoá mất, chỉ còn lại con số trần - nên
+    # "√16" trước đây ra "chưa tính được phép tính 16", tức mất luôn cả dấu
+    # hiệu cho biết đó là căn. Thay bằng chữ trước khi chuẩn hoá.
+    guarded = re.sub(r"\s*[√∛]\s*", _MATH_ROOT_SQRT + " ", guarded)
     return guarded.replace("+", _MATH_PLUS).replace("*", _MATH_TIMES)
 
 
@@ -1301,7 +1309,8 @@ def _strip_thousands_separator(text: str) -> str:
 
 def _restore_math_syntax(text: str) -> str:
     return (text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
-            .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%"))
+            .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%")
+            .replace(_MATH_ROOT_SQRT, "sqrt"))
 
 
 def _math_display(expr: str) -> str:
@@ -1367,19 +1376,79 @@ def _math_mod(u: str):
     return f"phần dư của {left:g} và {right:g}", result
 
 
+# Số mũ căn bậc N. "căn hai", "căn 2", "can 2" đều là bậc 2. Nhận thêm
+# bậc 4, 5... vì "căn 4 của 16" là câu hỏi thật, không phải lỗi gõ.
+_ROOT_DEGREE_WORD = {
+    "hai": 2, "2": 2,
+    "ba": 3, "3": 3,
+    "tu": 4, "4": 4,
+    "nam": 5, "5": 5,
+    "sau": 6, "6": 6,
+}
+_NUMBER_RE = r"(-?\d+(?:[.,]\d+)?)"
+
+
+def _nth_root(num: float, degree: int):
+    """Căn bậc `degree` của `num`; None nếu nghiệm không có (số âm, chẵn bậc)."""
+    if degree < 2:
+        return None
+    if num < 0:
+        if degree % 2 == 0:
+            return None
+        # Căn bậc lẻ của số âm có nghiệm âm - vd căn bậc 3 của -8 = -2.
+        return math.copysign(abs(num) ** (1.0 / degree), num)
+    return num ** (1.0 / degree)
+
+
+def _root_result(num: float, degree: int, num_text: str):
+    """Câu trả lời chuẩn hoá cho căn bậc N: None nếu nghiệm không tồn tại."""
+    if degree == 2:
+        label = "căn bậc hai của"
+    else:
+        label = f"căn bậc {degree} của"
+    shown = num_text.replace(",", ".")
+    result = _nth_root(num, degree)
+    if result is None:
+        # Nghiệm không có: trả None (không ra số), đồng thời giữ câu nhãn đúng
+        # để trợ lý nói "chưa tính được" thay vì bịa ra số tưởng chừng hợp lệ.
+        return f"{label} {shown}", None
+    return f"{label} {shown}", round(result, 10)
+
+
 def _math_root(u: str):
-    """Căn bậc hai/ba và bình phương/lập phương. None nếu câu không khớp."""
-    m = re.search(r"can\s*(?:bac\s*(hai|2|ba|3))?\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u)
+    """Căn bậc N (2, 3, 4...) và lũy thừa. None nếu câu không khớp."""
+    # "sqrt 144", "sqrt(144)", "√16", "square root of 16", "root 3 of 27".
+    # √ bị normalize_text() xoá mất (không thuộc bảng thay thế nào) nên mẫu
+    # phải viết trên bản đã xoá: còn lại đúng số và dấu ngoặc.
+    m = re.search(r"\bsqrt\s*\(?\s*" + _NUMBER_RE, u) or re.search(
+        r"\bsquare\s*root\s+(?:of\s+)?\(?\s*" + _NUMBER_RE, u)
+    if m is None:
+        m = re.search(r"\broot\s+(\d+)\s+(?:of\s+)?\(?\s*" + _NUMBER_RE, u)
+        if m is not None:
+            return _root_result(float(m.group(2).replace(",", ".")),
+                                int(m.group(1)), m.group(2))
+    if m is not None:
+        return _root_result(float(m.group(1).replace(",", ".")), 2, m.group(1))
+
+    # "căn bậc 3 của 27", "căn 3 của 27", "căn ba của 27", "căn 27".
+    # Điểm mấu chốt: "căn N của M" có HAI con số, và bản cũ đọc con số thứ nhất
+    # là số bị căn - nên "căn 2 của 8" ra căn bậc hai của 2 = 1.4142 thay vì
+    # căn bậc hai của 8. Người dùng nhận CON SỐ SAI chứ không nhận lỗi.
+    m = re.search(
+        r"can\s*(?:bac\s*([a-z]+|\d+))?\s*(?:cua\s+)?\s*"
+        r"(?:([a-z]+|\d+)\s+cua\s+)?" + _NUMBER_RE, u)
     if m:
-        degree_word = m.group(1)
-        num = float(m.group(2).replace(",", "."))
-        if degree_word in ("ba", "3"):
-            # Căn bậc ba của số âm vẫn tính được (khác căn bậc hai).
-            result = math.copysign(abs(num) ** (1.0 / 3.0), num)
-            return f"căn bậc ba của {num:g}", round(result, 10)
-        if num < 0:
-            return f"căn bậc hai của {num:g}", None
-        return f"căn bậc hai của {num:g}", math.sqrt(num)
+        degree_token = m.group(1) or m.group(2)
+        num = float(m.group(3).replace(",", "."))
+        if degree_token is None:
+            degree = 2
+        elif degree_token in _ROOT_DEGREE_WORD:
+            degree = _ROOT_DEGREE_WORD[degree_token]
+        elif degree_token.isdigit():
+            degree = int(degree_token)
+        else:
+            return None          # "căn lực" - không phải căn bậc số
+        return _root_result(num, degree, m.group(3))
 
     m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
     if m:
@@ -1854,6 +1923,14 @@ _UNAMBIGUOUS_MATH_RE = re.compile(
     # sách từ khoá rõ ràng và lại quay về bị model đoán nhầm.
     r"|\d\s*chia\s*\d\s*(?:lay\s*du|phan\s*du|so\s*du)"
     r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
+    # Căn bậc: "sqrt 144", "square root of 16", "root 3 of 27", "can 4 cua 16".
+    # Không có nhánh này thì "square root of 16" bị model đoán là get_datetime
+    # (chữ "time" trong "root" đủ để model bịa ra ý nghĩa về giờ).
+    r"|\b(?:sqrt|square\s*root|root)\s*(?:\d+\s+)?(?:of\s+)?\d"
+    r"|\bcan\s*(?:\w+\s*)?(?:\d+\s+cua\s+)?\d"
+    # Dấu "√" viết dính số ("√16"): so trên bản BỎ DẤU thì ký hiệu này vẫn
+    # còn nguyên, nhưng dấu nhân/chia cũng bị bỏ nên cần nhánh riêng.
+    r"|√\s*\d"
 )
 
 
