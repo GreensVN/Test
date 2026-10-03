@@ -376,21 +376,55 @@ _URL_ENTITY_RE = re.compile(
 _PATH_ENTITY_RE = re.compile(r"([a-zA-Z]:[\\/][^\s]+|/[^\s]+/[^\s]+)")
 
 # Từ cần bóc ở đầu/cuối câu tìm kiếm
-SEARCH_PREFIX = r"^(tìm kiếm|tra cứu|tìm|search|google|tra|cho tôi biết|thông tin về)\s+"
+# "cho tôi" đứng riêng: "cho tôi tìm kiếm abc" rất phổ biến, còn bản cũ chỉ
+# có "cho tôi biết" nên câu này không bóc được gì cả.
+SEARCH_PREFIX = (
+    r"^(cho\s+tôi|cho\s+toi|giùm\s+tôi|giùm\s+toi|tìm\s+kiếm|tra\s+cứu|"
+    r"tìm|search|google|tra|cho\s+tôi\s+biết|thông\s+tin\s+về)\s+"
+)
 SEARCH_SUFFIX = r"\s*(trên google|trên mạng|giúp tôi|giùm tôi|hộ tôi|đi|nhé|xem)\s*$"
 
 # Từ cần bóc ở câu phát nhạc
-MEDIA_PREFIX = r"^(phát|mở|bật|cho tôi nghe|nghe)\s+"
+MEDIA_PREFIX = r"^(phát|mở|bật|cho tôi nghe|nghe|chơi)\s+"
 MEDIA_SUFFIX = r"\s*(trên youtube|trên spotify|giúp tôi nghe|giúp tôi|đi|nghe|lên|nhé)\s*$"
 
 
+def _sub_keep_accents(text: str, pattern: str) -> str:
+    """`re.sub(pattern, "", text)` mà vẫn GIỮ DẤU của ký tự còn lại.
+
+    So khớp phải chạy trên bản BỎ DẤU - mẫu viết có dấu ("phát") không khớp câu
+    gõ không dấu ("phat nhac") - nhưng kết quả phải trả về câu GỐC, nếu không
+    thì "phát nhạc" ra thành "phat nhac" và trợ lý đọc câu không dấu cho người đã
+    gõ có dấu.
+
+    `strip_diacritics` tra ký tự 1-1 nên **giữ nguyên độ dài**: chỉ số trên hai
+    bản là của chung nhau, chỉ cần cắt bằng chính hai chỉ số đó trên bản gốc.
+    """
+    if not text or not pattern:
+        return text
+    if re.search(pattern, text):                 # câu có dấu, mẫu có dấu
+        return re.sub(pattern, "", text)
+    plain = strip_diacritics(text)
+    m = re.search(strip_diacritics(pattern), plain)
+    if not m:
+        return text
+    return text[:m.start()] + text[m.end():]
+
+
 def _strip_affixes(text: str, prefix: str, suffix: str) -> str:
-    """Bóc các cụm thừa đầu/cuối câu (lặp cho đến khi không bóc được nữa)."""
+    """Bóc các cụm thừa đầu/cuối câu (lặp cho đến khi không bóc được nữa).
+
+    v7.9 (bổ sung 9): so trên CẢ bản có dấu lẫn bản BỎ DẤU. Trước đây mẫu viết
+    có dấu ("phát") nên câu gõ không dấu ("phat nhac") không bóc được gì cả và
+    trợ lý đọc ra *"Đang phát phat nhac"*. Đây là lần thứ N của lớp lỗi "mẫu viết
+    không dấu/có dấu lệch chiều với câu thật" - và lần này nó nằm ở nhánh CÓ dấu
+    bị áp lên câu KHÔNG dấu, ngược hẳn các lần trước.
+    """
     prev = None
     while prev != text:
         prev = text
-        text = re.sub(prefix, "", text).strip()
-        text = re.sub(suffix, "", text).strip()
+        text = _sub_keep_accents(text, prefix).strip()
+        text = _sub_keep_accents(text, suffix).strip()
     return text
 
 

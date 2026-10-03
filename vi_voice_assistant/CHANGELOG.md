@@ -1,5 +1,44 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9b) - Gõ KHÔNG DẤU vẫn bóc được động từ; 1048 test
+
+**Cùng một câu, hai kết quả, chỉ khác dấu.** `MEDIA_PREFIX` viết có dấu
+("phát"), nên câu gõ không dấu bóc được gì cả:
+
+| Người gõ | Trước | Sau |
+|---|---|---|
+| `phat nhac` | `phat nhac` (đọc nguyên câu lệnh) | `nhac` |
+| `bat nhac` | `bat nhac` | `nhac` |
+| `cho toi nghe nhac` | `cho toi nghe nhac` | `nhac` |
+| `chơi nhạc` | `chạy nhạc`/`điều nhạc` | `nhạc` |
+| `cho tôi tìm kiếm abc` | `cho tôi tìm kiếm abc` | `abc` |
+
+Đây là lần thứ N của lớp lỗi "mẫu viết không dấu/có dấu lệch chiều với câu
+thật" - và lần này chiều **NGƯỢC**: mẫu CÓ dấu bị áp lên câu KHÔNG dấu.
+
+Cách sửa: so khớp trên CẢ bản có dấu lẫn bản bỏ dấu, nhưng kết quả phải trả
+về câu GỐC. `strip_diacritics` tra ký tự 1-1 nên giữ nguyên độ dài - chỉ số
+trên hai bản là của chung nhau, chỉ cần cắt bằng chính hai chỉ số đó.
+
+**Ràng buộc đã kiểm chứng: đích giữ dấu theo cách đã gõ, không tự thêm dấu.**
+"phat nhac" ra "nhac", "phát nhạc" ra "nhạc". Bộ bóc không thể bỏa dấu người
+dùng chưa từng gõ; bỏa dấu là bịa tin.
+
+**Còn lại, CHƯA sửa (có lý do, không phải bỏ sót).** Cụm nền tảng nằm GIỮA
+câu vẫn lọt: `tìm trên google giá vàng` -> `trên google giá vàng`, và
+`tìm hộ tôi giá laptop` -> `hộ tôi giá laptop`. Đã thử sửa bằng cách bóc mọi
+nơi rồi **bỏ**: bỏ dấu làm hai cụm KHÁC NHAU trùng nhau - `"hộ tôi"` -> `"ho
+toi"`, mà `"ho toi"` nằm ngay trong `"cho tôi"` (vị trí 1). Bản sửa đó làm
+`đọc báo cho tôi nghe` thành `đọc báo c nghe` - **mất cả chữ**, không chỉ bóc
+hơi quá. Muốn sửa đúng thì phải bóc theo RANH GIỚI TỪ; việc đó lớn hơn phạm vi
+sửa lỗi ở đây. Đã khoá lại bằng test ghi rõ hành vi hiện tại
+(`test_cum_nen_tang_o_giua_cau_hien_chua_boc`) để không ai tưởng đã xong.
+
+**Kiểm chứng.** 1048 test: `pytest -q` -> `1048 passed`; `run_tests.py -q` ->
+`1048 passed`; `ruff check` sạch; `mypy` sạch trên 56 file nguồn. Trong 13 test
+mới, **6 test hành vi FAIL trên mã nguồn trước khi sửa** (đã kiểm chứng bằng
+`git stash`).
+
 ## v7.9 (bổ sung 9) - Dấu ngoặc trong phép tính; 1035 test
 
 **Lớp lỗi nguy hiểm nhất của toán: người dùng làm đúng mọi thứ, viết rõ ý
