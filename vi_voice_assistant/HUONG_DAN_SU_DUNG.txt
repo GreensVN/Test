@@ -227,7 +227,7 @@ bạn có bị âm thầm hỏng không". Tóm tắt những gì THAY ĐỔI cho
      requires-python và CI chỉ kiểm tra 3.9 - 3.13. Cần cài bằng pip trên 3.8?
      Mở Issue - đừng sửa requires-python rồi tưởng là xong.
 5. KIỂM TRA CHẤT LƯỢNG (mục này là của v7.4)
-     python vi_voice_assistant/run_tests.py -q     # 1064 test, KHONG cần pytest
+     python vi_voice_assistant/run_tests.py -q     # 1080 test, KHONG cần pytest
      python -m pytest vi_voice_assistant/tests -q   # cũng 518
      python -m ruff check .                         # 0 cảnh báo
      python -m mypy                                 # 0 loi (xem [tool.mypy])

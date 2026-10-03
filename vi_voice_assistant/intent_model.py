@@ -378,9 +378,13 @@ _PATH_ENTITY_RE = re.compile(r"([a-zA-Z]:[\\/][^\s]+|/[^\s]+/[^\s]+)")
 # Từ cần bóc ở đầu/cuối câu tìm kiếm
 # "cho tôi" đứng riêng: "cho tôi tìm kiếm abc" rất phổ biến, còn bản cũ chỉ
 # có "cho tôi biết" nên câu này không bóc được gì cả.
+# `(?:`\s+|$)` chứ không phải `\s+`: bản cũ bắt buộc phải có khoảng trắng
+# phía sau, nên câu CHỈ có động từ thì nhánh dài (`tìm kiếm`) không khớp được,
+# regex rơi xuống nhánh ngắn (`tìm`) và để lại mảnh vỡ - "tìm kiếm" thành
+# "kiếm" (KIẾM, con dao). Cho phép `$` thì nhánh dài nuốt trọn câu.
 SEARCH_PREFIX = (
     r"^(cho\s+tôi|cho\s+toi|giùm\s+tôi|giùm\s+toi|tìm\s+kiếm|tra\s+cứu|"
-    r"tìm|search|google|tra|cho\s+tôi\s+biết|thông\s+tin\s+về)\s+"
+    r"tìm|search|google|tra|cho\s+tôi\s+biết|thông\s+tin\s+về)(?:\s+|$)"
 )
 SEARCH_SUFFIX = r"\s*(trên google|trên mạng|giúp tôi|giùm tôi|hộ tôi|đi|nhé|xem)\s*$"
 
@@ -414,22 +418,30 @@ def _sub_keep_accents(text: str, pattern: str) -> str:
     """
     if not text or not pattern:
         return text
-    accented = re.search(pattern, text) is not None
-    # Nhánh có dấu khớp bằng chính mẫu gốc; chỉ nhánh không dấu mới được dùng
-    # mẫu đã bỏ dấu. Dùng nhầm mẫu bỏ dấu ở nhánh có dấu thì không bao giờ
-    # khớp được gì - và im lặng trả về nguyên câu, đúng kiểu hỏng mà khó thấy.
-    haystack, pat = (text, pattern) if accented else (
-        strip_diacritics(text), strip_diacritics(pattern))
-    for m in re.finditer(pat, haystack):
-        core = _core_span(haystack, m)
-        if core is None:
-            continue                                   # khớp toàn khoảng trắng
-        if not _is_whole_word(haystack, core):
-            continue                                   # ăn vào giữa một từ
-        if not accented and _has_diacritics(text, core):
-            continue                                   # người đã gõ dấu
-        return text[:m.start()] + text[m.end():]
-    return text
+    plain = strip_diacritics(text)
+    # Xét CẢ HAI cách hiểu rồi lấy cách hiểu BÓC DÀI NHẤT. Không thế thì regex
+    # rơi xuống nhánh ngắn và để lại mảnh vỡ: "tra cuu" khớp `tra` (có sẵn
+    # trong danh sách, không dấu) nên nhánh có dấu "thắng", bỏ mất nghĩa
+    # "tra cứu" nuốt trọn câu, và kết quả là máy đi tìm "cuu".
+    best: tuple[tuple[int, int], int, int] | None = None   # (khoá, start, end)
+    for haystack, pat, is_plain in (
+        (text, pattern, False),
+        (plain, strip_diacritics(pattern), True),
+    ):
+        if not is_plain and re.search(pat, text) is None:
+            continue                               # mẫu gốc không khớp thì bỏ
+        for m in re.finditer(pat, haystack):
+            core = _core_span(haystack, m)
+            if core is None or not _is_whole_word(haystack, core):
+                continue                           # ăn vào giữa một từ
+            if is_plain and _has_diacritics(text, core):
+                continue                           # người đã gõ dấu
+            key = (core[1] - core[0], -core[0])
+            if best is None or key > best[0]:
+                best = (key, m.start(), m.end())
+    if best is None:
+        return text
+    return text[:best[1]] + text[best[2]:]
 
 
 def _core_span(haystack: str, m: re.Match[str]) -> tuple[int, int] | None:
@@ -1962,8 +1974,15 @@ def _entity_calculate(ctx: _EntityContext) -> str:
 
 
 def _entity_search_web(ctx: _EntityContext) -> str:
-    """Tìm kiếm: bóc cụm "tìm kiếm... trên google"."""
-    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX) or ctx.raw
+    """Tìm kiếm: bóc cụm "tìm kiếm... trên google".
+
+    Rỗng sau khi bóc HẨN xác nghĩa câu chỉ toàn động từ ("tìm kiếm", "tra
+    cứu"): người dùng chưa nói muốn tìm CÁI GÌ. Bản cũ trả về `ctx.raw` cho
+    đỡ rỗng, và hệ quả là máy mở Google tìm chính chữ "tìm kiếm". Trả rỗng
+    để `action_search_web` hỏi lại - hỏi thì tốn một lượt, đoán thì mở nhầm
+    cửa sổ mà người dùng không hề yêu cầu.
+    """
+    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX)
 
 
 def _entity_play_media(ctx: _EntityContext) -> str:

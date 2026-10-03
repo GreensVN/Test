@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9d) - Câu chỉ có động từ thì HỎI, không đoán; 1080 test
+
+**Người dùng chỉ nói *"tìm kiếm"* - một lệnh rất tự nhiên - và máy mở thật
+Google tìm chính mẫu tự khiến.** Đã kiểm chứng qua đúng đường người dùng đi:
+
+| Người gõ | Nhận về |
+|---|---|
+| `tìm kiếm` | `Đang tìm kiếm kiếm` + mở Google tìm **kiếm** (con dao) |
+| `tra cứu` | `Đang tìm kiếm cứu` + mở Google tìm **cứu** |
+| `tìm` | `Đang tìm kiếm tìm` |
+
+Hai nguyên nhân chồng nhau:
+
+1. `SEARCH_PREFIX` bắt buộc có `\s+` phía sau, nên câu chỉ toàn động từ thì
+   nhánh dài (`tìm kiếm`) không khớp được; regex rơi xuống nhánh ngắn (`tìm`)
+   và để lại mảnh vỡ. Sửa: cho phép `(?:`\s+|$)`.
+2. `_entity_search_web` có `or ctx.raw` "đỡ rỗng", nên khi bóc hết thì lấy lại
+   nguyên câu. Sửa: trả rỗng, để `action_search_web` hỏi *"Bạn muốn tìm gì ạ?"*.
+
+**Hỏi thì tốn một lượt; đoán thì mở nhầm cửa sổ mà người dùng không hề yêu
+cầu.** Đó là cả tiêu chí chọn giữa hai nhánh, không phải chi tiết hình thức.
+
+**Một lỗi nữa do chính bản sửa lộ ra, đã sửa luôn.** Sau khi cho phép `$`,
+câu không dấu `tra cuu` vẫn ra `cuu`: nhánh `tra` (không dấu) khớp được nên
+`re.search` cho rằng "đã khớp theo nghĩa có dấu" và không thử nghĩa không dấu
+`tra cứu` ăn trọn câu. Sửa: xét CẢ HAI cách hiểu rồi lấy cách hiểu **bóc dài
+nhất** - đúng tinh thần `re` là thử nhánh dài trước.
+
+**Kiểm chứng.** 1080 test: `pytest -q` -> `1080 passed`; `run_tests.py -q` ->
+`1080 passed`; `ruff check` sạch; `mypy` sạch trên 58 file nguồn. Trong 16 test
+mới, **9 test FAIL trên `80aa3d6`**. Có một test kiểm chứng cả tầng executor:
+target rỗng thì phải hỏi và **không được mở trình duyệt**.
+
 ## v7.9 (bổ sung 9c) - Sửa lỗi DO CHÍNH BẢN SỬA 9b tạo ra; 1064 test
 
 **Bổ sung 9b tự hỏng thêm một lỗi, và hỏng kiểu tệ nhất: im lặng.**
