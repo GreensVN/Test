@@ -34,6 +34,8 @@ v7.5 nâng cấp:
 from __future__ import annotations
 
 import ast
+import calendar
+import datetime
 import json
 import logging
 import math
@@ -309,19 +311,48 @@ STOP_WORDS = {
 # (vd "mo google len" -> "mo" và "len" cũng cần được coi là stop-word)
 STOP_WORDS_ALL = STOP_WORDS | {strip_diacritics(w) for w in STOP_WORDS}
 
+# v7.9: chỉ những ĐỘNG TỪ LỆNH mà bỏ đi luôn được, kể cả khi đó là toàn bộ
+# câu. Stop-word đầy đủ còn chứa "trình"/"duyệt"/"máy" vì cần bỏ chúng ở câu
+# dài ("mở trình duyệt youtube" -> "youtube"); nhưng với câu NGẮN đúng bằng
+# chỗ đó ("mở trình duyệt") thì bỏ hết rồi không còn gì để gọi tên.
+_COMMAND_VERBS = {
+    "mở", "mo", "chạy", "chay", "bật", "bat", "khởi động", "khoi dong",
+    "dùng", "dung", "vào", "vao", "ra", "đi", "di", "làm", "lam",
+}
+
 # Từ khoá chuẩn hoá cho system_control -> hành động chuẩn
 # (pattern sẽ tự động được thử thêm bản không dấu, xem _match_any_pattern)
+def _sys_kw(alt: str) -> str:
+    """Bọc ranh giới từ cho một nhánh từ khoá trong `SYSTEM_KEYWORDS`."""
+    return "|".join(fr"\b(?:{part})\b" for part in alt.split("|"))
+
+
+# v7.9: mọi mẫu dưới đây phải có RANH GIỚI TỪ ở hai đầu. Trước đây "lock"
+# khớp NẰM TRONG "clock"/"unlock" và "sleep" khớp nằm trong "asleep", nên câu
+# "alarm clock" bị khoá máy thật. Cùng lớp lỗi với "lock" khớp trong "block".
+# Từ khoá tiếng Việt vốn là từ riêng nên không cần, nhưng vẫn bọc cho đồng nhất
+# và để không sót - thêm một từ khoá sau này cũng không phải nghĩ lại chuyện này.
 SYSTEM_KEYWORDS = [
-    (r"khởi động lại|restart|reboot|bật lại máy", "restart"),
-    (r"tắt máy|shutdown|tắt nguồn|tắt (?:cái )?máy tính", "shutdown"),
-    (r"khoá màn hình|khóa màn hình|khoá máy|khóa máy|lock", "lock"),
-    (r"chụp màn hình|screenshot|chụp lại màn hình", "screenshot"),
-    (r"ngủ|sleep|chế độ ngủ", "sleep"),
-    (r"đăng xuất|logout|log out|thoát khỏi máy", "logout"),
-    (r"tắt âm|tắt tiếng|im lặng|mute", "mute"),
-    (r"bật âm|mở tiếng|bật tiếng|bật lại tiếng|unmute", "unmute"),
-    (r"tăng âm|to hơn|vặn to|volume up", "volume_up"),
-    (r"giảm âm|nhỏ hơn|vặn nhỏ|volume down", "volume_down"),
+    (_sys_kw(r"khởi động lại|restart|reboot|bật lại máy"), "restart"),
+    (_sys_kw(r"tắt máy|shutdown|tắt nguồn|tắt (?:cái )?máy tính"), "shutdown"),
+    (_sys_kw(r"khoá màn hình|khóa màn hình|khoá máy|khóa máy|lock"), "lock"),
+    (_sys_kw(r"chụp màn hình|screenshot|chụp lại màn hình"), "screenshot"),
+    (_sys_kw(r"ngủ|sleep|chế độ ngủ"), "sleep"),
+    (_sys_kw(r"đăng xuất|logout|log out|thoát khỏi máy"), "logout"),
+    (_sys_kw(r"tắt âm|tắt tiếng|im lặng|mute"), "mute"),
+    (_sys_kw(r"bật âm|mở tiếng|bật tiếng|bật lại tiếng|unmute"), "unmute"),
+    (_sys_kw(r"tăng âm|to hơn|vặn to|volume up"), "volume_up"),
+    (_sys_kw(r"giảm âm|nhỏ hơn|vặn nhỏ|volume down"), "volume_down"),
+    # v7.9 (bổ sung 9e): các lệnh mà máy này KHÔNG làm được, nhưng trước đây
+    # rơi vào `play_media` và mở trình duyệt. Đăng kê ở đây để chúng rơi vào
+    # `system_control`, nơi đã có sẵn câu trả lời thành thật là "không hỗ trợ",
+    # thay vì bịa ra một hành động người dùng không hề yêu cầu.
+    (_sys_kw(r"bật (?:hết )?đèn|mở (?:hết )?đèn|lights? on"), "lights_on"),
+    (_sys_kw(r"tắt (?:hết )?đèn|lights? off"), "lights_off"),
+    (_sys_kw(r"dừng nhạc|ngừng (?:phát )?(?:nhạc|media|video)|tạm dừng (?:nhạc|phát)"
+             r"|tắt nhạc|stop (?:music|media|playback|playing)"), "stop_media"),
+    (_sys_kw(r"đóng (?:youtube|facebook|netflix|spotify|tiktok)"
+             r"|tắt (?:youtube|facebook|netflix|spotify|tiktok)"), "close_app"),
 ]
 
 
@@ -355,21 +386,125 @@ _URL_ENTITY_RE = re.compile(
 _PATH_ENTITY_RE = re.compile(r"([a-zA-Z]:[\\/][^\s]+|/[^\s]+/[^\s]+)")
 
 # Từ cần bóc ở đầu/cuối câu tìm kiếm
-SEARCH_PREFIX = r"^(tìm kiếm|tra cứu|tìm|search|google|tra|cho tôi biết|thông tin về)\s+"
+# "cho tôi" đứng riêng: "cho tôi tìm kiếm abc" rất phổ biến, còn bản cũ chỉ
+# có "cho tôi biết" nên câu này không bóc được gì cả.
+# `(?:`\s+|$)` chứ không phải `\s+`: bản cũ bắt buộc phải có khoảng trắng
+# phía sau, nên câu CHỈ có động từ thì nhánh dài (`tìm kiếm`) không khớp được,
+# regex rơi xuống nhánh ngắn (`tìm`) và để lại mảnh vỡ - "tìm kiếm" thành
+# "kiếm" (KIẾM, con dao). Cho phép `$` thì nhánh dài nuốt trọn câu.
+SEARCH_PREFIX = (
+    r"^(cho\s+tôi|cho\s+toi|giùm\s+tôi|giùm\s+toi|tìm\s+kiếm|tra\s+cứu|"
+    r"tìm|search|google|tra|cho\s+tôi\s+biết|thông\s+tin\s+về)(?:\s+|$)"
+)
 SEARCH_SUFFIX = r"\s*(trên google|trên mạng|giúp tôi|giùm tôi|hộ tôi|đi|nhé|xem)\s*$"
 
 # Từ cần bóc ở câu phát nhạc
-MEDIA_PREFIX = r"^(phát|mở|bật|cho tôi nghe|nghe)\s+"
+MEDIA_PREFIX = r"^(phát|mở|bật|cho tôi nghe|nghe|chơi)\s+"
 MEDIA_SUFFIX = r"\s*(trên youtube|trên spotify|giúp tôi nghe|giúp tôi|đi|nghe|lên|nhé)\s*$"
 
 
+def _sub_keep_accents(text: str, pattern: str) -> str:
+    """`re.sub(pattern, "", text)` mà vẫn GIỮ DẤU của ký tự còn lại.
+
+    So khớp phải chạy trên bản BỎ DẤU - mẫu viết có dấu ("phát") không khớp câu
+    gõ không dấu ("phat nhac") - nhưng kết quả phải trả về câu GỐC, nếu không
+    thì "phát nhạc" ra thành "phat nhac" và trợ lý đọc câu không dấu cho người đã
+    gõ có dấu.
+
+    `strip_diacritics` tra ký tự 1-1 nên **giữ nguyên độ dài**: chỉ số trên hai
+    bản là của chung nhau, chỉ cần cắt bằng chính hai chỉ số đó trên bản gốc.
+
+    Khớp trên bản bỏ dấu là điều CẦN THIẾT nhưng tự nó là một cái bẫy: nó xoá
+    mất đúng cái thông tin phân biệt các từ với nhau. Hai hàng rào dưới đây
+    sinh ra vì đã vỡ ra thật, không phải vì sợ lý thuyết:
+
+    1. **TRỌN TỪ** - không có thì "nghe" ăn vào giữa "cho toi" và câu "doc bao
+       cho toi nghe" mất đoạn "ho toi" thành *"doc bao c nghe"*.
+    2. **CHỐT DẤU** - không có thì "nghe" khớp trọn với "nghệ", và câu
+       "phát podcast về công nghệ" bị cắt mất đuôi thành *"podcast về công"*.
+       Lý do: nhánh bỏ dấu sinh ra để phục vụ người gõ KHÔNG dấu, nên nó chỉ
+       được bắn vào chỗ người dùng đã CHỦ ĐỘNG bỏ dấu. Ai gõ "nghệ" là đã
+       chứng minh mình gõ được dấu - lúc đó "nghệ" KHÔNG phải "nghe".
+    """
+    if not text or not pattern:
+        return text
+    plain = strip_diacritics(text)
+    # Xét CẢ HAI cách hiểu rồi lấy cách hiểu BÓC DÀI NHẤT. Không thế thì regex
+    # rơi xuống nhánh ngắn và để lại mảnh vỡ: "tra cuu" khớp `tra` (có sẵn
+    # trong danh sách, không dấu) nên nhánh có dấu "thắng", bỏ mất nghĩa
+    # "tra cứu" nuốt trọn câu, và kết quả là máy đi tìm "cuu".
+    best: tuple[tuple[int, int], int, int] | None = None   # (khoá, start, end)
+    for haystack, pat, is_plain in (
+        (text, pattern, False),
+        (plain, strip_diacritics(pattern), True),
+    ):
+        if not is_plain and re.search(pat, text) is None:
+            continue                               # mẫu gốc không khớp thì bỏ
+        for m in re.finditer(pat, haystack):
+            core = _core_span(haystack, m)
+            if core is None or not _is_whole_word(haystack, core):
+                continue                           # ăn vào giữa một từ
+            if is_plain and _has_diacritics(text, core):
+                continue                           # người đã gõ dấu
+            key = (core[1] - core[0], -core[0])
+            if best is None or key > best[0]:
+                best = (key, m.start(), m.end())
+    if best is None:
+        return text
+    return text[:best[1]] + text[best[2]:]
+
+
+def _core_span(haystack: str, m: re.Match[str]) -> tuple[int, int] | None:
+    r"""Thu khớp về phần CHỮ, bỏ khoảng trắng mẫu mang theo.
+
+    Mẫu hay kết thúc bằng `\s+`/`\s*$`; nếu lấy nguyên khớp thì ký tự ngay
+    sau luôn là chữ của từ kế tiếp và hàng rào trọn từ sẽ chặn nhầm chính cái
+    bóc dấu mà ta muốn.
+    """
+    lo, hi = m.start(), m.end()
+    while lo < hi and not _is_word_char(haystack[lo]):
+        lo += 1
+    while hi > lo and not _is_word_char(haystack[hi - 1]):
+        hi -= 1
+    return (lo, hi) if lo < hi else None
+
+
+def _has_diacritics(text: str, core: tuple[int, int]) -> bool:
+    """Đoạn bị cắt có mang dấu không."""
+    lo, hi = core
+    return bool(strip_diacritics(text[lo:hi]) != text[lo:hi])
+
+
+def _is_whole_word(haystack: str, core: tuple[int, int]) -> bool:
+    """Khớp có nằm TRỌN trong một từ, hay chỉ là một đoạn nằm trong từ.
+
+    Khoảng trống, gạch dưới và dấu chấm câu đều tách từ, nên chỉ chặn khi ký tự
+    ngay cạnh là CHỮ hoặc SỐ.
+    """
+    lo, hi = core
+    before = haystack[lo - 1] if lo > 0 else ""
+    after = haystack[hi] if hi < len(haystack) else ""
+    return not _is_word_char(before) and not _is_word_char(after)
+
+
+def _is_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
 def _strip_affixes(text: str, prefix: str, suffix: str) -> str:
-    """Bóc các cụm thừa đầu/cuối câu (lặp cho đến khi không bóc được nữa)."""
+    """Bóc các cụm thừa đầu/cuối câu (lặp cho đến khi không bóc được nữa).
+
+    v7.9 (bổ sung 9): so trên CẢ bản có dấu lẫn bản BỎ DẤU. Trước đây mẫu viết
+    có dấu ("phát") nên câu gõ không dấu ("phat nhac") không bóc được gì cả và
+    trợ lý đọc ra *"Đang phát phat nhac"*. Đây là lần thứ N của lớp lỗi "mẫu viết
+    không dấu/có dấu lệch chiều với câu thật" - và lần này nó nằm ở nhánh CÓ dấu
+    bị áp lên câu KHÔNG dấu, ngược hẳn các lần trước.
+    """
     prev = None
     while prev != text:
         prev = text
-        text = re.sub(prefix, "", text).strip()
-        text = re.sub(suffix, "", text).strip()
+        text = _sub_keep_accents(text, prefix).strip()
+        text = _sub_keep_accents(text, suffix).strip()
     return text
 
 
@@ -760,6 +895,99 @@ def _result(**kwargs) -> dict:
     return base
 
 
+# ---------------------------------------------------------------------------
+# Mốc NGÀY trong tuần / trong tháng (v7.9 bổ sung 5)
+# ---------------------------------------------------------------------------
+# "9 giờ sáng thứ hai" trước đây ra day_offset=0, tức nhắc NGAY HÔM NAY, dù câu
+# nói rõ là thứ hai. Ngày đó chỉ còn nằm lại trong nội dung nhắc dưới dạng chữ,
+# nên trợ lý báo đúng giờ sai ngày và người dùng tưởng mình đã đặt nhầm. Cùng
+# lớp lỗi với "sau 3 ngày" mà v7.8 đã sửa, chỉ khác ở chỗ dạng này cần LỊCH
+# THẬT chứ không chỉ đếm số.
+# Khoá là dạng BỎ DẤU, và phải có cả dạng chữ số vì replace_number_words() đã
+# biến "thứ hai" thành "thu 2" trước khi mọi regex bên dưới chạy.
+_WEEKDAY_MAP = {
+    "thu hai": 0, "thu 2": 0,
+    "thu ba": 1, "thu 3": 1,
+    "thu tu": 2, "thu 4": 2,
+    "thu nam": 3, "thu 5": 3,
+    "thu sau": 4, "thu 6": 4,
+    "thu bay": 5, "thu 7": 5,
+    "chu nhat": 6, "cn": 6,
+}
+_WEEKDAY_RE = re.compile(
+    r"\b(th[uư]\s*(?:hai|2|ba|3|tu|t[uư]|4|nam|5|sau|6|bay|7)|chu\s*nhat)\b"
+)
+# "cuối tuần" = hôm kế cuối trong tuần (thứ Bảy) hoặc Chủ nhật tuần này. Chọn
+# Chủ nhật: "cuối tuần" trong tiếng Việt nghĩa là ngày NGHỈ, mà Chủ nhật luôn
+# nghỉ còn thứ Bảy vẫn có thể làm việc.
+_WEEKEND_RE = re.compile(r"\b(?:cuoi|dau)\s*tuan\b")
+_MONTH_END_RE = re.compile(r"\bcuoi\s*thang\b")
+_MONTH_START_RE = re.compile(r"\b(?:dau|ngay\s+dau)\s*thang\b")
+# Chỉ tính là "TUẦN SAU" khi từ này ĐỨNG LIỀN sau tên ngày ("thứ hai tới",
+# "thứ hai tuần sau"). Trước đây so trên cả câu thì "nhắc TÔI họp 9 giờ
+# sáng thứ tư" bị đọc thành "thứ tư tới" và đẩy sang tuần sau - vì "tôi"
+# trùng chữ với "tới" khi bỏ dấu. Sai lệch đúng 7 ngày, và sai vào hôm nay.
+_NEXT_MARKER_AFTER_RE = re.compile(r"^\s*(?:tu[aâ]n\s*)?(?:t[oô]i|den|sau|next)\b")
+
+
+def _day_offset_for(u: str, today: datetime.date | None = None) -> int:
+    """Số ngày lệch cho mốc giờ, lấy mốc NGÀY THẬT khi câu có nói ra ngày.
+
+    "mai"/"ngày mai"/"hom sau" thì cộng cứng 1 ngày, không cần lịch. Còn "thứ
+    hai"/"cuối tuần"/"cuối tháng" thì phải tra LỊCH, nếu không sẽ nhắc sai
+    ngày - xem _weekday_day_offset.
+    """
+    u = strip_diacritics(u)
+    today = today or datetime.date.today()
+    if _TOMORROW_RE.search(u):
+        return 1
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u) or _MONTH_END_RE.search(u) \
+            or _MONTH_START_RE.search(u):
+        return _weekday_day_offset(today, u)
+    return 0
+
+
+def _weekday_day_offset(today: datetime.date, text: str) -> int:
+    """Số ngày từ hôm nay tới mốc ngày trong câu (0 nếu câu không nói gì).
+
+    "thứ hai" mà hôm nay ĐÃ là thứ hai thì 0 (hôm nay), vì đó là cách người
+    Việt nói. "thứ hai tới" / "thứ hai sau" luôn là tuần sau, kể cả hôm nay
+    đúng là thứ hai - nếu không, "thứ hai tới" vào đúng thứ hai sẽ ra hôm nay,
+    tức nhắc quá sớm đúng lúc người dùng cố nói "TUẦN SAU".
+    """
+    text = strip_diacritics(text)
+    if _WEEKEND_RE.search(text):
+        # "cuối tuần" = Chủ nhật tuần này (0 nếu hôm nay đã là chủ nhật);
+        # "đầu tuần" = thứ hai kế tiếp, và luôn ít nhất 1 ngày vì nói "đầu tuần"
+        # vào đúng thứ hai nghe vô nghĩa.
+        if re.search(r"\bdau\s*tuan\b", text):
+            return (0 - today.weekday()) % 7 or 7
+        return (6 - today.weekday()) % 7
+    if _MONTH_END_RE.search(text):
+        # Ngày cuối tháng, kể cả tháng 2 (năm nhuận thì 29, không nhuận 28).
+        last = calendar.monthrange(today.year, today.month)[1]
+        return max((last - today.day), 0)
+    if _MONTH_START_RE.search(text):
+        nxt = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+        return (nxt - today).days
+    m = _WEEKDAY_RE.search(text)
+    if not m:
+        return 0
+    key = re.sub(r"\s+", " ", m.group(1).strip())
+    # KHÔNG dùng `A or B` ở đây: "thứ hai" có giá trị 0, mà 0 là falsy, nên
+    # `map.get(k) or ...` rơi sang nhánh dự phòng rồi ra None. Đã xảy ra đúng
+    # một lần: mọi câu "thứ hai" đều ra day_offset=0.
+    target = _WEEKDAY_MAP.get(key)
+    if target is None:
+        target = _WEEKDAY_MAP.get(strip_diacritics(key))
+    if target is None:
+        return 0
+    delta = (target - today.weekday()) % 7
+    if delta == 0 and _NEXT_MARKER_AFTER_RE.match(text[m.end():]):
+        return 7
+    return delta
+
+
 def _parse_half_hour(t: str, u: str, plain_input: bool) -> dict | None:
     """"nửa tiếng / nửa giờ (nữa)" = 30 phút (v6.2).
 
@@ -805,9 +1033,61 @@ def _parse_delay(t: str, u: str, plain_input: bool) -> dict | None:
     only_small_units = all(m.group(2) in ("phut", "giay") for m in durations)
     # "lúc 3 giờ" / "3 giờ" trần là GIỜ ĐỒNG HỒ, không phải khoảng chờ;
     # "5 phút" trần (vd "đặt hẹn giờ 5 phút") hiểu là đếm ngược (v6.2).
+    # Có TÊN NGÀY thì đây là mốc lịch, không phải khoảng đếm ngược: "9 giờ
+    # sáng thứ 4 tuần sau" có "sau" nhưng "4" là số thứ tự ngày, và "9 giờ"
+    # là giờ đồng hồ. Nếu không chặn, câu này ra delay 540 phút (9 giờ) tức
+    # nhắc sau 9 TIẾNG thay vì tuần sau - đúng kiểu đẩy người dùng tin mình đã
+    # đặt sai lịch.
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u):
+        return None
     if not (has_marker or (only_small_units and not preceded_by_luc)):
         return None
     return _result(type="delay", minutes=round(_delay_minutes(durations, u), 4))
+
+
+# v7.8 (bổ sung): khoảng cách TÍNH BẰNG NGÀY.
+# `_DURATION_RE` chỉ biết giây/phút/tiếng/giờ, nên "nhắc tôi họp sau 3 ngày" -
+# câu rất tự nhiên và HOÀN TOÀN XÁC ĐỊNH - trả `type: None`, tức trợ lý không đặt
+# được nhắc và phải hỏi lại người dùng. Quy đổi ra phút rồi dùng lại đường
+# `delay` đã có sẵn, nên không phải đụng vào executor.
+_DAY_UNIT_MINUTES = {"ngay": 1440, "tuan": 10080, "thang": 43200}  # tháng ~30 ngày
+_RELATIVE_DAY_RE = re.compile(r"(\d+)\s*(ngay|tuan|thang)\b")
+_RELATIVE_DAY_MARKER_ACCENTED_RE = re.compile(r"\b(?:sau|nữa)\b|\bngày kia\b")
+_RELATIVE_DAY_MARKER_PLAIN_RE = re.compile(r"\b(?:sau|nua)\b|\bngay kia\b")
+
+
+def _parse_relative_day(t: str, u: str, plain_input: bool) -> dict | None:
+    """Dạng "sau N ngày" / "N ngày nữa" / "ngày kia" (v7.8).
+
+    Cùng nguyên tắc an toàn của `_parse_delay`: PHẢI có dấu hiệu khoảng cách
+    ("sau"/"nữa"), nếu không thì "câu này dài 3 ngày" cũng bị đọc thành nhắc nhở.
+
+    Vì sao kiểm tra dấu hiệu trên `t` (bản CÓ DẤU) mà không phải trên `u`: bản
+    bỏ dấu biến "nữa" thành "nua", nên so mẫu CÓ DẤU (\\b(?:sau|nữa)\\b) với
+    `u` là không bao giờ trúng - đó là lý do "2 ngày nữa" từng rơi xuống cuối
+    hàm. Còn tên riêng ("Sáu" bỏ dấu thành "sau") thì chỉ lo được khi câu gõ
+    hoàn toàn không dấu - cùng cách `_parse_delay` đang làm.
+    """
+    if plain_input:
+        if not _RELATIVE_DAY_MARKER_PLAIN_RE.search(u):
+            return None
+    elif not _RELATIVE_DAY_MARKER_ACCENTED_RE.search(t):
+        return None
+    # Câu có TÊN NGÀY thuộc về _parse_clock, không thuộc về đây. Nếu không
+    # chặn, "9 giờ sáng thứ 4 TUẦN SAU" bị đọc thành "4 tuần" = 28 ngày: con
+    # số 4 là của "thứ 4", chứ "tuần sau" chỉ là dấu hiệu khoảng cách chứ không
+    # có số đi kèm. Người dùng đặt nhắc tuần sau và nhận thông báo sau 4 tuần.
+    if _WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u):
+        return None
+    # "ngày kia" = ngày kia (hôm kia là hôm qua), tức +2 ngày. Mẫu bỏ dấu nên
+    # so trên `u` - đúng cho cả hai kiểu gõ.
+    if re.search(r"\bngay kia\b", u):
+        return _result(type="delay", minutes=2 * 1440)
+    m = _RELATIVE_DAY_RE.search(u)
+    if not m:
+        return None
+    return _result(type="delay",
+                   minutes=int(m.group(1)) * _DAY_UNIT_MINUTES[m.group(2)])
 
 
 # Bảng quy tắc đổi giờ 12-hour -> 24-hour theo BUỔI, thay cho chuỗi if/elif lồng
@@ -907,20 +1187,28 @@ def _parse_clock(t: str, u: str, plain_input: bool) -> dict | None:
         type="clock",
         hour=hour,
         minute=minute,
-        day_offset=1 if _TOMORROW_RE.search(u) else 0,
+        day_offset=_day_offset_for(u),
     )
 
 
 def _parse_tomorrow_only(t: str, u: str, plain_input: bool) -> dict | None:
     """Không kèm số giờ: chỉ "sáng mai", "trưa mai", "tối mai"..."""
-    if not _TOMORROW_RE.search(u):
+    if not _TOMORROW_RE.search(u) and not _WEEKDAY_RE.search(u) \
+            and not _WEEKEND_RE.search(u):
+        return None
+    if not _TOMORROW_RE.search(u) and not (_WEEKDAY_RE.search(u) or _WEEKEND_RE.search(u)):
+        return None
+    if not _TOMORROW_RE.search(u) and not re.search(r"sang|trua|chieu|toi|dem", u):
+        # "thứ hai" trần, không có buổi: 9 giờ sáng là giờ làm việc mặc định
+        # hơn là 7 giờ - nhưng vẫn phải có buổi đi kèm để khác "thứ hai" trong
+        # câu không phải nhắc nhở ("ngày thứ hai nào đó").
         return None
     # v6.2: dùng _detect_period thay vì tìm chuỗi con - trước đây "toi"
     # trong "nhắc tôi" cũng bị tính là buổi tối ("sáng mai nhắc tôi dậy"
     # thành 19h thay vì 7h).
     hour_by_period = {"trua": 12, "chieu": 15, "toi": 19, "dem": 19, "khuya": 23}
     return _result(type="clock", hour=hour_by_period.get(_detect_period(t, u, plain_input), 7),
-                   day_offset=1)
+                   day_offset=_day_offset_for(u))
 
 
 def parse_time_expression(text: str) -> dict:
@@ -955,6 +1243,7 @@ def parse_time_expression(text: str) -> dict:
     return (
         _parse_half_hour(t, u, plain_input)
         or _parse_delay(t, u, plain_input)
+        or _parse_relative_day(t, u, plain_input)
         or _parse_clock(t, u, plain_input)
         or _parse_tomorrow_only(t, u, plain_input)
         or _result()
@@ -989,6 +1278,54 @@ _SAFE_AST_NODES = (
 MAX_POW_BASE = 10 ** 6
 MAX_POW_EXPONENT = 64
 
+# v7.9: số trong mọi mẫu toán học đều để dạng `(-?\d+(?:\.\d+)?)` - CHẤP NHẬN
+# DẤU CHẤM thập phân, không phải phẩy. Các mẫu cũ viết `[.,]\d+`, nên chạy trên
+# bản bỏ dấu mà câu gõ "1.234" (dấu CHẤM là dấu PHẨY NGHÌN kiểu Việt) bị hiểu
+# thành 1.234. Ở đây các mẫu mới chỉ cần nhận số đơn giản, nên chấp nhận cả hai
+# nhưng `_parse_math_number` bên dưới quyết định dấu nào là thập phân.
+_MATH_NUM = r"(-?\d+(?:[.,]\d+)?)"
+
+
+def _parse_math_number(raw: str) -> float:
+    """Số trong câu toán: dấu phẩy là thập phân nếu câu không có dấu chấm nào.
+
+    "2,5" -> 2.5 nhưng "1.234,5" -> 1234.5. Không có quy tắc này thì "log 1,5"
+    ra 1.5 còn "log 1.234,5" ra 1.234 - và chênh lệch đó im lặng.
+    """
+    if "," in raw and "." in raw:
+        # Cả hai dấu: dấu chấm là phân tách nghìn, phẩy mới là thập phân.
+        return float(raw.replace(".", "").replace(",", "."))
+    if "," in raw:
+        return float(raw.replace(",", "."))
+    return float(raw)
+
+
+# "log 100" -> cơ số 10 (quy ước toán Việt), "ln 100" -> cơ số e.
+# "log2 1024" và "log 8 cơ số 2" là người dùng đã nói rõ, thì theo họ.
+#
+# `fixed_base` CHỈ được là MỘT chữ số (2, 3, 10) và phải bám ngay "log", không
+# có khoảng trắng ("log10", "log2"). Nếu cho `\d+` không ràng buộc, regex ăn
+# mất chữ số đầu của số cần lấy: "log 100" ra "log cơ số 1**0**0" -> 10^0 = 1
+# thay vì log10(100) = 2 - ra số sai mà vẫn trông như kết quả đúng.
+_LOG_RE = re.compile(
+    r"\b(?P<fn>ln|log)(?P<fixed_base>10|[2-9])?\s*"
+    r"(?P<value>" + _MATH_NUM + r")"
+    r"(?:\s*(?:co so|base)\s*(?P<base>" + _MATH_NUM + r"))?"
+)
+# Thứ tự alternation có ý thứa: cụm dài trước, vì "chia lay du" phải thắng "chia".
+# Cả HAI thứ tự từ đều phải có: tiếng Anh "5 mod 3" (số, từ, số) và tiếng Việt
+# "100 chia 7 lấy dư" (số, "chia", số, rồi mới tới "lấy dư" ở CUỐI) - bỏ sót
+# thứ tự thứ hai thì "100 chia 7 lấy dư" rơi xuống nhánh "chia" và ra 14.28
+# thay vì 2, tức SAI mà vẫn trông như một phép chia bình thường.
+_MOD_RE = re.compile(
+    r"(?:so du cua|phan du cua)\s*(?P<a>" + _MATH_NUM + r")\s*(va|vao|voi)\s*"
+    r"(?P<b>" + _MATH_NUM + r")"
+    r"|(?P<a2>" + _MATH_NUM + r")\s*(?:mod|%|chialaydu|chia\s*lay\s*du|"
+    r"lay\s*du|phan\s*du)\s*(?P<b2>" + _MATH_NUM + r")"
+    r"|(?P<a3>" + _MATH_NUM + r")\s*chia\s*(?P<b3>" + _MATH_NUM + r")\s*"
+    r"(?:lay\s*du|phan\s*du|so\s*du)"
+)
+
 
 def _safe_eval(expr: str):
     """Tính biểu thức số học AN TOÀN: chỉ cho phép số, + - * / ** và dấu ngoặc.
@@ -997,6 +1334,15 @@ def _safe_eval(expr: str):
     for child in ast.walk(node):
         if not isinstance(child, _SAFE_AST_NODES):
             raise ValueError(f"Biểu thức không hợp lệ / không an toàn: {expr!r}")
+        # v7.8: `ast.Constant` là hạt nhân của MỌI hằng số - kể cả CHUỖI, bytes
+        # và None - nên "chỉ cho phép số" trong docstring trước đây KHÔNG đúng:
+        # `_safe_eval("'ab' * 3")` chạy được. Không gọi được hàm nào (không có
+        # Name/Call), nhưng `str * int` là cách cấp phát bộ nhớ tùy ý kiểu bom
+        # (`'x' * 10**9`). Chặn ở đây thì hằng số bất hợp lệ bị chặn ngay từ
+        # node, đúng với tên hàm - và `parse_math_expression` vốn chỉ bóc
+        # chữ số nên không đổi hành vi.
+        if isinstance(child, ast.Constant) and not isinstance(child.value, (int, float)):
+            raise ValueError(f"Hằng số không phải số: {child.value!r}")
         # Luỷ thừa được phép nhưng phải có GIỚI HẠN.
         if isinstance(child, ast.BinOp) and isinstance(child.op, ast.Pow):
             base = getattr(child.left, "value", None)
@@ -1013,6 +1359,260 @@ def _safe_eval(expr: str):
     return eval(compile(node, "<expr>", "eval"))  # noqa: S307
 
 
+# v7.8: `normalize_text()` giữ lại đúng nhóm ký tự `[^\w\s./:\-]` nên XOÁ `+`,
+# `*`, `(` `)` `^` và dấu phẩy thập phân. Với câu NÓI ("mười lăm cộng hai mươi
+# bảy") điều đó vô hại, nhưng với biểu thức gõ tay thì hậu quả nặng:
+#   * `--once "15 + 27"` (đúng ví dụ trong `--help`!) ra "15 27" -> không tính được;
+#   * "2,5 nhân 4" ra "2 5 * 4" -> bình chọn "5 * 4" = 20 thay vì 10 - TÍNH SAI
+#     mà không báo lỗi, còn tệ hơn hẳn việc không tính.
+# Toán tử và dấu phẩy được đổi tên thành "từ" (chỉ gồm ký tự \w nên sống sót
+# qua normalize_text) rồi khôi phục lại ngay sau đó.
+_MATH_PLUS = "zcongz"
+_MATH_TIMES = "znhanz"
+# placeholder luu thua, gop TRUOC khi "*" bi doi thanh _MATH_TIMES
+_MATH_POW = "zlumlz"
+# v7.8 (bổ sung): thêm hai toán tử nữa bị xoá cùng đợt.
+#   * `%` - dấu phần trăm: "12% của 200" bị đổi thành "12 của 200" rồi không
+#     khớp regex nào -> (None, None). Người dùng gõ đúng biểu thức, trợ lý
+#     im lặng không tính.
+#   * `^` - toán tử luỹ thừa kiểu máy tính: "2^10" -> (None, None). Python
+#     dùng `**` nên ta đổi thẳng `^` -> `**`.
+# Cả hai chỉ được giữ khi đứng SAU một chữ số, để câu thường ("100% rồi")
+# không bị biến thành biểu thức.
+_MATH_PERCENT = "zphantz"
+
+
+_MATH_ROOT_SQRT = "canducthu"   # token tạm cho dấu "√" (không phải từ tiếng Việt)
+_MATH_LPAREN = "znghoz"         # token tạm cho dấu mở ngoặc
+_MATH_RPAREN = "znghoc"         # token tạm cho dấu đóng ngoặc
+
+
+def _protect_math_syntax(text: str) -> str:
+    """Giữ toán tử + dấu phẩy thập phân qua bước `normalize_text`."""
+    guarded = _strip_thousands_separator(text)
+    guarded = re.sub(r"(?<=\d),(?=\d)", ".", guarded)  # "2,5" -> "2.5"
+    guarded = re.sub(r"(?<=\d)\s*%", _MATH_PERCENT, guarded)  # "12%" -> "12zphantz"
+    # Luỹ thừa phải gộp thành MỘT token TRƯỚC khi `*` bị đổi thành `_MATH_TIMES`.
+    # Nếu đổi `*` trước, "2 ** 10" thành "2 * * 10" và biểu thức ghép không
+    # được (toán tử `**` phải liền, không có khoảng trắng ở giữa). Hai bước:
+    # gộp cặp trước ("**", "^ ^"), rồi mới đến dấu `^` lẻ ("2^10").
+    guarded = re.sub(r"[\^*]\s*[\^*]", _MATH_POW, guarded)  # "2 ** 10" -> "2zlumlz10"
+    guarded = re.sub(r"\s*\^\s*", _MATH_POW, guarded)       # "2^10" -> "2zlumlz10"
+    # v7.9: dấu "√" (và chữ "căn" dạng ký hiệu quen dùng trong sách vở) bị
+    # `_KEEP_RE` của normalize_text() xoá mất, chỉ còn lại con số trần - nên
+    # "√16" trước đây ra "chưa tính được phép tính 16", tức mất luôn cả dấu
+    # hiệu cho biết đó là căn. Thay bằng chữ trước khi chuẩn hoá.
+    guarded = re.sub(r"\s*[√∛]\s*", _MATH_ROOT_SQRT + " ", guarded)
+    # v7.9: DẤU NGOẶC. `_safe_eval` đã cho phép ngoặc trong danh sách node an
+    # toàn (docstring ghi rõ "và dấu ngoặc"), nhưng `_KEEP_RE` xoá chúng trước
+    # khi tới đó - nên người dùng gõ ngoặc để BỎ THỨ TỰ ƯU TIÊN thì không có tác
+    # dụng gì, và tệ hơn là câu ra SỐ SAI chứ không ra lỗi:
+    #   "(5 + 3) * 2"  -> "5 + 3 * 2" = 11   (đáng lẽ 16)
+    #   "(10-4) / 2"   -> "10-4 / 2"  = 8    (đáng lẽ 3)
+    #   "((5))"        -> "5" rồi mất dấu ngoặc, không ra biểu thức nào cả.
+    # Đổi thành từ rồi khôi phục lại, y hệt toán tử ở trên.
+    guarded = guarded.replace("(", _MATH_LPAREN).replace(")", _MATH_RPAREN)
+    return guarded.replace("+", _MATH_PLUS).replace("*", _MATH_TIMES)
+
+
+# v7.8: dấu chấm là DẤU PHẨY NGHÌN trong cách viết số của Việt Nam - "1.234,5"
+# nghĩa là 1234.5, KHÔNG phải 1.234 rồi ,5. Trước đây "1.234,5 chia 3" ra
+# "234.5 / 3" = 78.17: phần "1." bị bỏ mất và câu trả về CON SỐ SAI mà vẫn
+# trông như kết quả hợp lệ. Cách duy nhất để phân biệt là quy tắc nhóm 3 chữ
+# số: "1.234" / "1.234.567" là nghìn, còn "1.5" / "12.75" (nhóm không đủ 3 số)
+# vẫn là thập phân kiểu Anh - giữ nguyên như cũ để không làm hỏng người gõ
+# kiểu quốc tế.
+_THOUSANDS_RE = re.compile(r"(?<!\d)(\d{1,3})((?:\.\d{3})+(?!\d))")
+
+
+def _strip_thousands_separator(text: str) -> str:
+    """Bỏ dấu chấm phân tách nghìn kiểu Việt Nam: "1.234.567,89" -> "1234567,89"."""
+    def _join(m: re.Match) -> str:
+        whole: str = m.group(0)
+        head: str = m.group(1)
+        tail: str = m.group(2)
+        joined = head + tail.replace(".", "")
+        # Nhóm đầu có số 0 ("0.250") không phải nhóm nghìn hợp lệ - người ta
+        # không viết "0.250" nghĩa là 250. Giữ nguyên để đọc thành 0.25; nếu
+        # bỏ dấu chấm, "0250" còn bị Python từ chối (số bát phân có chữ 8).
+        if len(joined) > 1 and joined[0] == "0":
+            return whole
+        return joined
+
+    return _THOUSANDS_RE.sub(_join, text)
+
+
+def _restore_math_syntax(text: str) -> str:
+    return (text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
+            .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%")
+            .replace(_MATH_ROOT_SQRT, "sqrt")
+            .replace(_MATH_LPAREN, "(").replace(_MATH_RPAREN, ")"))
+
+
+def _math_display(expr: str) -> str:
+    """Chuẩn bị biểu thức để ĐỌC THÀNH TIẾNG cho người dùng.
+
+    `^` được đổi thành `**` để `eval` hiểu, nhưng `**` là cú pháp Python lọt
+    ra ngoài ("2**10 bằng 1024"). Chỉ đổi ở đây - chỗ trả về cho người dùng -
+    chứ không trong `_restore_math_syntax`, vì hàm đó chạy TRƯỚC bước `eval`.
+    """
+    return expr.replace("**", "^")
+
+
+def _math_log(u: str):
+    """Logarit: "log 100", "ln 100", "log2 1024", "log 8 cơ số 2".
+
+    Trả None nếu câu không phải logarit - để thử mẫu kế tiếp.
+
+    CỐ Ý dùng quy ước toán Việt: "log" không nói cơ số là cơ số **10**, còn "ln"
+    mới là cơ số e. Đây là điểm dễ sai nhất: phần lớn máy tính điện tử và mọi
+    ứng dụng lập trình dùng "log" để chỉ ln, nên nếu theo đó thì "log 100" ra
+    4.605 thay vì 2 - CON SỐ SAI mà trông vẫn hợp lệ, tệ hơn hẳn việc không
+    tính được. Chỗ nào người dùng đã nói rõ (ln, log2, "cơ số") thì theo họ.
+    """
+    m = _LOG_RE.search(u)
+    if not m:
+        return None
+    value = _parse_math_number(m.group("value"))
+    # Thứ tự: "cơ số" người dùng nói rõ > "logN" viết liền > mặc định theo fn.
+    if m.group("base"):
+        base = _parse_math_number(m.group("base"))
+    elif m.group("fixed_base"):
+        base = float(m.group("fixed_base"))
+    elif m.group("fn") == "ln":
+        base = math.e
+    else:
+        base = 10.0
+    if base <= 0 or base == 1 or value <= 0:
+        # Trả (None, None) chứ đừng trả NaN/inf: JSON của Python mặc định chấp
+        # nhận NaN và đọc lại được, nên NaN lọt ra JSON dễ bị tưởng là số thật.
+        return None, None
+    # Ghi "e" thay vì 2.71828: câu này được ĐỌC THÀNH TIẾNG, và đọc "log cơ số
+    # 2.71828 của 100" nghe như người dùng sai.
+    base_text = "e" if base == math.e else f"{base:g}"
+    return f"log cơ số {base_text} của {value:g}", math.log(value, base)
+
+
+def _math_mod(u: str):
+    """Phần dư: "5 mod 3", "100 chia 7 lấy dư", "số dư của 100 và 7"."""
+    m = _MOD_RE.search(u)
+    if not m:
+        return None
+    left = _parse_math_number(m.group("a") or m.group("a2") or m.group("a3"))
+    right = _parse_math_number(m.group("b") or m.group("b2") or m.group("b3"))
+    if right == 0:
+        return None, None  # chia lấy dư 0 là vô nghĩa
+    # Giữ nguyên kiểu SỐ NGUYÊN khi cả hai toán hạng nguyên: "5 mod 3" nên ra
+    # `2` chứ không phải `2.0`, vì câu đọc ra thành tiếng sẽ đọc "2 phẩy 0".
+    result: float
+    if left == int(left) and right == int(right):
+        result = float(int(left) % int(right))
+    else:
+        result = math.fmod(left, right)
+    return f"phần dư của {left:g} và {right:g}", result
+
+
+# Số mũ căn bậc N. "căn hai", "căn 2", "can 2" đều là bậc 2. Nhận thêm
+# bậc 4, 5... vì "căn 4 của 16" là câu hỏi thật, không phải lỗi gõ.
+_ROOT_DEGREE_WORD = {
+    "hai": 2, "2": 2,
+    "ba": 3, "3": 3,
+    "tu": 4, "4": 4,
+    "nam": 5, "5": 5,
+    "sau": 6, "6": 6,
+}
+_NUMBER_RE = r"(-?\d+(?:[.,]\d+)?)"
+
+
+def _nth_root(num: float, degree: int):
+    """Căn bậc `degree` của `num`; None nếu nghiệm không có (số âm, chẵn bậc)."""
+    if degree < 2:
+        return None
+    if num < 0:
+        if degree % 2 == 0:
+            return None
+        # Căn bậc lẻ của số âm có nghiệm âm - vd căn bậc 3 của -8 = -2.
+        return math.copysign(abs(num) ** (1.0 / degree), num)
+    return num ** (1.0 / degree)
+
+
+def _root_result(num: float, degree: int, num_text: str):
+    """Câu trả lời chuẩn hoá cho căn bậc N: None nếu nghiệm không tồn tại."""
+    if degree == 2:
+        label = "căn bậc hai của"
+    else:
+        label = f"căn bậc {degree} của"
+    shown = num_text.replace(",", ".")
+    result = _nth_root(num, degree)
+    if result is None:
+        # Nghiệm không có: trả None (không ra số), đồng thời giữ câu nhãn đúng
+        # để trợ lý nói "chưa tính được" thay vì bịa ra số tưởng chừng hợp lệ.
+        return f"{label} {shown}", None
+    return f"{label} {shown}", round(result, 10)
+
+
+def _math_root(u: str):
+    """Căn bậc N (2, 3, 4...) và lũy thừa. None nếu câu không khớp."""
+    # "sqrt 144", "sqrt(144)", "√16", "square root of 16", "root 3 of 27".
+    # √ bị normalize_text() xoá mất (không thuộc bảng thay thế nào) nên mẫu
+    # phải viết trên bản đã xoá: còn lại đúng số và dấu ngoặc.
+    m = re.search(r"\bsqrt\s*\(?\s*" + _NUMBER_RE, u) or re.search(
+        r"\bsquare\s*root\s+(?:of\s+)?\(?\s*" + _NUMBER_RE, u)
+    if m is None:
+        m = re.search(r"\broot\s+(\d+)\s+(?:of\s+)?\(?\s*" + _NUMBER_RE, u)
+        if m is not None:
+            return _root_result(float(m.group(2).replace(",", ".")),
+                                int(m.group(1)), m.group(2))
+    if m is not None:
+        return _root_result(float(m.group(1).replace(",", ".")), 2, m.group(1))
+
+    # "căn bậc 3 của 27", "căn 3 của 27", "căn ba của 27", "căn 27".
+    # Điểm mấu chốt: "căn N của M" có HAI con số, và bản cũ đọc con số thứ nhất
+    # là số bị căn - nên "căn 2 của 8" ra căn bậc hai của 2 = 1.4142 thay vì
+    # căn bậc hai của 8. Người dùng nhận CON SỐ SAI chứ không nhận lỗi.
+    m = re.search(
+        r"can\s*(?:bac\s*([a-z]+|\d+))?\s*(?:cua\s+)?\s*"
+        r"(?:([a-z]+|\d+)\s+cua\s+)?" + _NUMBER_RE, u)
+    if m:
+        degree_token = m.group(1) or m.group(2)
+        num = float(m.group(3).replace(",", "."))
+        if degree_token is None:
+            degree = 2
+        elif degree_token in _ROOT_DEGREE_WORD:
+            degree = _ROOT_DEGREE_WORD[degree_token]
+        elif degree_token.isdigit():
+            degree = int(degree_token)
+        else:
+            return None          # "căn lực" - không phải căn bậc số
+        return _root_result(num, degree, m.group(3))
+
+    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
+    if m:
+        num = float(m.group(1).replace(",", "."))
+        if m.group(2) in ("lap phuong", "mu 3"):
+            return f"{num:g} lập phương", num ** 3
+        return f"{num:g} bình phương", num ** 2
+    return None
+
+
+_MATH_NUMBER_RE = r"-?\d+(?:[.,]\d+)?"
+_MATH_OPERATOR_RE = re.compile(r"\*\*|[+\-*/]")
+_PAREN_DEPTH = 4
+
+
+def _math_expr_pattern(depth: int) -> str:
+    """Mẫu biểu thức số học, lồng dấu ngoặc tới `depth` cấp."""
+    atom = _MATH_NUMBER_RE if depth <= 0 else (
+        rf"(?:{_MATH_NUMBER_RE}|\({_math_expr_pattern(depth - 1)}\))")
+    # `**` phải là MỘT nhánh của phần toán tử rồi mới theo sau là số - không
+    # tách nó thành nhánh riêng không kèm số, vì khi đó "2**10" chỉ khớp được
+    # "2**" rồi dừng, còn "10" rơi ngoài biểu thức và `eval` báo lỗi.
+    return rf"{atom}(?:\s*(?:\*\*|[+\-*/])\s*{atom})*"
+
+
+_MATH_EXPR_RE = re.compile(f"({_math_expr_pattern(_PAREN_DEPTH)})")
+
+
 def parse_math_expression(text: str):
     """
     Trích xuất và tính một biểu thức toán học đơn giản từ câu tiếng Việt.
@@ -1023,49 +1623,67 @@ def parse_math_expression(text: str):
     Ví dụ:
         "12 cộng 8 bằng bao nhiêu" -> ("12 + 8", 20.0)
         "căn bậc hai của 81"       -> ("căn bậc hai của 81", 9.0)
+
+    v7.8: hiểu được CẢ câu gõ KHÔNG DẤU, đúng như `parse_time_expression` và
+    đúng như điều README quảng cáo ("hiểu tiếng Việt có dấu lẫn không dấu").
+    Bản cũ ghép regex CHỈ có dấu nên "can bac hai cua 81", "15 phan tram cua
+    200", "16 binh phuong", "3 mu 2" đều trả `(None, None)` - người gõ không
+    dấu (rất hay gặp vì gõ nhanh, hoặc STT trả về không dấu) không tính được
+    câu căn/phần trăm/bình phương. Cách sửa: nhận diện trên bản BỎ DẤU rồi
+    hiển thị lại bằng tên CÓ DẤU, nên câu không dấu ra cùng kết quả và cùng
+    câu mô tả với câu có dấu (test parity bắt buộc điều này).
     """
-    t = normalize_text(text)
+    t = normalize_text(_protect_math_syntax(as_text(text)))
     # v6.2: đổi từ-số thành chữ số trước khi tách biểu thức - "mười lăm cộng
     # hai mươi bảy" giờ tính được (trước đây chỉ tính được số viết bằng chữ số).
-    t = replace_number_words(t)
+    t = _restore_math_syntax(replace_number_words(t))
+    # bản bỏ dấu: so khớp trên đây nên một từ khoá viết kiểu nào cũng nhận ra
+    u = strip_diacritics(t)
 
-    # --- Căn bậc hai / bậc ba (v6.2 thêm bậc ba) ---
-    m = re.search(r"căn\s*(?:bậc\s*(hai|2|ba|3))?\s*(?:của)?\s*(-?\d+(?:[.,]\d+)?)", t)
-    if m:
-        degree_word = m.group(1)
-        num = float(m.group(2).replace(",", "."))
-        if degree_word in ("ba", "3"):
-            # Căn bậc ba của số âm vẫn tính được (khác căn bậc hai).
-            result = math.copysign(abs(num) ** (1.0 / 3.0), num)
-            return f"căn bậc ba của {num:g}", round(result, 10)
-        if num < 0:
-            return f"căn bậc hai của {num:g}", None
-        return f"căn bậc hai của {num:g}", math.sqrt(num)
+    # --- Căn bậc hai/ba và bình phương/lập phương (v6.2) ---
+    got = _math_root(u)
+    if got is not None:
+        return got
 
-    # --- Bình phương / lập phương (v6.2 thêm lập phương) ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(bình phương|mũ 2|lập phương|mũ 3)", t)
-    if m:
-        num = float(m.group(1).replace(",", "."))
-        if m.group(2) in ("lập phương", "mũ 3"):
-            return f"{num:g} lập phương", num ** 3
-        return f"{num:g} bình phương", num ** 2
-
-    # --- Phần trăm: "X phần trăm của Y" ---
-    m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*phần trăm\s*(?:của)?\s*(-?\d+(?:[.,]\d+)?)", t)
+    # --- Phần trăm: "X phần trăm của Y" VÀ "X% của Y" ---
+    # v7.8 (bổ sung): trước đây chỉ nhận dạng dấu `%` khi đi kèm TỪ ("12
+    # phần trăm của 200"). Người dùng gõ "12% của 200" - cách viết phổ biến nhất
+    # ngoài đời - thì `normalize_text` xoá `%`, câu thành "12 của 200" và không
+    # khớp nhánh nào -> (None, None): gõ đúng mà trợ lý im lặng không tính.
+    # Nhánh `%|phan tram` giữ nguyên hành vi cũ cho câu viết bằng chữ.
+    m = re.search(
+        r"(-?\d+(?:[.,]\d+)?)\s*(?:%|\s*phan tram)\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u
+    )
     if m:
         pct = float(m.group(1).replace(",", "."))
         base = float(m.group(2).replace(",", "."))
         return f"{pct:g}% của {base:g}", base * pct / 100
 
+    # --- Logarit / phần dư (v7.9): tách riêng để hàm này không quá phức tạp ---
+    for matcher in (_math_log, _math_mod):
+        got = matcher(u)
+        if got is not None:
+            return got
+
     # --- Phép tính cơ bản: thay từ toán tử bằng ký hiệu rồi bóc biểu thức số ---
-    expr_text = t
+    # So trên bản bỏ dấu: OPERATOR_WORDS viết có dấu ("cộng"), nên câu không
+    # dấu ("12 cong 8") không đổi được toán tử và rơi xuống nhánh cuối.
+    expr_text = u
     for pattern, symbol in OPERATOR_WORDS:
-        expr_text = re.sub(pattern, f" {symbol} ", expr_text)
+        expr_text = re.sub(strip_diacritics(pattern), f" {symbol} ", expr_text)
 
     # v6: cho phép toán tử ** (luỹ thừa) trong biểu thức - trước đây lớp ký
     # tự [+\-*/] không nhận "**" nên "2 mũ 10" không bao giờ ghép được biểu thức.
-    m = re.search(r"(-?\d+(?:[.,]\d+)?(?:\s*(?:\*\*|[+\-*/])\s*-?\d+(?:[.,]\d+)?)+)", expr_text)
-    if not m:
+    #
+    # v7.9: DẤU NGOẶC. Mẫu cũ chỉ biết "số (toán tử số)*" nên bóc biểu thức
+    # dừng lại ở dấu `)` đầu tiên: "(5 + 3) * 2" ra "5 + 3" = 8 thay vì 16.
+    # `re` không hỗ trợ ngoặc lồng nhau không giới hạn, nên dựng mẫu theo độ
+    # sâu cố định (_PAREN_DEPTH) - đủ cho mọi biểu thức người dùng gõ tay.
+    m = re.search(_MATH_EXPR_RE, expr_text)
+    # Cần CÓ toán tử: không thì "5" trần sẽ bị coi là phép tính. Bỏ qua ký tự
+    # ĐẦU TIÊN khi kiểm tra - nếu không, dấu trừ của số âm "-123" được tính là
+    # toán tử và câu "abc-123-xyz" ra số -123.
+    if not m or not _MATH_OPERATOR_RE.search(m.group(1)[1:]):
         return None, None
 
     expr_display = m.group(1).replace(",", ".").strip()
@@ -1075,7 +1693,7 @@ def parse_math_expression(text: str):
         result = _safe_eval(expr_clean)
     except Exception:
         return None, None
-    return expr_display, result
+    return _math_display(expr_display), result
 
 
 # --- Cụm regex cho từng intent (biên dịch 1 lần, v7.2) ---
@@ -1094,11 +1712,35 @@ _WEATHER_TAIL_RE = re.compile(
     r"nắng không|nang khong|lạnh không|lanh khong|nóng không|nong khong|"
     r"bao nhiêu độ|bao nhieu do|bao nhiêu|bao nhieu|thế|the|nhỉ|nhi|vậy|vay)\s*$"
 )
+# v7.9 (bổ sung 8): cấu trúc câu thay vì liệt kê TỪNG CỤM.
+#
+# Bản cũ liệt kê 8 cụm cố định nên sót những cách nói rất phổ biến: "đặt
+# nhắc", "tạo nhắc nhở", "nhắc việc", "nhắc bạn", "đặt lời nhắc" (đo được 7/18
+# câu mở đầu lỗi). Liệt kê thêm nghĩa là lỡ thêm mãi, và "^" neo đầu nên
+# "đặt hẹn giờ" không bao giờ khớp vì "hẹn giờ" không nằm ngay đầu.
+#
+# Nay ghép từ ba thành phần CÓ THỨ TỰ: [động từ tạo] [danh từ nhắc] [người].
+# Ràng buộc thứ tự là điểm mấu chốt - nó giữ "tạo" trong "nhắc tôi TẠO FILE"
+# là phần nội dung cần làm, chứ không nuốt mất thành "file". Mỗi thành phần
+# khớp TRỌN TỪ, nên "nhắc việc" ăn đúng cụm còn "nhắn tin cho Lan" dừng lại.
+_REMINDER_CREATE_RE = r"(?:đặt|dat|tạo|tao|nhớ|nho|thiết lập|thiet lap|set|remind)"
+# Thứ tự CÓ Ý NGHĨA: Python lấy nhánh khớp ĐẦU TIÊN tại cùng vị trí, nên
+# cụm dài phải đứng trước. "hẹn giờ" trước "hẹn".
+# Cố ý KHÔNG có "hẹn" đứng riêng: test v6.1 chốt "hẹn 8 giờ kém 15" phải giữ
+# lại chữ "hẹn" làm TÊN lời nhắc ("hẹn" = cuộc hẹn), và điều đó vẫn đúng.
+_REMINDER_NOUN_RE = (
+    r"(?:hẹn giờ|hen gio|đồng hồ đếm ngược|dong ho dem nguoc|"
+    r"lời nhắc|loi nhac|nhắc nhở|nhac nho|nhắc việc|nhac viec|việc nhắc|"
+    r"viec nhac|nhắc lịch|nhac lich|báo thức|bao thuc|"
+    r"đồng hồ|dong ho|báo thức|bao thuc|nhắc|nhac|việc|viec|giờ|gio)"
+)
+_REMINDER_PERSON_RE = (
+    r"(?:cho\s+)?(?:tôi|toi|mình|minh|bạn|ban|tớ|toi|ta)"
+)
 _REMINDER_LEAD_RE = re.compile(
-    r"^(nhắc tôi|nhac toi|nhắc mình|nhac minh|đặt nhắc nhở|dat nhac nho|"
-    r"tạo lời nhắc|tao loi nhac|nhớ nhắc tôi|nho nhac toi|hẹn giờ|hen gio|"
-    r"đặt báo thức|dat bao thuc|báo thức|bao thuc|"
-    r"đặt đồng hồ đếm ngược|dat dong ho dem nguoc)\s*"
+    r"^\s*(?:" + _REMINDER_CREATE_RE + r"\s+)?"
+    r"(?:" + _REMINDER_NOUN_RE + r"\s+)?"
+    r"(?:" + _REMINDER_PERSON_RE + r"\s+)?"
 )
 _REMINDER_TIME_RE = re.compile(
     r"(?:lúc|luc|vào|vao)?\s*" + _NUMBER_WORD_RUN
@@ -1113,9 +1755,127 @@ _REMINDER_TIME_DIGIT_RE = re.compile(
     r"(lúc\s*)?\d+\s*(giờ|phút|tiếng)\s*(\d+)?\s*"
     r"(sáng|trưa|chiều|tối|nữa|sau|mai)?"
 )
+# v7.8 (bổ sung): hai dạng mốc giờ mà `parse_time_expression` ĐÃ hiểu (nên
+# nhắc nhở vẫn được đặt đúng giờ) nhưng hai regex trên bóc không ra, nên mốc giờ
+# bị BỎ LẠI trong nội dung và trợ lý đọc thành "Đến giờ rồi. Nhắc bạn: họp sau
+# 3 ngày". Cùng một căn bệnh: parser hiểu, extractor không.
+#   * khoảng cách tính bằng ngày/tuần/tháng: "sau 3 ngày", "2 tuần nữa", "ngày kia"
+#   * giờ viết tắt kiểu tin nhắn: "7h", "6h30", "6h30 sáng mai"
+_REMINDER_REL_DAY_RE = re.compile(
+    r"\s*(?:sau\s+)?" + _NUMBER_WORD_RUN + r"\s*(?:ngày|ngay|tuần|tuan|tháng|thang)\b"
+    r"(?:\s*(?:nữa|nua))?"
+    r"|\s*(?:ngày|ngay)\s+kia\b"
+)
+# v7.9: mốc giờ dạng "NGÀY/TUẦN" đứng trần, không có số đi kèm. Hai regex trên
+# bắt được "sau 3 ngày" nhưng không bắt được "sáng mai" / "tối mai" / "thứ hai
+# tới" / "cuối tháng", nên trợ lý đọc thành "Nhắc bạn: họp sáng mai" - tự nhắc
+# lại chính mốc giờ như thể đó là việc cần làm. Đây đúng là lỗi đã sửa cho
+# "sau 3 ngày" và "7h sáng mai", chỉ là chuỗi ở cuối chưa trọn.
+#
+# Cố Ý KHÔNG bắt "mai" trần: "gọi cho Mai" là TÊN NGƯỜI, và "Mai" đã được xử lý
+# ở chỗ khác vì lý do đó. Cũng không bắt "thứ" trần, vì "thứ" còn nghĩa
+# "thứ này" ("hôm nay") trong câu nói.
+_REMINDER_DAY_WORD_RE = re.compile(
+    # "sáng mai", "tối mai", "ngày kia", "tối nay"
+    r"\s*(?:(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+)?"
+    r"(?:mai|ngày mai|ngay mai|ngày kia|ngay kia|tối nay|toi nay)"
+    # "thứ hai", "thứ ba tới", "thứ năm" - kèm cả buổi đứng TRƯỚC ("sáng thứ
+    # hai") lẫn đứng sau ("thứ hai buổi sáng"). Cả hai dạng có dấu lẫn không dấu:
+    # `_reminder_task` chạy trên câu GỐC (có dấu) còn nhiều mẫu khác trong file
+    # viết không dấu, nên phải khai cả hai cho khớp hết.
+    r"|\s*(?:(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+)?thứ\s+\w+"
+    r"(?:\s+(?:buổi|buoi)\s+(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua))?"
+    r"(?:\s*(?:tới|toi|đến|den|này|nay|next))?"
+    # "cuối tuần", "đầu tháng"
+    r"|\s*(?:cuối|đầu)\s+(?:tuần|tuan|tháng|thang)"
+)
+_REMINDER_COMPACT_CLOCK_RE = re.compile(
+    r"\s*(?:lúc\s*)?\d{1,2}\s*h\s*\d{0,2}\s*"
+    r"(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)?"
+    # đuôi 2 từ giống hệt `_REMINDER_TIME_RE`: "7h tối nay" -> "nay" sót lại
+    r"(?:\s+(?:nay|mai|hôm|hom))?"
+)
+# "mỗi/hằng + đơn vị" và "mỗi thứ X": dấu hiệu lặp lại. Bóc ra riêng (không
+# phải mốc giờ) vì "nhắc tôi uống thuốc mỗi ngày lúc 8 giờ" cần CẢ HAI: mốc
+# giờ để hẹn, lặp lại để tự hẹn lại lần sau.
+_REPEAT_UNITS = {"ngay": "daily", "tuan": "weekly", "thang": "monthly",
+                 # "mỗi sáng" = sáng nào cũng vậy. Buộc phải có "mỗi/hằng"
+                 # đi trước, nếu không thì "sáng mai" (một buổi sáng tới) cũng
+                 # bị đọc thành lặp hằng ngày.
+                 "sang": "daily", "chieu": "daily", "toi": "daily", "trua": "daily"}
+_REPEAT_UNIT_RE = re.compile(r"\b(?:moi|hang)\s*(ngay|tuan|thang|sang|chieu|toi|trua)\b")
+# "thứ hai" = thứ 2. "chủ nhật" = Chủ Nhật. Số 1-7 cũng nhận vì người hay gõ
+# "mỗi thứ 2" hơn là "mỗi thứ hai".
+_REPEAT_WEEKDAYS = {
+    "hai": 0, "2": 0,
+    "ba": 1, "3": 1,
+    "tu": 2, "4": 2,
+    "nam": 3, "5": 3,
+    "sau": 4, "6": 4,
+    "bay": 5, "7": 5,
+    "chu nhat": 6, "cn": 6, "chunhat": 6,
+}
+_REPEAT_WEEKDAY_RE = re.compile(
+    r"\bthu\s*(hai|ba|tu|nam|sau|bay|chu\s*nhat|chunhat|cn|1|2|3|4|5|6|7)\b"
+    # Người ta nói "mỗi chủ nhật" nhiều hơn "mỗi thứ chủ nhật".
+    r"|\bchu\s*nhat\b"
+)
+
+
+def parse_repeat(text: str) -> dict | None:
+    """Đọc nhịp lặp của một lời nhắc: "mỗi ngày", "hằng tuần", "mỗi thứ hai".
+
+    Trả về dict (``{"kind": ...}``) hoặc ``None`` nếu câu không có nhịp lặp.
+
+    "mỗi thứ hai" LẤN sang "mỗi tuần" + thứ hai, vì người nói tiếng Việt luôn
+    hiểu "mỗi thứ hai" là lặp hằng tuần vào thứ Hai - nhưng chỉ khi câu còn lại
+    đủ ý (có việc cần nhắc); "thứ hai tuần này" là câu hỏi lịch, không phải
+    lịch lặp, nên chỉ nhận khi đi kèm "mỗi/hằng".
+
+    Vì sao không dùng luôn kết quả `parse_time_expression`: hàm đó trả về một
+    MỐC GIỜ, còn nhịp lặp là câu hỏi khác - "8 giờ sáng" trả về cả hai khả
+    năng, và chỉ "mỗi ngày" mới quyết định là lặp.
+    """
+    u = strip_diacritics(as_text(text)).lower()
+    if re.search(r"\b(?:moi|hang)\b", u):
+        m = _REPEAT_WEEKDAY_RE.search(u)
+        if m:
+            key = re.sub(r"\s+", " ", m.group(1)) if m.group(1) else "chu nhat"
+            return {"kind": "weekly", "weekday": _REPEAT_WEEKDAYS[key]}
+    m = _REPEAT_UNIT_RE.search(u)
+    if m:
+        return {"kind": _REPEAT_UNITS[m.group(1)]}
+    return None
+
+
+# Khoá lặp lại phải được gỡ khỏi nội dung nhắc, y hệt mốc giờ. "Nhắc bạn: uống
+# thuốc mỗi ngày" thì vô nghĩa - người dùng muốn nhắc VIỆC, không muốn nhắc
+# CHÍNH TỪ "mỗi ngày".
+_REPEAT_STRIP_RE = re.compile(
+    r"\s*(?:mỗi|moi|hằng|hang|hàng)\s*(?:ngày|ngay|tuần|tuan|tháng|thang|"
+    r"sáng|sang|chiều|chieu|tối|toi|trưa|trua)\b"
+    # "thứ hai hằng tuần" / "thứ 3 hàng tuần": NHỊP LẶP nằm ở cụm tên ngày +
+    # "hằng tuần". Cụm này parse_repeat() đã hiểu rồi, nên để lại trong nội
+    # dung là thừa - và nếu để lại, bóc mốc ngày ở trên sẽ bị nuốt mất, đúng
+    # kiểu rò rỉ chữ "thứ hai" đã sửa ở v7.8.
+    r"|\s*thứ\s+\w+\s*(?:hằng|hang|hàng)\s*(?:tuần|tuan)"
+    r"|\s*mỗi\s+thứ\s+\w+"
+)
 _REMINDER_TAIL_RES = (
     re.compile(r"^(sau|nữa|vào)\s+"),
+    # v7.9: "nhắc tôi NHỚ uống nước" - "nhớ" ở đây là vô nghĩa ("nhớ" = nhớ),
+    # không phải việc cần nhớ. Cùng nhóm với "sau"/"vào" ở trên: dấu nối đầu câu
+    # dính lại sau khi đã bóc mốc giờ.
+    re.compile(r"^(nhớ|nho)\s+"),
     re.compile(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$"),
+    # v7.8: dấu nối thời gian CÒN DÍNH ở CUỐI nội dung. Người Việt nói
+    # "nhắc tôi uống nước SAU 10 phút" - mốc giờ đứng SAU câu, nên sau khi bóc
+    # "sau 10 phút" (nhánh trên) thì chữ "sau" bị bỏ lại dính đuôi và trợ lý đọc
+    # thành "Đến giờ rồi. Nhắc bạn: uống nước sau". Nhánh `^(sau|...)\s+` ở trên
+    # chỉ bắt đầu câu nên không bắt được dạng này.
+    # Danh sách giữ nguyên phần trọn vẹn của nội dung: "trước" chỉ bị gỡ khi
+    # nó là từ cuối cùng, nên câu hợp lệ "đi mua đồ trước khi về nhà" còn nguyên.
+    re.compile(r"\s*(?:sau|trước|trong|vào|nữa|khi)\s*$"),
 )
 _DATE_WORDS_RE = re.compile(r"ngày|thứ|tháng|năm|lịch")
 
@@ -1144,13 +1904,51 @@ def _weather_location(raw: str) -> str:
 
 def _reminder_task(raw: str) -> str:
     """Nội dung công việc của lời nhắc, sau khi bỏ động từ đầu + mốc giờ."""
-    task = _REMINDER_LEAD_RE.sub("", raw).strip()
+    lead = _REMINDER_LEAD_RE.sub("", raw).strip()
+    # Mẫu bọc cả ba nhóm đều tuỳ chọn, nên nó luôn "khớp" (khớp rỗng) ở vị trí
+    # đầu. Chỉ khi nó thực sự BÓC ĐI THỨ GÌ thì câu mới coi như đã có động từ
+    # ở đầu và không cần bóc lần hai.
+    lead_untouched = lead == raw.strip()
+    task = lead
     # v6.2: bóc mốc giờ viết bằng CHỮ SỐ hoặc TỪ-SỐ (kể cả "kém X" ở đuôi,
     # trước đây "hẹn 8 giờ kém 15" để sót lại "kém 15" trong nội dung).
     task = _REMINDER_TIME_RE.sub("", task).strip()
     task = _REMINDER_TIME_DIGIT_RE.sub("", task).strip()
+    # v7.8 (bổ sung): bóc nốt khoảng cách theo ngày/tuần/tháng và giờ viết
+    # tắt kiểu tin nhắn, vì parser đã hiểu chúng (đặt nhắc đúng thời điểm) nhưng
+    # nếu bỏ sót thì trợ lý đọc thành "Nhắc bạn: họp sau 3 ngày".
+    task = _REMINDER_REL_DAY_RE.sub("", task).strip()
+    task = _REMINDER_COMPACT_CLOCK_RE.sub("", task).strip()
+    # "sáng mai" là mốc MỘT LẦN nên phải bóc khỏi nội dung. Nhưng với lời nhắc
+    # LẶP LẠI thì "mỗi thứ hai" / "thứ hai hằng tuần" chính là phần định nghĩa
+    # nhịp lặp: bóc đi thì nhắc thành "hẹn bạn thứ hai hằng tuần" nhưng phần
+    # định nghĩa nhịp đã mất, và người dùng phải tự suy ra lại. Vì vậy chỉ bóc khi
+    # câu KHÔNG mang từ lặp.
+    if not _REPEAT_STRIP_RE.search(task):
+        task = _REMINDER_DAY_WORD_RE.sub("", task).strip()
+    task = _REPEAT_STRIP_RE.sub("", task).strip()
     for pattern in _REMINDER_TAIL_RES:
         task = pattern.sub("", task).strip()
+    # v7.9 (bổ sung 9f): bóc LẠI động từ đầu, sau khi đã bóc mốc giờ.
+    # `_REMINDER_LEAD_RE` neo `^`, nên nó chỉ thấy động từ khi động từ đứng
+    # ĐẦU CÂU. Khi mốc giờ đứng trước thì động từ bị MỐC GIỜ che, và nó sống
+    # sót lại trong nội dung:
+    #     "mai nhắc tôi họp"          -> "nhắc tôi họp"
+    #     "2 ngày nữa nhắc tôi đi chợ" -> "nhắc tôi đi chợ"
+    # Trợ lý đọc thành "Nhắc bạn: nhắc tôi họp" - máy tự nhắc mình nhắc lại.
+    # Bóc mốc giờ xong thì động từ mới lộ ra ở đầu, nên bóc tiếp - NHƯNG
+    # chỉ khi lần đầu KHÔNG bóc được gì. Nếu bóc lại vô điều kiện thì hỏng câu
+    # "nhắc tôi tảo file báo cáo": lần đầu ăn "nhắc tôi", lần hai ăn tiếp
+    # "tảo file" và nội dung còn lại là "báo cáo" - trong khi "tảo file báo
+    # cáo" mới đúng là VIỆC CẦN LÀM. Lần đầu sống sót chính là do `re.sub`
+    # chỉ thay khớp ngoài cùng bên trái; bóc thêm lần nữa là mất cái may mắn
+    # đó, và mất cả nghĩa của câu.
+    if lead_untouched:
+        for _ in range(3):
+            stripped = _REMINDER_LEAD_RE.sub("", task).strip()
+            if stripped == task:
+                break
+            task = stripped
     return task or "báo thức"
 
 
@@ -1192,13 +1990,34 @@ def _entity_chitchat(ctx: _EntityContext) -> str:
 
 
 def _entity_calculate(ctx: _EntityContext) -> str:
-    expr, _ = parse_math_expression(ctx.raw)
-    return expr or ctx.raw
+    # v7.8: ưu tiên câu GỐC, fallback câu đã normalize.
+    # `ctx.raw` đã qua `normalize_text`, mà hàm đó XOÁ `+`/`*` và dấu phẩy
+    # thập phân. Hai hậu quả đo được:
+    #   "15 + 27"   -> "15 27"        : mất hẳn toán tử, không ra biểu thức.
+    #   "12,75 + 1" -> "12 75 + 1"    : VẪN ra biểu thức, nhưng SAI - "75 + 1"
+    #                                  (=76). Tệ hơn hẳn lỗi "không ra gì", vì
+    #                                  target sai còn result lại đúng.
+    # `original` giữ nguyên văn người gõ; `parse_math_expression` tự bỏ dấu
+    # bên trong nên câu không dấu vẫn chạy được. Fallback `ctx.raw` giữ hành
+    # vi cũ cho câu mà câu gốc không parse được.
+    if ctx.original:
+        expr, _ = parse_math_expression(ctx.original)
+        if expr:
+            return str(expr)
+    fallback, _ = parse_math_expression(ctx.raw)
+    return str(fallback) if fallback else ctx.raw
 
 
 def _entity_search_web(ctx: _EntityContext) -> str:
-    """Tìm kiếm: bóc cụm "tìm kiếm... trên google"."""
-    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX) or ctx.raw
+    """Tìm kiếm: bóc cụm "tìm kiếm... trên google".
+
+    Rỗng sau khi bóc HẨN xác nghĩa câu chỉ toàn động từ ("tìm kiếm", "tra
+    cứu"): người dùng chưa nói muốn tìm CÁI GÌ. Bản cũ trả về `ctx.raw` cho
+    đỡ rỗng, và hệ quả là máy mở Google tìm chính chữ "tìm kiếm". Trả rỗng
+    để `action_search_web` hỏi lại - hỏi thì tốn một lượt, đoán thì mở nhầm
+    cửa sổ mà người dùng không hề yêu cầu.
+    """
+    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX)
 
 
 def _entity_play_media(ctx: _EntityContext) -> str:
@@ -1232,6 +2051,14 @@ def _entity_system_control(ctx: _EntityContext) -> str:
 def _entity_default(ctx: _EntityContext) -> str:
     """Mặc định: bỏ stop-words, phần còn lại là tên đối tượng."""
     tokens = [w for w in ctx.raw.split() if w not in STOP_WORDS_ALL]
+    if tokens:
+        return " ".join(tokens).strip()
+    # v7.9: câu CHỈ gồm stop-word, ví dụ "mở trình duyệt" - và "trình duyệt"
+    # CHÍNH LÀ tên ứng dụng cần mở. Bản cũ bỏ hết rồi trả "unknown", nên
+    # trợ lý đáp "Chưa biết ứng dụng 'unknown', hãy thêm 'unknown' vào
+    # config.json" - vô nghĩa, và model vẫn tự tin 0.97. Bỏ hết stop-word mà
+    # rỗng thì bỏ tiếp động từ lệnh, giữ lại phần còn lại.
+    tokens = [w for w in ctx.raw.split() if w not in _COMMAND_VERBS]
     return " ".join(tokens).strip() or "unknown"
 
 
@@ -1291,12 +2118,288 @@ def _has_literal_entity(s: str) -> bool:
     return bool(_URL_ENTITY_RE.search(s) or _PATH_ENTITY_RE.search(s))
 
 
+# v7.8: toán tử số - cùng lý do như trên: `normalize_text` xoá `+`/`*` và dấu
+# phẩy thập phân, nên biểu thức gõ tay chỉ còn sống trong câu GỐC, đúng như
+# URL/đường dẫn. Nhận diện ở đây để `predict_intent` ưu tiên câu gốc.
+# v7.8 bổ sung `^` và `%`: hai ký hiệu này cũng bị `normalize_text` xoá, nếu
+# không khai ở đây thì `entity_source` rơi về bản đã bị xoá ký hiệu và phép tính
+# ra (None, None) - đúng cái lỗi v7.8 đã sửa cho `+`/`*`/phẩy thập phân.
+# v7.9: thêm `log`/`ln`/`mod`/`lấy dư` - mẫu này quyết định có cãi model
+# không. Không có nó, "log2 1024" bị model đoán `system_control` (0.05) và câu
+# toán rơi xuống đường bình thường, nơi target là câu đã bị `normalize_text`
+# xé vụn.
+# v7.9: thêm `-` vào lớp toán tử. Thiếu nó khiến "10-4" và "5-3" (KHÔNG có
+# khoảng trắng, tức đúng cách viết tay) không được nhận là toán, dù "10 - 4"
+# có khoảng trắng thì chạy - cùng câu, hai kết quả, chỉ khác một dấu cách.
+# An toàn vì mẫu này chỉ là CỔNG cho `parse_math_expression`, và hàm đó mới là
+# bằng chứng quyết định: "abc-123" không có SỐ ở trước dấu `-` nên không bị tính.
+_MATH_SYNTAX_RE = re.compile(
+    r"\d\s*(?:\*\*|[+\-*/^])\s*\d|\d,\d|\d\s*%"
+    r"|\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
+    r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
+)
+# v7.9: từ khoá toán KHÔNG THỂ nhầm sang intent nào khác. "15 + 27" thì có thể
+# là số phiên bản hay số tiền, nên v7.8 cố ý để ngưỡng tự tin bảo vệ nó. Nhưng
+# "log 8 co so 2" / "100 chia 7 lay du" không có cách đọc nào khác ngoài toán -
+# model đoán `system_control` cho chúng là sai hiển nhiên, và chặn nó bằng
+# ngưỡng 0.5 nghĩa là người dùng gõ đúng mà trợ lý điều khiển máy tính.
+_UNAMBIGUOUS_MATH_RE = re.compile(
+    r"\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
+    # "lấy dư" ở CUỐI câu ("100 chia 7 lấy dư"), không nằm giữa hai số như
+    # "5 chia lấy dư 3" - thiếu nhánh này thì câu tiếng Việt bị loại khỏi danh
+    # sách từ khoá rõ ràng và lại quay về bị model đoán nhầm.
+    r"|\d\s*chia\s*\d\s*(?:lay\s*du|phan\s*du|so\s*du)"
+    r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
+    # Căn bậc: "sqrt 144", "square root of 16", "root 3 of 27", "can 4 cua 16".
+    # Không có nhánh này thì "square root of 16" bị model đoán là get_datetime
+    # (chữ "time" trong "root" đủ để model bịa ra ý nghĩa về giờ).
+    r"|\b(?:sqrt|square\s*root|root)\s*(?:\d+\s+)?(?:of\s+)?\d"
+    r"|\bcan\s*(?:\w+\s*)?(?:\d+\s+cua\s+)?\d"
+    # Dấu "√" viết dính số ("√16"): so trên bản BỎ DẤU thì ký hiệu này vẫn
+    # còn nguyên, nhưng dấu nhân/chia cũng bị bỏ nên cần nhánh riêng.
+    r"|√\s*\d"
+)
+
+
+def _has_math_syntax(s: str) -> bool:
+    return bool(_MATH_SYNTAX_RE.search(s or ""))
+
+
+# v7.8: chỉ cãi model khi model KHÔNG chắc. Trên 0.5 thì để model quyết - dù
+# sai thì câu vẫn bị hỏi lại chứ không bị thi hành sai (an toàn hơn).
+_MATH_INTENT_MIN_CONFIDENCE = 0.5
+
+
+def _rescue_calculate_intent(intent: str, confidence: float,
+                            raw_text: str | None) -> str:
+    """Câu toán bị đoán nhầm -> trả về "calculate", ngược lại giữ nguyên.
+
+    Vì `normalize_text` xoá toán tử, câu gõ tay đôi khi không còn dấu hiệu
+    toán học: "1.234 + 5" thành "1.234 5" và model đoán nhầm thành
+    system_control (tin sai rằng đó là số phiên bản).
+
+    Chỉ sửa khi CẢ BA điều kiện đúng:
+      1. model không đoán calculate,
+      2. model KHÔNG chắc (dưới _MATH_INTENT_MIN_CONFIDENCE) - nếu model chắc
+         thì để nó quyết, không cãi ý kiến đã vững,
+      3. câu gốc THẬT SỰ ra một biểu thức tính được (`parse_math_expression` là
+         bằng chứng quyết định, không phải suy đoán từ ký tự).
+
+    `parse_math_expression` không nhận nhầm câu thường (đã thử với "mo chrome",
+    "may bao gio", "mo file report.pdf", "tim bai hat abc"...), nên điều kiện 3
+    chặn được phần lớn rủi ro gọi nhầm.
+    """
+    if intent == "calculate" or not raw_text:
+        return intent
+    # v7.9: từ khoá toán KHÔNG THỂ nhầm (log/ln/mod/lấy dư) thì cãi model dù nó
+    # tự tin đến mấy. "log 8 co so 2" bị model đoán `system_control` ở 0.62 là
+    # sai hiển nhiên - không có cách đọc nào khác ngoài toán. Ngưỡng 0.5 của
+    # v7.8 vẫn giữ nguyên cho câu MƠ HỜ như "15 + 27" (test của v7.8 chốt điều
+    # này: model chắc thì để model quyết).
+    # So trên bản BỎ DẤU: "100 chia 7 lấy dư" viết có dấu, mà các mẫu toán
+    # ở đây viết không dấu (theo đúng quy ước mọi mẫu khác trong file). So
+    # trên câu gốc thì câu tiếng Việt không bao giờ khớp - cùng lỗi đã làm
+    # "2 ngày nữa" im lặng ở v7.9 (bổ sung trước).
+    unambiguous = _UNAMBIGUOUS_MATH_RE.search(strip_diacritics(raw_text)) is not None
+    if not unambiguous:
+        if confidence >= _MATH_INTENT_MIN_CONFIDENCE or not _has_math_syntax(raw_text):
+            return intent
+    expr, value = parse_math_expression(raw_text)
+    if not (expr and value is not None):
+        return intent
+    logger.info("Câu toán %r bị đoán nhầm thành %r (%.2f) -> calculate (%s = %s)",
+                raw_text, intent, confidence, expr, value)
+    return "calculate"
+
+
+# Câu HỎI về ngày giờ, để cứu nhắc nhở không nuốt mất một câu hỏi thật.
+# "ngày kia là thứ mấy" KHÔNG phải lời nhắc, dù có chữ "ngày kia" trong đó.
+_DATE_QUESTION_RE = re.compile(
+    r"\b(?:la thu may|thu may|la ngay may|ngay may|may gio roi|"
+    r"la may gio|may nam|may ngay|la ngay bao nhieu|thoi gian nao|"
+    r"la thu may|co phai la thu may|hom nay la thu may)\b"
+)
+# Model KHÔNG chắc thì cho phép cứu, giống hẳn `_MATH_INTENT_MIN_CONFIDENCE`.
+_REMINDER_INTENT_MIN_CONFIDENCE = 0.5
+
+
+_CLOCK_TIME_RE = re.compile(
+    r"\d{1,2}\s*(?:h|gio|giờ)\b"
+    r"|\d+\s*(?:phut|phút|tieng|tiếng|giay|giây)\b"
+)
+
+
+def _has_clock_time(plain: str) -> bool:
+    """Câu có GIỜ CỤ THỂ (số + đơn vị) chứ không chỉ có ngày.
+
+    Đây là chốt chặn cuối cho ngưỡng tự tin: "đặt lịch hẹn khách 14 giờ" có
+    "14 giờ" nên rõ ràng là đặt lịch, còn một câu chỉ nói ngày mà không có giờ
+    thì vẫn để model quyết - vì lúc đó "hẹn"/"lịch" chưa đủ để cãi.
+    """
+    return _CLOCK_TIME_RE.search(plain) is not None
+
+
+def _rescue_reminder_intent(intent: str, confidence: float,
+                            raw_text: str | None) -> str:
+    """Lời nhắc có động từ rõ ràng bị đoán thành hỏi ngày giờ -> "set_reminder".
+
+    "nhắc tôi rửa xe ngày kia" bị model đoán `get_datetime` (0.44) vì chữ
+    "ngày" trong mốc giờ kéo nó về phía hỏi lịch. Nhưng một câu MỞ ĐẦU bằng động
+    từ nhắc nhở rõ ràng ("nhắc tôi", "đặt báo thức", "hẹn giờ") thì gần như
+    không bao giờ là câu hỏi lịch - dấu hiệu đó MẠNH hơn chữ "ngày" nằm vô
+    tình giữa câu.
+
+    Cùng nguyên tắc an toàn của `_rescue_calculate_intent`, cả năm điều kiện
+    phải đúng:
+      1. model đoán `get_datetime`,
+      2. model KHÔNG chắc (dưới ngưỡng) - model chắc thì để model quyết,
+      3. câu MỞ ĐẦU bằng động từ nhắc nhở,
+      4. câu CÓ bằng chứng hẹn thật: hoặc mốc giờ (`parse_time_expression`), hoặc
+         nhịp lặp ("mỗi ngày"). Cả hai đều là ý định LỊCH, không phải hỏi lịch.
+         Cần cả hai vì "nhắc tôi trả tiền mỗi tháng" không có giờ nào cả, nhưng
+         vẫn phải hỏi "mấy giờ?" chứ không phải đọc ngày,
+      5. câu KHÔNG phải câu hỏi về ngày/giờ.
+    """
+    if intent != "get_datetime" or not raw_text:
+        return intent
+    plain = strip_diacritics(raw_text).strip()
+    if not plain or not _REMINDER_LEAD_RE.match(plain):
+        return intent
+    if _DATE_QUESTION_RE.search(plain):
+        return intent
+    has_schedule = (parse_time_expression(raw_text).get("type") is not None
+                    or parse_repeat(raw_text) is not None)
+    if not has_schedule:
+        return intent
+    # v7.9: động từ hẹn RÕ RÀNG ("đặt lịch", "hẹn") kèm MỘT MỐC GIỜ CỤ THỂ
+    # thì không có cách đọc nào là câu hỏi lịch - cãi model dù nó tự tin đến
+    # mấy. "đặt lịch hẹn khách 14 giờ ngày mai" bị model đoán `get_datetime` ở
+    # 0.72, tức trợ lý đọc ra hôm nay là thứ mấy cho một câu người dùng rõ
+    # ràng đang đặt lịch. Ngưỡng 0.5 vẫn giữ nguyên cho câu MƠ HỜ không có
+    # mốc giờ ("ngày kia là thứ mấy" - đã bị chặn ở điều kiện 5 trước đó).
+    if confidence >= _REMINDER_INTENT_MIN_CONFIDENCE and not _has_clock_time(plain):
+        return intent
+    logger.info("Lời nhắc %r bị đoán nhầm thành %r (%.2f) -> set_reminder",
+                raw_text, intent, confidence)
+    return "set_reminder"
+
+
+# Thứ tự cố ý: toán trước, nhắc nhở sau. Mỗi hàm trả về `intent` khi không
+# can thiệp, nên gọi chồng vô hại. Gom vào một hàm để `predict_intent` không
+# phải thêm nhánh phụ (nó đã sát trần số phức tạp tối đa của ruff).
+# ---------------------------------------------------------------------------
+# Từ khoá KHÔNG THỂ nhầm sang intent khác (v7.9 bổ sung 7)
+# ---------------------------------------------------------------------------
+# "đọc báo hôm nay" bị model đoán `get_weather` ở 0.70 - trợ lý mở thời tiết rồi
+# đọc ra là "Đang xem thời tiết đọc báo". Nguyên nhân rõ: "hôm nay" là dấu hiệu
+# thời tiết rất mạnh, còn "đọc báo" là động từ hiếm, nên model nghiêng về nhãn
+# quen thuộc.
+#
+# Danh sách ở đây chỉ gồm cụm mà KHÔNG BAO GIỜ có nghĩa intent kia, nên cãi
+# model là an toàn và không cần xét độ tự tin. Ngược lại "hôm nay" thì KHÔNG
+# được đưa vào đây: nó nằm trong cả "đọc báo hôm nay", "lịch hôm nay" và
+# "thời tiết hà nội hôm nay" - chỉ dẫn chứng yếu hơn cả cụm động từ.
+_UNAMBIGUOUS_INTENT_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("search_web", re.compile(r"\b(?:doc\s*bao|doc\s*tin\s*uc|doc\s*tin)\b")),
+    ("play_media", re.compile(
+        r"\b(?:phat\s*nhac|mo\s*nhac|bat\s*bai\s*hat|nghe\s*nhac)\b")),
+    # v7.9 (bổ sung 9e): "dừng nhạc"/"tắt nhạc"/"bật đèn" là lệnh DỪNG/bật
+    # thiết bị, không phải lệnh phát. Không khoá ở đây thì model đoán
+    # `play_media` và `action_play_media` mở YouTube tìm chính chữ "dừng nhạc"
+    # (0.52-0.92) - làm việc KHÁC hẳn với điều người dùng nói, kiểu lỗi mà
+    # người dùng không có tín hiệu nào để nghi ngờ.
+    ("system_control", re.compile(
+        r"\b(?:bat|mo|tat)\s*(?:het\s*)?den\b"
+        r"|\b(?:dung|ngung|tam\s*dung)\s*(?:phat\s*)?(?:nhac|media|video)\b"
+        r"|\btat\s*nhac\b"
+        r"|\bstop\s*(?:music|media|playback|playing)\b"
+        r"|\b(?:dong|tat)\s*(?:youtube|facebook|netflix|spotify|tiktok)\b")),
+)
+# "đọc" cùng nghĩa với "đọc báo" nhưng LÀ việc khác: đọc file, đọc trong ứng
+# dụng. Ở đây "đọc" là động từ chứ không phải "đọc báo".
+_UNAMBIGUOUS_CONFLICT_RE = re.compile(
+    r"\b(?:mo\s*file|doc\s*file|tren\s*file|doc\s*trong)\b"
+)
+
+# v7.9 (bổ sung 9f): "nhắc tôi..." là DỮ LIỆU TRỰC TIẾP của lệnh nhắc nhở, mạnh
+# hơn BẤT KỲ từ nào nằm trong phần nội dung. Trước đây nội dung thắng, và hậu
+# quả là máy LÀM LUÔN việc đó thay vì nhắc:
+#     "nhắc tôi thời tiết hà nội"  -> get_weather 0.99 (kiểm tra ngay)
+#     "nhắc tôi tính 5 cộng 7"      -> calculate    0.95
+#     "nhắc tôi tìm giá vé"         -> search_web   0.93
+#     "nhắc tôi mở file hóa đơn"   -> open_file    0.81 (mở file thật)
+# Người dùng nghe phản hồi hợp lý, tưởng đã đặt nhắc - và không có nhắc nào.
+# Đây là lỗi nguy hiểm nhất tìm được: KHÔNG có dấu hiệu báo lỗi, chỉ có hành
+# động sai, và người dùng không có cách nào phát hiện ngoài việc đợi mãi không
+# thấy nhắc.
+_REMINDER_LEAD_STRONG_RE = re.compile(
+    r"\b(?:nhac|nho)\s*(?:toi|ban|minh|co|em|anh|chi|ong|ba|tui|ay|cuc)\b"
+    r"|\bdat\s*(?:lich|hen|gio|nhac|reminder|alarm|job)\b"
+    r"|\bset\s+(?:a\s+)?(?:reminder|alarm|notification)\b"
+)
+
+
+def _rescue_unambiguous_keywords(intent: str, confidence: float,
+                                 raw_text: str | None) -> str:
+    """Cụm động từ không thể nhầm thì cãi model, không xét độ tự tin."""
+    if not raw_text or intent == "chitchat":
+        return intent
+    u = strip_diacritics(raw_text)
+    # Động từ "nhắc tôi..." phải được xét TRƯỚC cả danh sách xung đột: "nhắc tôi
+    # mở file hóa đơn" chứa "mở file" nên xung đột sẽ giữ nguyên nhánh sai.
+    # Câu hỏi ngày giờ ("nhắc tôi hôm nay là thứ mấy") thì vẫn là câu hỏi, không
+    # phải lệnh nhắc - nên hỏi ngày trước.
+    if (_REMINDER_LEAD_STRONG_RE.search(u)
+            and not _DATE_QUESTION_RE.search(u)):
+        if intent != "set_reminder":
+            logger.info("Động từ nhắc trong %r bị đoán thành %r (%.2f) "
+                        "-> set_reminder", raw_text, intent, confidence)
+        return "set_reminder"
+    if _UNAMBIGUOUS_CONFLICT_RE.search(u):
+        return intent
+    for wanted, pattern in _UNAMBIGUOUS_INTENT_KEYWORDS:
+        if intent != wanted and pattern.search(u):
+            logger.info("Cụm %r bị đoán thành %r (%.2f) -> %s",
+                        raw_text, intent, confidence, wanted)
+            return wanted
+    return intent
+
+
+_RESCUE_FUNCS = (_rescue_calculate_intent, _rescue_reminder_intent,
+                 _rescue_unambiguous_keywords)
+
+
+def _rescue_intent(intent: str, confidence: float,
+                   raw_text: str | None) -> str:
+    """Cứu intent bị model đoán nhầm. Chỉ sửa khi model KHÔNG chắc."""
+    for rescue in _RESCUE_FUNCS:
+        intent = rescue(intent, confidence, raw_text)
+    return intent
+
+
+def _reminder_extras(raw_text: str | None, entity_source: str) -> dict:
+    """Phần thông tin NHẮC NHỞ ngoài mốc giờ (v7.9): nhịp lặp.
+
+    Nhịp lặp là câu hỏi KHÁC với mốc giờ và chỉ đọc được từ câu GỐC: cả "mỗi
+    ngày" lẫn "mỗi thứ hai" đều bị `normalize_text` bóp mất (xem `_REPEAT_*`),
+nên đọc `entity_source` là đọc câu rỗng.
+
+    Trả dict rỗng thay vì None để `result.update(...)` được, và để
+    `predict_intent` không phải thêm nhánh (nó đã sát trần độ phức tạp của ruff).
+    """
+    repeat = parse_repeat(raw_text if raw_text else entity_source)
+    return {"repeat": repeat} if repeat else {}
+
+
 def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     """
     Dự đoán ý định + trích xuất thực thể.
 
     raw_text (mới ở v6): câu GỐC người dùng nhập, trước khi chuẩn hoá - dùng
     riêng cho việc tách URL/đường dẫn (xem giải thích trong thân hàm).
+    v7.8: bỏ trống thì mặc định lấy chính `text`. Khi gọi trực tiếp
+    (`predict_intent("1.234 + 5")`) người gõ chính là câu gốc; còn
+    `nlu_advanced` luôn truyền cả hai nên không ảnh hưởng.
 
     Hỗ trợ cả model TF-IDF (Pipeline scikit-learn) lẫn model PhoBERT
     (phobert_model.PhoBertIntentClassifier) — tự nhận diện loại model.
@@ -1306,6 +2409,8 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     Với intent set_reminder có thêm khoá "time".
     Với intent calculate có thêm khoá "result" (kết quả phép tính, hoặc None).
     """
+    if raw_text is None:
+        raw_text = text if isinstance(text, str) else None
     if model is None:
         model = load_model()
 
@@ -1326,12 +2431,36 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
             confidence = float(max(proba))
         except AttributeError:
             confidence = 1.0
+        except (ValueError, IndexError, TypeError) as e:
+            # v7.8: `except AttributeError` bản cũ chỉ che một trong những lỗi
+            # có thể xảy ra ở bước này. Model trả hàng xác suất RỖNG (file .pkl
+            # bị sửa tay, model chỉ có 0 lớp) làm `max([])` nổ `ValueError: max()
+            # arg is an empty sequence` bay ra ngoài, giết cả câu lệnh. Thiếu
+            # xác suất thì coi như chưa biết -> 1.0, đúng như nhánh AttributeError
+            # (quyết định làm/hỏi thuộc về tầng NLU, không phải ở đây).
+            logger.warning("Không lấy được xác suất từ model: %s", e)
+            confidence = 1.0
 
     # v6: NGUỒN để trích xuất thực thể có thể khác nguồn để PHÂN LOẠI.
     # Tầng NLU đưa vào `text` đã chuẩn hoá (phục hồi dấu, hạ chữ thường, bỏ các
     # ký tự ? = & #) - rất tốt cho việc phân loại nhưng LÀM HỎNG URL thật. Nếu
     # câu gốc có chứa URL/đường dẫn thì ưu tiên lấy thực thể từ câu gốc.
-    entity_source = raw_text if (raw_text and _has_literal_entity(raw_text)) else text
+    # v7.8: thêm toán tử số - `normalize_text` xoá `+`/`*`/phẩy thập phân, nên
+    # "15 + 27" thành "15 27" và câu gốc là nơi duy nhất còn biểu thức.
+    entity_source = (
+        raw_text
+        if (raw_text and (_has_literal_entity(raw_text) or _has_math_syntax(raw_text)))
+        else text
+    )
+
+    # v7.8: cứu câu toán bị model đoán nhầm (xem `_rescue_calculate_intent`).
+    rescued = _rescue_intent(intent, confidence, raw_text)
+    if rescued != intent:
+        # Model đã sai, nên xác suất của nó vô nghĩa với câu này; đặt cao để
+        # câu tính đúng không bị hỏi lại vô lý.
+        intent = rescued
+        entity_source = raw_text
+        confidence = 1.0
 
     result = {
         "intent": intent,
@@ -1342,6 +2471,7 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     # Thêm thông tin thời gian cho lệnh nhắc nhở
     if intent == "set_reminder":
         result["time"] = parse_time_expression(entity_source)
+        result.update(_reminder_extras(raw_text, entity_source))
 
     # Thêm kết quả tính toán cho lệnh tính toán
     if intent == "calculate":

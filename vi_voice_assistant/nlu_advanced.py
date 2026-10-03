@@ -193,7 +193,11 @@ ANAPHORA = [
 # trước đây "mo chrome roi phat nhac" không bị tách vì "roi" chưa được nhận
 # ra là "rồi" (giới hạn đã ghi nhận ở HUONG_DAN_SU_DUNG.txt mục 0-D).
 SPLIT_PATTERN = re.compile(
-    r"\s*(?:,|;"
+    # v7.8: phẩy CHỈ tách lệnh khi không nằm giữa hai chữ số. Trước đây ","
+    # tách vô điều kiện, nên "2,5 nhân 4" thành HAI lệnh ("2" và "5 nhân 4") và
+    # câu đó ra 20 thay vì 10 - sai mà không báo. Lookbehind chỉ dùng ở nhánh
+    # phẩy; các nhánh còn lại (từ nối) vẫn so khớp như cũ.
+    r"\s*(?:(?<!\d),(?!\d)|;"
     r"|\brồi sau đó\b|\broi sau do\b|\bsau đó\b|\bsau do\b"
     r"|\btiếp theo\b|\btiep theo\b|\brồi\b|\broi\b"
     r"|\bđồng thời\b|\bdong thoi\b|\bvà cũng\b|\bva cung\b)\s*"
@@ -269,6 +273,34 @@ for _plain, _accented in COMMON_ACCENTS.items():
     ACCENT_MAP.setdefault(_plain, _accented)
 PLAIN_VOCAB = {strip_accents(w) for w in VOCAB}
 
+# ---------------------------------------------------------------------------
+# KHÔNG tự sửa lỗi gõ thành một từ khoá HỆ THỐNG (v7.9 bổ sung 7)
+# ---------------------------------------------------------------------------
+# "alarm clock" bị đổi thành "alarm lock" rồi KHOÁ MÁY thật. "tôi đang asleep"
+# thành "tôi đang sleep" rồi cho máy ngủ. Nguyên nhân là nhánh (d) sửa lỗi gõ:
+# "clock" không có trong VOCAB nên bị kéo về "lock" (ratio 0.889), "asleep" về
+# "sleep" (0.909), "block"/"locks" cũng về "lock".
+#
+# Đã cân nhắc nâng ngưỡng cho riêng nhóm này nhưng KHÔNG khả thi, và đây là
+# số đo: độ tương đồng của lỗi gõ THẬT ("slep"->"sleep" 0.889, "slep"->"sleep",
+# "hutdown"->"shutdown" 0.875) trùng với từ tiếng Anh bị bắt ("clock"->"lock"
+# 0.889, "asleep"->"sleep" 0.909). Hai nhóm CHỒNG LÊN nhau ở 0.86-0.91, nên
+# không có ngưỡng nào tách được chúng.
+#
+# Vì vậy chọn theo CHI PHÍ: sửa sai một từ thường thì người dùng gõ lại được;
+# sửa sai thành lệnh khoá máy/ngủ/shutdown thì hậu quả là hành động trên máy
+# thật, và người dùng không có cách nào biết vì sao. Bỏ 22 lỗi gõ thật để đổi
+# lấy việc không khoá nhầm máy là chấp nhận đáng kể.
+_UNSAFE_TO_CORRECT = frozenset({
+    "lock", "sleep", "restart", "shutdown", "logout", "mute", "unmute",
+    "screenshot", "volumeup", "volumedown",
+})
+
+
+def _safe_to_correct_to(candidate: str) -> bool:
+    """Không tự kéo một từ lạ thành từ khoá hệ thống."""
+    return strip_accents(candidate).replace("_", "").lower() not in _UNSAFE_TO_CORRECT
+
 
 def smart_normalize(text: str) -> str:
     """
@@ -296,9 +328,28 @@ def smart_normalize(text: str) -> str:
             out.append(ACCENT_MAP[word])
             continue
         # (d) sai chính tả nhẹ -> tìm từ gần giống nhất
-        if len(word) >= 4:
+        #
+        # v7.8 - CHỈ chạy khi từ KHÔNG DẤU. Bản cũ áp cho MỌI từ dài ≥4 ký tự,
+        # kể cả từ người dùng đã gõ CÓ DẤU đúng - và đo được 12/41 từ thông dụng
+        # bị đổi thành MỘT TỪ KHÁC, trong đó có từ mất hẳn âm tiết:
+        #
+        #   "chơi" -> "cho"      (chơi -> cho,   ratio 0.86)
+        #   "nhanh" -> "nhân"    "chậm" -> "cảm"   "xinh" -> "xin"
+        #   "giấy" -> "giá"      "thường" -> "trường"   "tiền" -> "thiền"
+        #
+        # Nguyên nhân: `difflib` so độ TƯƠNG ĐỒNG, nên một từ 4 ký tự và một từ
+        # 3 ký tự chung 3 ký tự vẫn đạt 2*3/7 = 0.86 > 0.82. Cắt/thêm một nguyên
+        # âm tiết vẫn "giống nhau" theo thang đo đó - và kết quả là câu nói đổi
+        # NGHĨA mà không có gì báo: "chơi nhạc" -> "cho nhạc".
+        #
+        # Sửa: từ đã CÓ DẤU thì giữ nguyên. Người gõ dấu là cố ý, nên gần đúng
+        # với một từ khác nhiều khả năng là từ khác thật chứ không phải lỗi gõ;
+        # còn lỗi gõ thật sự (gõ nhanh, STT) đều ra từ KHÔNG dấu - đúng cái mà
+        # nhánh này sinh ra để sửa. Sửa sai còn tệ hơn không sửa: sai thì người
+        # dùng gõ lại được, còn đổi nghĩa thì trợ lý làm sai việc.
+        if len(word) >= 4 and strip_accents(word) == word:
             near = difflib.get_close_matches(word, VOCAB, n=1, cutoff=0.82)
-            if near:
+            if near and _safe_to_correct_to(near[0]):
                 out.append(near[0])
                 continue
             near = difflib.get_close_matches(strip_accents(word), ACCENT_MAP, n=1, cutoff=0.85)
@@ -363,7 +414,10 @@ class ContextMemory:
 
     @property
     def last_intent(self):
-        return self.history[-1]["intent"] if self.history else None
+        # v7.8: `.get()` thay vì index thẳng: `remember()` nhận dict bất kỳ
+        # (script đọc JSON của mình, test tự dựng lịch sử), nên một mục thiếu
+        # "intent" làm property này nổ `KeyError` thay vì trả None.
+        return self.history[-1].get("intent") if self.history else None
 
     def resolve(self, text: str) -> str:
         """Thay từ chỉ định bằng đối tượng đã nhắc đến trước đó."""
@@ -391,6 +445,25 @@ class ContextMemory:
 # ============================================================================
 # 5. GHI NHẬT KÝ ĐỂ MÁY HỌC THÊM (ACTIVE LEARNING)
 # ============================================================================
+def _as_confidence(value: object) -> float:
+    """Ép `confidence` về số trong [0,1]; giá trị hỏng -> 0.0 ("không hiểu").
+
+    Dùng chung cho `_judge()` và `log_feedback()` để một câu lệnh không thể
+    mang đồng thời hai nghĩa: "tôi không chắc" (0.0) và "tôi chắc tuyệt đối"
+    (NaN so sánh sai theo mọi hướng). `bool` bị loại có chủ đích: `True` là 1.0
+    thì một kết quả cờ `true` trong file JSON sẽ bị coi là tự tin tuyệt đối.
+    """
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return min(1.0, max(0.0, number))
+
+
 def log_feedback(text: str, intent: str, confidence: float, correct: bool = False):
     """
     Ghi câu nói vào feedback.csv. File này sẽ được train_nlu.py / train_phobert.py
@@ -401,18 +474,24 @@ def log_feedback(text: str, intent: str, confidence: float, correct: bool = Fals
     - verified = 0 : máy đoán, chưa chắc đúng -> chỉ để bạn xem lại
     """
     try:
-        is_new = not os.path.exists(FEEDBACK_PATH)
+        # v7.8: file RỖNG (0 byte) phải được coi là "chưa có" chứ không phải
+        # "đã có". Bản cũ chỉ kiểm tra `os.path.exists`, nên sau một lần mất
+        # điện/hết đĩa để lại file 0 byte, lần ghi kế tiếp KHÔNG ghi dòng
+        # tiêu đề - mà `train_nlu.py` đọc bằng `csv.DictReader`, tức lấy dòng
+        # dữ liệu đầu tiên làm TÊN CỘT. Hậu quả: câu đầu bị ăn mất và mọi câu
+        # sau đó không còn khoá "text"/"verified" nên bị bỏ qua lặng lẽ - toàn
+        # bộ "dạy" của người dùng im lặng biến mất khỏi lần huấn luyện sau.
+        is_new = not os.path.exists(FEEDBACK_PATH) or os.path.getsize(FEEDBACK_PATH) == 0
         with open(FEEDBACK_PATH, "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             if is_new:
                 writer.writerow(["time", "text", "intent", "confidence", "verified"])
             # `round(float(confidence))` tung lam hong buoc ghi khi NLU truyen
             # chuoi ("0.8") hoac None; file nay la Dau vao cua lan huan luyen ke
-            # tiep nen mot dong hong co the keo theo train_nlu.py.
-            try:
-                conf = round(float(confidence), 4)
-            except (TypeError, ValueError):
-                conf = 0.0
+            # tiep nen mot dong hong co the keo theo train_nlu.py. v7.8: dung
+            # chung `_as_confidence` de NaN/inf cung khong loi vao CSV (NaN thi
+            # doc lai cung khong so sanh duoc, "0" thi lam mau so loi).
+            conf = round(_as_confidence(confidence), 4)
             writer.writerow([
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 as_text(text), as_text(intent), conf, 1 if correct else 0,
@@ -502,8 +581,18 @@ class NLU:
     # ------------------------------------------------------------------
     @staticmethod
     def _judge(result: dict) -> str:
-        """Quyết định nên làm ngay, hỏi lại, hay báo không hiểu."""
-        conf = result.get("confidence", 0.0)
+        """Quyết định nên làm ngay, hỏi lại, hay báo không hiểu.
+
+        v7.8: `confidence` được ép về số HỢP LỆ trước khi so sánh. Bản cũ lấy
+        thẳng `result.get("confidence", 0.0)` rồi `conf < CONFIDENCE_ASK`, nên
+        kết quả đi qua tay nơi khác (script đọc file JSON của mình, model trả
+        `None`) làm nổ ``TypeError: '<' not supported between 'NoneType' and
+        'float'`` ngay giữa lúc hiển thị kết quả. Tệ hơn: `nan` so sánh với gì
+        cũng cho False nên câu đó rơi thẳng xuống cuối hàm và được đánh dấu
+        ``ok`` - tức được THỰC THI. Nay giá trị hỏng/NaN/vô hạn/ngoài [0,1] đều
+        thành 0.0, tức "không hiểu" chứ không phải "làm luôn".
+        """
+        conf = _as_confidence(result.get("confidence"))
         if conf < CONFIDENCE_ASK:
             return "unknown"
         # CHỈ coi là hành động nguy hiểm khi intent thật sự là system_control

@@ -38,7 +38,13 @@ from typing import Final
 
 # Pre-compiled regex cho hiệu năng - để dấu - ở cuối để tránh range
 _WS_RE: Final = re.compile(r"\s+")
-_KEEP_RE: Final = re.compile(r"[^\w\s./:\\-]+", re.UNICODE)
+# v7.9: giữ thêm ký hiệu toán người hay gõ tay. Trước đây `_KEEP_RE` xoá SẠCH
+# mọi thứ ngoài `\w\s./:\-`, nên "√16" thành "16": câu mất trọn dấu hiệu
+# "đây là căn bậc hai" và trợ lý báo "chưa tính được phép tính 16" thay vì ra 4.
+# Vá ở tầng chuẩn hoá chung thay vì riêng trong parser toán, vì nhiều tầng
+# khác cũng đọc nguyên văn người gõ (`predict_intent` dựng entity từ đây).
+# `√` vẫn được parser toán đổi thành "sqrt" qua `_protect_math_syntax`.
+_KEEP_RE: Final = re.compile(r"[^\w\s./:\\\-+%*^√∛±÷]+", re.UNICODE)
 _INVALID_FILENAME_RE: Final = re.compile(r'[<>:"/\\|?*]')
 
 __all__ = [

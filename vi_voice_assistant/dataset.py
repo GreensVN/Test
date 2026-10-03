@@ -507,22 +507,26 @@ def load_extra_csv(path: str | Path = "my_dataset.csv") -> int:
     và ghép vào INTENT_DATA. Gọi trước khi huấn luyện nếu cần.
     v7.0: dùng pathlib, type hints.
     """
-    import csv
+    from csv_utils import read_keyed_csv
 
     csv_path = Path(path)
     if not csv_path.exists():
         return 0
     count = 0
     try:
-        with csv_path.open(encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                text = (row.get("text") or "").strip().lower()
-                intent = (row.get("intent") or "").strip()
-                if text and intent:
-                    INTENT_DATA.setdefault(intent, [])
-                    if text not in INTENT_DATA[intent]:
-                        INTENT_DATA[intent].append(text)
-                        count += 1
+        # v7.8: `csv.DictReader` (bỏ hẳn) coi dòng đầu là tên cột, nên một
+        # my_dataset.csv KHÔNG có tiêu đề - rất dễ có vì file này do người dùng
+        # tự viết tay - cho count=0 và in ra "Đã nạp thêm 0 câu": y hệt câu
+        # "file của tôi rỗng", không có cảnh báo nào. `read_keyed_csv` đọc được
+        # cả hai kiểu và báo rõ khi thiếu tiêu đề (dùng chung với train_nlu).
+        for row in read_keyed_csv(csv_path, ("text", "intent"), csv_path.name):
+            text = (row.get("text") or "").strip().lower()
+            intent = (row.get("intent") or "").strip()
+            if text and intent:
+                INTENT_DATA.setdefault(intent, [])
+                if text not in INTENT_DATA[intent]:
+                    INTENT_DATA[intent].append(text)
+                    count += 1
     except UnicodeDecodeError as e:
         # Rủi ro THẬT khi tự sửa/tạo file bằng tay: Notepad trên Windows 7
         # mặc định lưu kiểu ANSI chứ không phải UTF-8 - đọc bằng utf-8-sig

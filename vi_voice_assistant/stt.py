@@ -30,6 +30,11 @@ SILENCE_DURATION = 1.2
 MAX_DURATION = 15.0
 CHUNK_DURATION = 0.1
 
+# v7.9: số lần thử tải model offline trước khi chuyển hẳn sang Google STT.
+# Một lần là quá ít: lỗi tải thường là lỗi TẠM THỜI (mạng chập chờn, đĩa bận),
+# và bỏ model sau một lần thất bại là mất nhầm.
+_MAX_MODEL_LOAD_ATTEMPTS = 3
+
 
 def _rms(chunk) -> float:
     try:
@@ -65,6 +70,10 @@ class STT:
         self._use_google = False
         self._sd: Any = None
         self._recognizer: Any = None
+        # v7.9: đếm số lần tải model đã thử, và số lần Google STT đã hỏng liên
+        # tiếp. Xem `_load_model` và `_google_transcribe`.
+        self._load_attempts = 0
+        self._google_failures = 0
 
     def _load_model(self):
         if self._pipe is not None or self._use_google:
@@ -72,36 +81,51 @@ class STT:
 
         safe_print(f"[STT] Đang tải model {self.model_name} ...")
         safe_print("      (Lần đầu ~1GB, từ lần sau <10s)")
-        try:
-            import torch
-            from transformers import pipeline
-
-            dev = self.device
-            if dev == "auto":
-                dev = "cuda" if torch.cuda.is_available() else "cpu"
-
-            self._pipe = pipeline(
-                "automatic-speech-recognition",
-                model=self.model_name,
-                device=dev,
-                chunk_length_s=30,
-                generate_kwargs={"language": "vi", "task": "transcribe"},
-            )
-            safe_print(f"[STT] Đã tải model ({dev.upper()}). Sẵn sàng nghe.")
-        except Exception as e:
-            safe_print(f"[STT] Không tải được PhoWhisper ({e})")
-            safe_print("[STT] Thử dùng Google STT (cần internet)...")
+        last_error: Exception | None = None
+        # v7.9: THỬ LẠI trước khi bỏ model offline. Bản cũ ghim `_use_google`
+        # ngay lần tải đầu tiên hỏng, nên MỘT lỗi tạm thời (mạng chập chờn lúc
+        # tải model, đĩa bận một lát) khiến trợ lý chuyển sang STT đám mây
+        # VĨNH VIỄN trong cả phiên - và im lặng, vì đường dẫn cũng là đường của
+        # người dùng, chỉ là âm thanh của nó nằm trên máy người khác.
+        while self._load_attempts < _MAX_MODEL_LOAD_ATTEMPTS:
+            self._load_attempts += 1
             try:
-                import speech_recognition  # noqa: F401
+                import torch
+                from transformers import pipeline
 
-                self._use_google = True
-                safe_print("[STT] Dùng Google STT làm dự phòng.")
-            except ImportError as err:
-                raise RuntimeError(
-                    "Không có module nào cho STT.\n"
-                    "Cài bằng:  pip install transformers torch sounddevice\n"
-                    "hoặc:      pip install SpeechRecognition sounddevice"
-                ) from err
+                dev = self.device
+                if dev == "auto":
+                    dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+                self._pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=self.model_name,
+                    device=dev,
+                    chunk_length_s=30,
+                    generate_kwargs={"language": "vi", "task": "transcribe"},
+                )
+                safe_print(f"[STT] Đã tải model ({dev.upper()}). Sẵn sàng nghe.")
+                return
+            except Exception as e:  # thử lại rồi mới bỏ
+                last_error = e
+                logger.warning("Không tải được PhoWhisper (lần %d/%d): %s",
+                               self._load_attempts, _MAX_MODEL_LOAD_ATTEMPTS, e)
+
+        assert last_error is not None
+        safe_print(f"[STT] Không tải được PhoWhisper sau "
+                   f"{_MAX_MODEL_LOAD_ATTEMPTS} lần ({last_error})")
+        safe_print("[STT] Thử dùng Google STT (cần internet)...")
+        try:
+            import speech_recognition  # noqa: F401
+
+            self._use_google = True
+            safe_print("[STT] Dùng Google STT làm dự phòng.")
+        except ImportError as err:
+            raise RuntimeError(
+                "Không có module nào cho STT.\n"
+                "Cài bằng:  pip install transformers torch sounddevice\n"
+                "hoặc:      pip install SpeechRecognition sounddevice"
+            ) from err
 
     def _record(self):
         import numpy as np
@@ -150,14 +174,27 @@ class STT:
             return self._google_from_array(audio)
 
         audio_float = audio.astype(np.float32) / 32768.0
-        result = self._pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_float})
+        # v7.9: lỗi giải mã (audio hỏng, GPU tràn bộ nhớ) trước đây nổ thẳng ra
+        # ngoài và SẬT cả câu lệnh. Đường Google trả "" êm, đường offline thì
+        # phải công bằng.
+        try:
+            result = self._pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_float})
+        except Exception as e:
+            logger.warning("Lỗi khi giải mã audio: %s", e)
+            safe_print(f"[STT] Lỗi khi xử lý âm thanh: {e}")
+            return ""
         return (result.get("text") or "").strip()
 
     def transcribe_file(self, path: str | Path) -> str:
         self._load_model()
         if self._use_google:
             return self._google_from_file(str(path))
-        result = self._pipe(str(path))
+        try:
+            result = self._pipe(str(path))
+        except Exception as e:
+            logger.warning("Lỗi khi giải mã file %s: %s", path, e)
+            safe_print(f"[STT] Lỗi khi xử lý file {path}: {e}")
+            return ""
         return (result.get("text") or "").strip()
 
     def listen(self) -> str:
@@ -165,6 +202,43 @@ class STT:
         text = self.transcribe_array(audio)
         safe_print(f"   Nhận diện: {text!r}")
         return text
+
+    def _google_transcribe(self, audio_data) -> str:
+        """Gọi Google STT, PHÂN BIỆT rõ hai kiểi hỏng.
+
+        v7.9: bản cũ nuốt mọi lỗi vào `return ""` - người dùng nghe im rồi tưởng
+        mình nói không ra, trong khi thật ra là mất mạng hoặc hết hạn mức. Nói
+        không rõ và mất mạng cần hai cách xử lý KHÁC nhau (nói lại vs gõ tay), và
+        hàm `listen_once` ở tầng trên vốn đã phân biệt được; lớp này thì không.
+        """
+        import speech_recognition as sr
+
+        if self._recognizer is None:
+            self._recognizer = sr.Recognizer()
+        try:
+            text = str(self._recognizer.recognize_google(audio_data,
+                                                        language="vi-VN"))
+            # Nghe được rồi thì số lần hỏng liên tiếp tính lại từ đầu. Không
+            # reset thì một lần mất mạng 3 giây giữa phiên làm bộ đếm leo lên
+            # mãi, và cảnh báo "lần 1001" xuất hiện ở câu nói hoàn toàn bình
+            # thường.
+            self._google_failures = 0
+            return text
+        except sr.UnknownValueError:
+            safe_print("[STT] Không nghe rõ, bạn thử nói lại nhé.")
+            self._google_failures = 0
+            return ""
+        except Exception as e:  # mất mạng, hết hạn mức, dịch vụ lỗi...
+            self._google_failures += 1
+            logger.warning("Lỗi Google STT (lần %d liên tiếp): %s",
+                           self._google_failures, e)
+            # Chỉ cảnh báo một lần cho mỗi 10 lần liên tiếp, nếu không thì mỗi
+            # câu nói hỏng lại in thêm một dòng, thành spam ngay trong lúc dùng.
+            if self._google_failures == 1 or self._google_failures % 10 == 0:
+                safe_print(f"[STT] Lỗi kết nối dịch vụ STT: {e}")
+                safe_print("      (không có mạng, hoặc dịch vụ bị giới hạn) "
+                           "- bạn có thể gõ tay.")
+            return ""
 
     def _google_from_array(self, audio) -> str:
         import speech_recognition as sr
@@ -182,10 +256,7 @@ class STT:
 
         with sr.AudioFile(buf) as source:
             audio_data = self._recognizer.record(source)
-        try:
-            return str(self._recognizer.recognize_google(audio_data, language="vi-VN"))
-        except Exception:
-            return ""
+        return self._google_transcribe(audio_data)
 
     def _google_from_file(self, path: str) -> str:
         import speech_recognition as sr
@@ -194,10 +265,7 @@ class STT:
             self._recognizer = sr.Recognizer()
         with sr.AudioFile(path) as source:
             audio_data = self._recognizer.record(source)
-        try:
-            return str(self._recognizer.recognize_google(audio_data, language="vi-VN"))
-        except Exception:
-            return ""
+        return self._google_transcribe(audio_data)
 
 
 # --- Simple utility (Google STT via sounddevice) ---

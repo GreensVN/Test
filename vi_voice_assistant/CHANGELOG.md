@@ -1,5 +1,845 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9f) - "nhắc tôi X" phải NHẮC, không phải LÀM LUÔN X; 1134 test
+
+**Lỗi nguy hiểm nhất tìm được trong đợt này: không có dấu hiệu báo lỗi.**
+Người nói *"nhắc tôi thời tiết hà nội"* và nghe phản hồi hợp lý. Máy kiểm tra
+thời tiết NGAY, báo xong - và **không có lời nhắc nào được tạo**. Người dùng
+tưởng đã đặt nhắc. Không có cách nào phát hiện ngoài việc đợi mãi không thấy nhắc.
+
+| Người gõ | Trước | Việc máy làm thật |
+|---|---|---|
+| `nhắc tôi thời tiết hà nội` | `get_weather` **0.99** | xem thời tiết ngay |
+| `nhắc tôi tính 5 cộng 7` | `calculate` **0.95** | tính ngay |
+| `nhắc tôi tìm giá vé` | `search_web` **0.93** | tìm ngay |
+| `nhắc tôi mở file hóa đơn` | `open_file` **0.81** | mở file thật |
+
+Lý do: nội dung của lời nhắc chứa từ khoá của lệnh khác, và model bị từ đó kéo
+đi. **"Nhắc tôi ..." là DỮ LIỆU TRỰC TIẾP của lệnh nhắc nhở, mạnh hơn bất kỳ từ
+nào trong phần nội dung** - nên nó phải được cãi, không xét độ tự tin.
+
+**Một chỗ dễ sửa sai, đã sửa sai một lần.** Rule này phải chạy TRƯỚC
+`_UNAMBIGUOUS_CONFLICT_RE`, vì `"nhắc tôi mở file hóa đơn"` chứa `"mở file"` nên
+xung đột sẽ giữ nguyên nhánh sai. Nhưng nó cũng phải để `nhắc tôi hôm nay là
+thứ mấy` là câu HỎI ngày giờ, không phải lệnh nhắc.
+
+**Phần hai, cùng bổ sung: mốc giờ đứng TRƯỚC thì động từ sống sót.**
+`_REMINDER_LEAD_RE` neo `^`, nên nó chỉ thấy động từ khi động từ đứng đầu câu.
+Khi mốc giờ đứng trước thì động từ bị mốc giờ che:
+
+    "mai nhắc tôi họp"          -> "nhắc tôi họp"
+    "2 ngày nữa nhắc tôi đi chợ" -> "nhắc tôi đi chợ"
+
+Trợ lý đọc thành *"Nhắc bạn: nhắc tôi họp"* - máy tự nhắc mình nhắc lại. Sửa:
+bóc mốc giờ xong thì bóc tiếp động từ.
+
+**Bóc tiếp một cách vô điều kiện thì hỏng câu khác - bắt được nhờ test có sẵn.**
+`"nhắc tôi tảo file báo cáo"`: lần đầu ăn `"nhắc tôi"`, nếu bóc tiếp thì lần
+hai ăn `"tảo file"` và nội dung còn `"báo cáo"` - trong khi `"tảo file báo cáo"`
+mới đúng là VIỆC CẦN LÀM. Lần đầu sống sót chỉ là do `re.sub` thay khớp ngoài
+cùng bên trái. Nên chỉ bóc lại khi lần đầu KHÔNG bóc được gì.
+
+**Một lỗ hổng của bộ test, phát hiện khi truy vết.** Test cũ gọi thẳng
+`_reminder_task` nên xanh, nhưng người dùng thật đi qua `predict_intent`, và ở
+đó câu này còn bị đoán nhầm `open_file` vì chữ "file". Test mới gọi đúng đường
+người dùng đi (`predict_intent`) chứ không chỉ gọi hàm nội bộ.
+
+**Kiểm chứng.** 1134 test: `pytest -q` -> `1134 passed`; `run_tests.py -q` ->
+`1134 passed`; `ruff check` sạch; `mypy` sạch trên 60 file nguồn. Trong 29 test
+mới, **16 test FAIL trên `59b8da0`**.
+
+## v7.9 (bổ sung 9e) - Lệnh DỪNG không được thành lệnh PHÁT; 1105 test
+
+**Cùng lớp lỗi với `"alarm clock"` khoá nhầm máy: làm việc KHÁC hẳn với điều
+người dùng nói, mà không có tín hiệu nào cho người dùng nghi ngờ.**
+`play_media` mở YouTube tìm từ khoá lấy từ câu, nên lệnh DỪNG rơi vào đó thì máy
+mở trình duyệt tìm **chính những từ dừng đó**:
+
+| Người gõ | Nhận về (đã kiểm chứng qua executor) |
+|---|---|
+| `tắt nhạc` | `Đang phát tắt nhạc` + mở YouTube (0.92) |
+| `dừng nhạc` | `Đang phát dừng nhạc` + mở YouTube (0.52) |
+| `ngừng phát nhạc` | `Đang phát ngừng phát nhạc` + mở YouTube |
+| `bật đèn` | `Đang phát đèn` + mở YouTube (0.24) |
+| `mở đèn` | mở **FILE** tên `đèn` |
+| `tắt youtube` | `Đang phát tắt youtube` + mở YouTube |
+
+Nguyên nhân chung: **cực tính DỪNG chưa tồn tại trong hệ thống.** Không có gì
+để nhận ra "dừng" khác "phát", nên "tắt nhạc" trở thành "phát (tắt nhạc)".
+
+Máy này không điều khiển được đèn, cũng không dừng được phát (nó chỉ mở URL).
+Nên kết quả **đúng** là thừa nhận không hỗ trợ - và `action_system_control` đã
+có sẵn câu đó. Việc cần sửa chỉ là cho các lệnh này rơi đúng chỗ:
+`SYSTEM_KEYWORDS` (đăng ký hành động) + `_UNAMBIGUOUS_INTENT_KEYWORDS` (cãi
+model, không xét độ tự tin - vì `"dừng nhạc"` không thể là lệnh phát).
+
+**Thêm một lỗ hổng của chính bộ test, phát hiện khi viết test cho mục này.**
+`pytest.fail` dùng trong test mới mà shim `run_tests.py` không có, và shim thiếu
+thuộc tính thì **máy có pytest vẫn xanh** - đúng cái bẫy mà
+`test_shim_phai_co_du_moi_pytest_attr_ma_test_dang_dung` sinh ra để chặn. Đã bổ
+sung `_fail` vào shim. Nhưng bổ sung thuộc tính thôi là chưa đủ: shim "no-op"
+vẫn xanh, nên đã thêm test đánh giá CẢ HAI ĐƯỜNG CHẠY - một test cố tình gọi
+`pytest.fail` trên runner thật, và runner phải **thoát với mã 1** và in
+`0 pass, 1 fail`. Đã kiểm chứng.
+
+`pytest.fail` của pytest ném `Failed` (thuộc `BaseException`); ném đúng vậy thì
+runner không gán nhận là test thất, nó lọt ra ngoài. `AssertionError` cho cùng
+kết quả trên cả hai đường chạy, và đó là thứ test cần.
+
+**Kiểm chứng.** 1105 test: `pytest -q` -> `1105 passed`; `run_tests.py -q` ->
+`1105 passed`; `ruff check` sạch; `mypy` sạch trên 59 file nguồn. Trong 24 test
+mới, **10 test FAIL trên `3af710f`**. Có test ở tầng executor: lệnh không hỗ
+trợ thì **không được mở trình duyệt**.
+
+## v7.9 (bổ sung 9d) - Câu chỉ có động từ thì HỎI, không đoán; 1080 test
+
+**Người dùng chỉ nói *"tìm kiếm"* - một lệnh rất tự nhiên - và máy mở thật
+Google tìm chính mẫu tự khiến.** Đã kiểm chứng qua đúng đường người dùng đi:
+
+| Người gõ | Nhận về |
+|---|---|
+| `tìm kiếm` | `Đang tìm kiếm kiếm` + mở Google tìm **kiếm** (con dao) |
+| `tra cứu` | `Đang tìm kiếm cứu` + mở Google tìm **cứu** |
+| `tìm` | `Đang tìm kiếm tìm` |
+
+Hai nguyên nhân chồng nhau:
+
+1. `SEARCH_PREFIX` bắt buộc có `\s+` phía sau, nên câu chỉ toàn động từ thì
+   nhánh dài (`tìm kiếm`) không khớp được; regex rơi xuống nhánh ngắn (`tìm`)
+   và để lại mảnh vỡ. Sửa: cho phép `(?:`\s+|$)`.
+2. `_entity_search_web` có `or ctx.raw` "đỡ rỗng", nên khi bóc hết thì lấy lại
+   nguyên câu. Sửa: trả rỗng, để `action_search_web` hỏi *"Bạn muốn tìm gì ạ?"*.
+
+**Hỏi thì tốn một lượt; đoán thì mở nhầm cửa sổ mà người dùng không hề yêu
+cầu.** Đó là cả tiêu chí chọn giữa hai nhánh, không phải chi tiết hình thức.
+
+**Một lỗi nữa do chính bản sửa lộ ra, đã sửa luôn.** Sau khi cho phép `$`,
+câu không dấu `tra cuu` vẫn ra `cuu`: nhánh `tra` (không dấu) khớp được nên
+`re.search` cho rằng "đã khớp theo nghĩa có dấu" và không thử nghĩa không dấu
+`tra cứu` ăn trọn câu. Sửa: xét CẢ HAI cách hiểu rồi lấy cách hiểu **bóc dài
+nhất** - đúng tinh thần `re` là thử nhánh dài trước.
+
+**Kiểm chứng.** 1080 test: `pytest -q` -> `1080 passed`; `run_tests.py -q` ->
+`1080 passed`; `ruff check` sạch; `mypy` sạch trên 58 file nguồn. Trong 16 test
+mới, **9 test FAIL trên `80aa3d6`**. Có một test kiểm chứng cả tầng executor:
+target rỗng thì phải hỏi và **không được mở trình duyệt**.
+
+## v7.9 (bổ sung 9c) - Sửa lỗi DO CHÍNH BẢN SỬA 9b tạo ra; 1064 test
+
+**Bổ sung 9b tự hỏng thêm một lỗi, và hỏng kiểu tệ nhất: im lặng.**
+`phát podcast về công nghệ` -> **`podcast về công`**. Câu vẫn ra, lệnh vẫn
+chạy, chỉ là dữ liệu bị cắt cụt ở đuôi. Nguyên nhân: nhánh khớp trên bản BỎ
+DẤU mà bổ sung 9b thêm vào không phân biệt được `nghe` với `nghệ`, vì bỏ dấu
+thì cả hai đều ra `nghe`.
+
+Đã đối chiếu `7ffd814` (trước 9b) để xác nhận đây là hồi quy do 9b gây ra chứ
+không phải lỗi có sẵn: bản đó cho `podcast về công nghệ` - đúng.
+
+**Hai hàng rào, mỗi cái ứng với đúng một cách hỏng đã quan sát được:**
+
+| Hàng rào | Chặn cái gì | Ví dụ |
+|---|---|---|
+| **Trọn từ** | mẫu ăn vào giữa một từ khác | `ho toi` nằm trong `cho toi` -> *"doc bao c nghe"* |
+| **Chốt dấu** | mẫu không dấu ăn vào từ CÓ dấu | `nghe` ăn vào `nghệ` -> *"podcast về công"* |
+
+Hàng rào chốt dấu có một lập luận đứng vững: nhánh bỏ dấu sinh ra để phục vụ
+người gõ **không dấu**, nên nó chỉ được bắn vào chỗ người dùng đã chủ động bỏ
+dấu. Ai gõ `nghệ` là đã chứng minh mình gõ được dấu - lúc đó `nghệ` không phải
+`nghe`.
+
+**Hai lần vỡ trong lúc sửa, ghi lại vì chúng chỉ ra cái bẫy thật:**
+
+1. Hàng rào đầu tiên lấy nguyên khớp để xét biên. Mẫu hay kết thúc bằng `\s+`,
+   nên ký tự ngay sau khớp luôn là chữ của từ kế tiếp và hàng rào chặn nhầm
+   **chính cái bóc dấu cần làm** - mọi câu bị bỏ nguyên. Phải thu khớp về phần
+   chữ trước khi xét biên.
+2. Bản viết lại dùng mẫu **đã bỏ dấu** ở cả hai nhánh. Ở nhánh có dấu thì mẫu
+   đó không bao giờ khớp được gì, và hàm trả về nguyên câu - hỏng mà không có
+   dấu hiệu nào. Chỉ nhánh không dấu mới được dùng mẫu đã bỏ dấu.
+
+**Còn lại, KHÔNG sửa được và đã ghi rõ.** Người gõ không dấu thì `cong nghe` và
+`con nghe` là MỘT - thông tin phân biệt không còn trong câu, sửa được là bịa.
+`phat podcast về cong nghe` -> `podcast về cong` là hành vi tệ nhất còn lại, và
+nó là hệ quả của việc chấp nhận bất khả phân định, không phải là sơ suất.
+
+**Kiểm chứng.** 1064 test: `pytest -q` -> `1064 passed`; `run_tests.py -q` ->
+`1064 passed`; `ruff check` sạch; `mypy` sạch trên 57 file nguồn. Trong 16 test
+mới, **5 test FAIL trên `f699ad4`** - đúng bản đã tạo ra hồi quy.
+
+## v7.9 (bổ sung 9b) - Gõ KHÔNG DẤU vẫn bóc được động từ; 1048 test
+
+**Cùng một câu, hai kết quả, chỉ khác dấu.** `MEDIA_PREFIX` viết có dấu
+("phát"), nên câu gõ không dấu bóc được gì cả:
+
+| Người gõ | Trước | Sau |
+|---|---|---|
+| `phat nhac` | `phat nhac` (đọc nguyên câu lệnh) | `nhac` |
+| `bat nhac` | `bat nhac` | `nhac` |
+| `cho toi nghe nhac` | `cho toi nghe nhac` | `nhac` |
+| `chơi nhạc` | `chạy nhạc`/`điều nhạc` | `nhạc` |
+| `cho tôi tìm kiếm abc` | `cho tôi tìm kiếm abc` | `abc` |
+
+Đây là lần thứ N của lớp lỗi "mẫu viết không dấu/có dấu lệch chiều với câu
+thật" - và lần này chiều **NGƯỢC**: mẫu CÓ dấu bị áp lên câu KHÔNG dấu.
+
+Cách sửa: so khớp trên CẢ bản có dấu lẫn bản bỏ dấu, nhưng kết quả phải trả
+về câu GỐC. `strip_diacritics` tra ký tự 1-1 nên giữ nguyên độ dài - chỉ số
+trên hai bản là của chung nhau, chỉ cần cắt bằng chính hai chỉ số đó.
+
+**Ràng buộc đã kiểm chứng: đích giữ dấu theo cách đã gõ, không tự thêm dấu.**
+"phat nhac" ra "nhac", "phát nhạc" ra "nhạc". Bộ bóc không thể bỏa dấu người
+dùng chưa từng gõ; bỏa dấu là bịa tin.
+
+**Còn lại, CHƯA sửa (có lý do, không phải bỏ sót).** Cụm nền tảng nằm GIỮA
+câu vẫn lọt: `tìm trên google giá vàng` -> `trên google giá vàng`, và
+`tìm hộ tôi giá laptop` -> `hộ tôi giá laptop`. Đã thử sửa bằng cách bóc mọi
+nơi rồi **bỏ**: bỏ dấu làm hai cụm KHÁC NHAU trùng nhau - `"hộ tôi"` -> `"ho
+toi"`, mà `"ho toi"` nằm ngay trong `"cho tôi"` (vị trí 1). Bản sửa đó làm
+`đọc báo cho tôi nghe` thành `đọc báo c nghe` - **mất cả chữ**, không chỉ bóc
+hơi quá. Muốn sửa đúng thì phải bóc theo RANH GIỚI TỪ; việc đó lớn hơn phạm vi
+sửa lỗi ở đây. Đã khoá lại bằng test ghi rõ hành vi hiện tại
+(`test_cum_nen_tang_o_giua_cau_hien_chua_boc`) để không ai tưởng đã xong.
+
+**Kiểm chứng.** 1048 test: `pytest -q` -> `1048 passed`; `run_tests.py -q` ->
+`1048 passed`; `ruff check` sạch; `mypy` sạch trên 56 file nguồn. Trong 13 test
+mới, **6 test hành vi FAIL trên mã nguồn trước khi sửa** (đã kiểm chứng bằng
+`git stash`).
+
+## v7.9 (bổ sung 9) - Dấu ngoặc trong phép tính; 1035 test
+
+**Lớp lỗi nguy hiểm nhất của toán: người dùng làm đúng mọi thứ, viết rõ ý
+mình, và vẫn nhận về một CON SỐ SAI.** `normalize_text()` xoá `(` `)`, nên ngoặc
+người dùng cố ý gõ để bỏ thứ tự ưu tiên bị xoá sạch, rồi trợ lý tính theo thứ
+tự ưu tiên mặc định:
+
+| Người gõ | Nhận về | Đáng lẽ |
+|---|---|---|
+| `(5 + 3) * 2` | 11 | 16 |
+| `(10-4) / 2` | **8** | 3 |
+| `2*(3+4)` | 10 | 14 |
+| `((5))` | không ra gì | 5 |
+
+Phải sửa ở **hai** tầng, sửa một tầng là không đủ. Giữ ngoặc qua `normalize_text`
+thì chưa đủ, vì mẫu bóc biểu thức chỉ biết "số (toán tử số)\*" nên dừng lại ở
+dấu `)` đầu tiên: `(5 + 3) * 2` ra "5 + 3" = 8. Tầng NLU cũng phải nhận, vì
+`_MATH_SYNTAX_RE` thiếu luôn `-`, nên "10-4" (không khoảng trắng) không được
+định tuyến tới `calculate`, trong khi "10 - 4" thì chạy - cùng một câu, hai kết
+quả, chỉ khác một dấu cách.
+
+`re` không hỗ trợ ngoặc lồng nhau không giới hạn, nên mẫu bóc biểu thức được
+dựng theo độ sâu cố định (`_PAREN_DEPTH = 4`) - đủ cho mọi biểu thức gõ tay.
+
+**Một lỗi do chính bản sửa tạo ra, đã bắt trước khi lên kệ.** Dấu trừ ở đầu số
+âm ("-123") được lớp ký tự `[+\-*/]` tính là TOÁN TỬ, nên câu "abc-123-xyz" ra
+số **-123**. Chốt chặn: bỏ qua ký tự đầu tiên khi kiểm tra có toán tử hay không.
+
+**Hai kỳ vọng test của tôi sai, đã sửa chứ không vòng qua.**
+- `2^3^2`: tôi viết 64, nhưng `**` trong Python là PHẢI KẾT, `2**3**2` = 512.
+  Rồi kiểm lại thì câu này **không tính được** - `_safe_eval` chỉ cho số mũ là
+  HẰNG SỐ, nên `2**(3**2)` bị chặn. Đó là hàng rào chống bom số từ v7.8, giữ
+  nguyên; test nay ghi rõ là hành vi CỐ Ý.
+- `normalize_text` giữ ngoặc: không đúng. Bước chuẩn hoá chung xoá ngoặc là
+  đúng (dùng cho mọi intent); việc giữ nằm ở `_protect_math_syntax`. Test nay
+  kiểm đúng thứ đáng kiểm: biểu thức còn nguyên khi tới parser.
+
+**An toàn: ngoặc KHÔNG mở đường thoát.** `_safe_eval` đã cho phép ngoặc trong
+danh sách node an toàn ngay từ trước, nhưng đó là danh sách node AST, không
+phải van `eval` mở. Đo lại: `(1).__class__`, `().__class__`, `(lambda:1)`,
+`(1)+open('/etc/passwd')`, `(1,2)`, `[1,2]`, `(1 if 1 else 2)`, `(2**999999999)`,
+`(10**400)` - **9/9 bị chặn**. Có 8 test chốt riêng cho điều này.
+
+**Kiểm chứng.** 1035 test: `pytest -q` -> `1035 passed`; `ruff check` 0; `mypy`
+0 lỗi trên **54** file. 48 test mới trong `test_v79_math_parens.py`, **18 FAIL**
+trên `intent_model.py` trước khi sửa. Chạy thật: `(5 + 3) * 2` -> 16,
+`(10-4)/2` -> 3, `2*(3+4)` -> 14, `10-4` -> 6.
+
+
+## v7.9 (bổ sung 8) - Động từ mở đầu lời nhắc và câu đặt lịch; 987 test
+
+**1. Trợ lý tự nhắc lại chính động từ đặt nhắc.** `_REMINDER_LEAD_RE` liệt kê 8
+cụm cố định nên sót những cách nói rất phổ biến - đo được **7/18 câu mở đầu
+bị lỗi**. "đặt nhắc uống nước 10 giờ sáng" cho nội dung nhắc là *"đặt nhắc uống
+nước"*, "tạo nhắc nhở gọi mẹ" cho *"tạo nhắc nhở gọi mẹ"*. Cùng lớp rò rỉ chữ
+đã sửa ở bổ sung 5.
+
+**Cách sửa: ghép CẤU TRÚC câu, không liệt kê từng cụm.** Liệt kê thêm nghĩa là
+lỡ thêm mãi, và `"^"` neo đầu nên `"đặt hẹn giờ"` không bao giờ khớp vì
+"hẹn giờ" không nằm ngay đầu. Nay là ba thành phần **có thứ tự**: [động từ tạo]
+[danh từ nhắc] [người].
+
+Ràng buộc thứ tự là điểm mấu chốt, vì nó giữ nội dung cần làm. Bóc theo từng
+từ thì "nhắc tôi **tạo** file báo cáo" sẽ thành "file" - mất hẳn việc cần nhớ.
+Còn khớp **trọn từ** thì "nhắc việc" ăn đúng cụm, "nhắn tin cho Lan" dừng lại
+đúng chỗ vì "nhắn" khác "nhắc".
+
+**2. "đặt lịch hẹn khách 14 giờ ngày mai" bị đoán thành CÂU HỎI LỊCH** ở 0.72
+- tức trợ lý đọc ra *"Hôm nay là thứ Bảy, ngày 3 tháng 10"* cho một câu người
+dùng rõ ràng đang đặt lịch. Động từ hẹn rõ ràng kèm **mốc giờ cụ thể** thì
+không có cách đọc nào là hỏi lịch, nên cãi model dù nó tự tin.
+
+**Chốt chặn, vì mở ngưỡng cứu thì nuốt mất câu hỏi thật.** Cứu chỉ chạy khi câu
+có **số + đơn vị thời gian** ("14 giờ"), không phải chỉ có ngày. Câu chỉ nói
+ngày mà không có giờ thì vẫn để model quyết. Bộ test có 7 câu hỏi lịch thật
+("hôm nay là thứ mấy", "thứ hai tuần sau là thứ mấy"...) làm chốt chặn ngược.
+
+**Một giả thiết của tôi sai và đã bỏ, ghi lại để không ai làm lại.** Thử thêm
+"lịch hẹn" làm cụm danh từ thì nội dung nhắc thành *"khách"* - mất mất chữ
+"hẹn", chỉ còn lại danh từ trần. "lịch hẹn khách" vốn đã là một tên lời nhắc
+có nghĩa, nên đã bỏ. Sửa bằng cách đo, không đoán.
+
+**Kiểm chứng.** 987 test: `pytest -q` -> `987 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **53** file. 42 test mới trong `test_v79_reminder_lead.py`, **13 FAIL**
+trên `intent_model.py` trước khi sửa. Chạy thật: "đặt nhắc uống nước 10 giờ
+sáng" -> nội dung *"uống nước"*; "đặt lịch hẹn khách 14 giờ ngày mai" -> đặt
+nhắc lúc 14 giờ ngày mai thay vì đọc ngày hôm nay.
+
+
+## v7.9 (bổ sung 7) - Đừng biến lời nói thường thành LỆNH trên máy thật; 945 test
+
+Ba lỗi dưới đây có cùng một hình dạng: trợ lý làm MỘT VIỆC KHÁC với điều
+người dùng nói, và người dùng không có tín hiệu nào để biết. Nghiêm trọng hơn
+mọi lỗi "ra số sai" ở các bổ sung trước, vì nó là lỗi **trên máy thật**.
+
+**1. `SYSTEM_KEYWORDS` không có ranh giới từ.** `lock` khớp NẰM TRONG `clock`
+và `unlock`, nên **"alarm clock" bị KHOÁ MÁY THẬT**. Tương tự `sleep` khớp
+trong `asleep`. Nay mọi mẫu bọc `\b` hai đầu - thêm một từ khoá sau này cũng
+không phải nghĩ lại chuyển này.
+
+**2. `smart_normalize` tự sửa lỗi gõ thành từ khoá hệ thống.** "alarm clock" ->
+"alarm **lock**", "tôi đang asleep" -> "tôi đang **sleep**" rồi máy ngủ thật.
+Đây là lớp sửa CHỒNG lên lớp 1: vá `SYSTEM_KEYWORDS` một mình là không đủ,
+vì câu đã bị đổi thành một từ đứng riêng trước khi tới đó.
+
+**3. "đọc báo hôm nay" bị đoán `get_weather` ở 0.70** -> trợ lý mở thời tiết rồi
+đọc ra *"Đang xem thời tiết đọc báo"*. "hôm nay" là dấu hiệu thời tiết rất
+mạnh, còn "đọc báo" là động từ hiếm. Đã thêm cơ chế cứu theo từ khoá rõ ràng -
+cùng cách đã làm cho toán ở bổ sung 4, và cùng giữ nguyên ngưỡng tự tin cho
+câu mơ hồ.
+
+**Vì sao chọn BỎ 22 lỗi gõ thật thay vì nâng ngưỡng sửa lỗi.** Đã đo trước khi
+quyết định: độ tương đồng của lỗi gõ THẬT (`slep`->`sleep` 0.889,
+`hutdown`->`shutdown` 0.875) **trùng** với từ tiếng Anh bị bắt (`clock`->`lock`
+0.889, `asleep`->`sleep` 0.909). Hai nhóm chồng lên nhau ở 0.86-0.91, nên
+**không có ngưỡng nào tách được**. Vì vậy chọn theo chi phí: sửa sai một từ
+thường thì người dùng gõ lại được; sửa sai thành lệnh khoá máy/ngủ/shutdown thì
+hậu quả là hành động thật và người dùng không biết vì sao. Bỏ 22 lỗi gõ thật để
+đổi lấy việc không khoá nhầm máy là chấp nhận đáng kể, và được ghi lại đây
+thay vì giấu đi.
+
+**"hôm nay" cố ý KHÔNG đưa vào danh sách từ khoá rõ ràng.** Nó nằm trong cả
+"đọc báo hôm nay", "lịch hôm nay" và "thời tiết hà nội hôm nay" - dẫn chứng yếu
+hơn cả cụm động từ. Bộ test có một guard riêng chống lại việc ai đó thêm
+"đọc báo" vào danh sách intent khác rồi nuốt luôn câu hỏi thời tiết.
+
+**Kiểm chứng.** 945 test: `pytest -q` -> `945 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **52** file. 38 test mới trong `test_v79_intent_safety.py`, **12 FAIL**
+trên `intent_model.py` + `nlu_advanced.py` trước khi sửa. Chạy thật:
+"alarm clock" và "tôi đang asleep" không còn khoá/ngủ máy, còn "khoá máy",
+"ngủ đi", "tắt máy", "mo chorme" -> "mở chrome" vẫn chạy.
+
+**Ghi chú môi trường (quan trọng cho người đọc PR).** Trong lúc làm bổ sung này
+môi trường cục bộ bị thay (repo được clone lại, mất toàn bộ lịch sử git cục
+bộ, và `.venv` biến mất). Công việc đã commit trước đó vẫn còn nguyên trên
+GitHub ở `c98b326` và đã được khôi phục lại; phần chưa commit của bổ sung này
+đã viết lại và kiểm chứng lại từ đầu. Các con số trong mục này đều đo lại sau
+khi khôi phục, không phải số của lần chạy trước.
+
+
+## v7.9 (bổ sung 6) - Căn bậc N: `sqrt`, `√`, và lỗi đọc SAI SỐ; 907 test
+
+**Nguy hiểm ở đây không phải là thiếu, mà là SAI.** "căn 2 của 8" cho 1.4142 -
+nghĩa là đọc nhầm **số bị căn**: người Việt viết tắt "căn 2" cho "căn bậc 2",
+nhưng bản cũ chỉ nhận đúng cụm "căn bậc 2". Thiếu chữ "bậc" thì con số 2 bị
+nuốt làm số bị căn. Tệ hơn hẳn "chưa tính được": sai mà vẫn trông như một kết
+quả hợp lệ, nên người dùng không có gì để nghi ngờ. Cùng cả "căn bậc 3 của 27"
+ra 1.7321 thay vì 3.
+
+**`√` bị `normalize_text()` XOÁ MẤT trước khi ai kịp nhìn thấy.** `_KEEP_RE`
+lọc "mọi thứ ngoài `\w\s./:\-`", nên "√16" thành "16" - mất trọn dấu hiệu
+"đây là căn bậc hai", và trợ lý báo *"chưa tính được phép tính 16"*. Vá ở
+`_KEEP_RE` (tầng chuẩn hoá chung) chứ không riêng trong parser toán, vì
+`predict_intent` cũng dựng entity từ chính câu đã chuẩn hoá - vá trong parser
+thì parser nhìn thấy `√` mà tầng trên đã xoá mất. Sau khi vá: "√16" → 4.
+
+**`square root of 16` bị model đoán thành `get_datetime`.** Chữ "time" trong
+"root" đủ để model bịa ra ý nghĩa về giờ, và câu toán hoàn toàn xác định thì
+đáng lẽ không có cách đọc nào khác. Đã thêm vào danh sách từ khoá toán rõ ràng.
+
+**Nghiệm không tồn tại thì trả `None`, không bịa số.** Căn bậc chẵn của số âm
+(căn bậc 2 của -4) không có nghiệm - bản cũ trả `None` và đúng, giữ nguyên.
+Căn bậc lẻ của số âm thì CÓ nghiệm âm (căn bậc 3 của -8 = -2), nay tính đúng.
+Căn bậc 4, 5 cũng nhận, vì "căn 4 của 16" là câu hỏi thật chứ không phải lỗi gõ.
+
+**Một kỳ vọng test của tôi sai, đã sửa chứ không vòng qua.** Tôi viết
+`căn bậc hai của căn bậc hai của 256` = 4, nhưng hành vi có từ trước (và hợp lý
+hơn) là 16 - chỉ căn NGOÀI cùng được tính. Sửa kỳ vọng, không sửa hành vi.
+
+**Kiểm chứng.** 907 test: `pytest -q` → `907 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **51** file. 54 test mới trong `test_v79_math_root.py`, **21 FAIL** trên
+`intent_model.py` + `text_utils.py` trước khi sửa. Bộ test có phần bảo vệ
+`_KEEP_RE` không hỏng đường dẫn và tên biến (`a-b_c`, `C:\Users\me`, `./run.sh`)
+vì lần vá đầu làm rơi dấu `-`, làm hỏng đúng những thứ đó.
+
+
+## v7.9 (bổ sung 5) - Nhắc theo ngày trong tuần; 853 test
+
+**Bug nguy hiểm nhất từ trước đến nay: nhắc nhớ SAI NGÀY mà không hề báo.**
+"nhắc tôi họp 9 giờ sáng thứ hai" cho `day_offset = 0`, tức đặt nhắc **ngay hôm
+nay**, dù câu nói rõ là thứ hai. Ngày đó chỉ còn nằm lại trong nội dung nhắc
+dưới dạng chữ, nên trợ lý đặt đúng giờ sai ngày - và người dùng tin là mình đã
+đặt nhầm. Cùng lớp lỗi với "sau 3 ngày" ở v7.8, chỉ khác ở chỗ dạng này cần
+**lịch thật** chứ không chỉ đếm số. Nay dùng `calendar` + `datetime.date.today()`.
+
+**Ba chỗ đã sửa, mỗi chỗ một kiểu sai khác nhau.**
+
+*Ngày trong tuần bị nuốt mất.* `_parse_relative_day` của v7.8 so mẫu
+`(\d+)\s*(ngay|tuan|thang)`, nên "9 giờ sáng thứ 4 **tuần sau**" ra "4 tuần"
+= **28 ngày**. Con số 4 là của "thứ 4"; "tuần sau" chỉ là dấu hiệu khoảng cách
+chứ không có số đi kèm. Câu có tên ngày nay thuộc về `_parse_clock` và được
+chặn lại ở cả `_parse_delay` lẫn `_parse_relative_day`.
+
+*`0` là falsy.* `map.get(k) or map.get(k2)` với "thứ hai" (giá trị 0) rơi xuống
+nhánh dự phòng rồi ra `None`, khiến **mọi** câu "thứ hai" đều ra offset 0. Cùng
+kiểu với `config.get("port") or 8000` mà cổng 0 không hợp lệ - ở đây 0 lại đúng.
+
+*"tôi" trùng "tới" khi bỏ dấu.* So `\b(?:toi|den|sau|next)\b` trên cả câu thì
+"nhắc **tôi** họp 9 giờ sáng thứ tư" bị đọc thành "thứ tư **tới**" và đẩy sang
+tuần sau. Nay từ này phải đứng liền sau tên ngày. Sai lệch đúng 7 ngày, và sai
+đúng vào hôm nay - tức nhắc sớm ngay lúc người dùng cố nói "TUẦN SAU".
+
+**Quy ước đã chọn, vì đều có cái giá.** "cuối tuần" lấy **Chủ nhật** chứ không
+phải thứ Bảy (thứ Bảy vẫn có thể làm việc, chọn nó là khiến người dùng phải
+đi làm cuối tuần). "cuối tháng" dùng `calendar.monthrange` nên tháng 2 năm
+nhuận ra 29, không phải 28. "đầu tuần" luôn ít nhất 1 ngày vì nói "đầu tuần" vào
+đúng thứ hai thì vô nghĩa.
+
+**Câu xác nhận phải nói ra ngày.** Nó vốn chỉ đọc "9 giờ 0 phút", nên câu
+"...thứ hai" và câu "...mai" cho **cùng một** câu trả lời. Nay thêm ngày khi
+mốc giờ không rơi vào hôm nay.
+
+**Một test cũ phải SỬA, vì nó đang giữ kỳ vọng sai.** "gặp bạn 3 giờ chiều
+thứ hai" từng được kỳ vọng giữ lại chữ "thứ hai" trong nội dung. Kỳ vọng đó
+đúng **khi parser chưa hiểu "thứ hai"** - ngày chỉ còn trong chữ, lịch rơi về
+hôm nay. Nay parser đã tra lịch thật nên chữ đó chỉ là nhiễu. Test không bị
+xóa mà được đổi thành kiểm tra cả hai vế: nội dung sạch **và** ngày rơi đúng
+thứ hai.
+
+**Kiểm chứng.** 853 test: `pytest -q` → `853 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **50** file. 65 test mới trong `test_v79_calendar_weekday.py`, **37 FAIL**
+trên `intent_model.py` trước khi sửa (đo bằng cách thay source cũ + 2 hàm giả
+để test import được). Bộ test lịch dùng `today` **CỐ ĐỊNH** cho các case
+"ngày cụ thể" - một bộ test lịch mà chạy đúng vào thứ Hai thì fail vào thứ Ba
+là bộ test vô dụng. Chạy thật: "9 giờ sáng thứ hai" → *"9 giờ 0 phút thứ hai tuần
+sau"*, "cuối tuần" → *"chủ nhật tuần sau"*, "thứ 4 tuần sau" → đúng 1 tuần.
+
+**Còn lại, chưa sửa.** `sqrt 144` (chưa có toán tử căn bậc hai viết tắt);
+75 khoá `ACCENT_MAP` mơ hồ (`"thoi tiet ha noi"` → `hà nói` thay vì `Hà Nội`) -
+đo thử quy tắc ưu tiên theo dataset cải thiện **0/75**, cần từ điển tần suất
+thật. GitHub Actions chưa từng chạy (token không có quyền Actions).
+
+
+## v7.9 (bổ sung 4) - Logarit và phần dư; 788 test
+
+`log`, `ln`, `mod` thiếu khá lâu, và cái thiếu đó **im lặng**: người gõ đúng câu
+toán rồi nhận về *"chưa tính được"* - y hệt lỗi `12% của 200` mà v7.8 đã sửa.
+
+**Mặc định của "log" là chỗ dễ sai nhất, và sai thì ra CON SỐ SAI chứ không
+ra lỗi.** Trong toán Việt, `log` không nói cơ số là cơ số **10**; còn phần lớn
+máy tính điện tử và mọi công cụ lập trình dùng `log` để chỉ ln. Theo quy ước
+kỹ thuật thì `"log 100"` ra 4.605 thay vì 2 - và câu mô tả nghe rất hợp lệ, nên
+người dùng rất dễ tin là mình sai. Đây là lý do chọn quy ước Việt: chọn sai thì
+ít nhất phải sai *đúng toán học*. Chỗ nào người dùng đã nói rõ thì theo họ:
+`ln` = cơ số e, `log2`/`log3` = cơ số viết liền, `"log 8 cơ số 2"`.
+
+**`fixed_base` nuốt chữ số đầu.** Cho phép mẫu số tùy ý không ràng buộc thì
+`"log 100"` bị tách thành cơ số `"10"` và số `"0"`, ra 10⁰ = 1 thay vì log₁₀(100)
+= 2. Nay cơ số viết liền chỉ nhận `10` hoặc `2`-`9`, đứng ngay sau `log`.
+
+**Phần dư có HAI thứ tự từ, thiếu một là ra số sai.** Tiếng Anh `"5 mod 3"` là
+(số, từ, số); tiếng Việt `"100 chia 7 lấy dư"` đặt cụm `"lấy dư"` ở **cuối**.
+Chỉ nhận thứ tự thứ nhất thì câu tiếng Việt rơi xuống nhánh `"chia"` và ra
+**14.28** thay vì 2 - sai mà vẫn trông như một phép chia bình thường.
+
+**Từ khoá toán KHÔNG THỂ nhầm thì cứu được, kể cả khi model tự tin.** Model đoán
+`system_control` cho `"log 8 cơ số 2"` (0.62) là sai hiển nhiên: không có cách đọc
+nào khác ngoài toán. Ngưỡng tự tin 0.5 của v7.8 **được giữ nguyên** cho câu mơ
+hờ như `"15 + 27"` (có thể là số phiên bản) - mở rộng cứu chỉ cho từ khoá rõ
+ràng, và vẫn cần câu đó thật sự ra một biểu thức tính được.
+
+**Chi tiết đáng ghi:** danh sách từ khoá rõ ràng phải so trên bản **bỏ dấu**.
+Câu `"100 chia 7 lấy dư"` viết có dấu còn các mẫu toán viết không dấu (đúng quy
+ước mọi mẫu khác trong file) - so trên câu gốc thì câu tiếng Việt không bao giờ
+khớp. Đây đúng là lỗi đã làm `"2 ngày nữa"` im lặng ở bổ sung trước, lặp lại ở
+chỗ khác vì cùng một nguyên nhân.
+
+**Kiểm chứng (đo, không ước lượng).** 788 test: `pytest -q` → `788 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **49** file. 39 test mới, trong đó **29 FAIL
+trên `intent_model.py` trước khi sửa**; 10 test còn lại là các case phải giữ
+nguyên (`"15 + 27"` vẫn được bảo vệ bởi ngưỡng tự tin của v7.8, `"5 chia 3"`
+vẫn là phép chia). Chạy thật qua `--once`: `log 100` → 2, `ln 100` → 4.6052,
+`log2 1024` → 10, `log 8 cơ số 2` → 3, `5 mod 3` → 2, `100 chia 7 lấy dư` → 2.
+
+**Còn lại, chưa sửa.** `"nhắc tôi họp sáng mai"` còn để lại `"sáng mai"` trong nội
+dung nhắc; `cuối tuần`/`cuối tháng`/`thứ hai tuần sau` (cần lịch thật); 75 khoá
+`ACCENT_MAP` mơ hồ (`"thoi tiet ha noi"` → `hà nói` thay vì `Hà Nội`) - đo thử
+quy tắc ưu tiên theo dataset cải thiện **0/75**, cần từ điển tần suất thật.
+
+
+## v7.9 (bổ sung 3) - Chỗ để trống `unknown` không được lọt ra miệng người dùng; 749 test
+
+Lỗi cuối trong danh sách, và nặng hơn các lỗi "sai intent" khác vì nó **tự
+tin**: model đoán `open_app` với **0.97**, rồi `extract_entity` trả về chuỗi
+`"unknown"`. Trợ lý đáp *"Chưa biết ứng dụng 'unknown'. Hãy thêm 'unknown' vào
+config.json"* - vừa vô nghĩa, vừa dạy người dùng sửa sai file cấu hình.
+
+**Nguyên nhân không phải stop-word thừa, nên cũng không sửa bằng cách bớt đi.**
+`STOP_WORDS_ALL` phải chứa "trình"/"duyệt" để câu dài bỏ đúng phần đó ("mở
+trình duyệt youtube" → `youtube`). Nhưng với câu NGẮN đúng bằng chỗ đó thì bỏ
+hết rồi không còn gì để gọi tên. Bỏ bớt stop-word sẽ hỏng câu dài, mà câu dài
+là phần lớn các câu.
+
+Cách sửa là **bỏ dần**: `_entity_default` bỏ hết stop-word, và nếu ra chuỗi
+rỗng thì bỏ tiếp động từ lệnh (`mở`, `chạy`, `bật`...) rồi lấy phần còn lại.
+`"mở trình duyệt"` → `trình duyệt`, còn `"mở trình duyệt youtube"` vẫn ra
+`youtube` như cũ.
+
+**`system_control` in thẳng chỗ để trống ra cho người dùng đọc.** `"máy tính"`
+là câu lệnh nửa vời: `_system_action` không khớp từ khóa nào nên trả
+`"unknown"`, rồi executor in *"Không hỗ trợ lệnh hệ thống 'unknown' trên
+Linux"* - tự thừa nhận là không hiểu mà không giúp người dùng nói tiếp được.
+Nay hỏi lại đúng cách `action_search_web` đã làm sẵn từ trước cho chỗ để trống.
+
+**Kiểm chứng (đo, không ước lượng).** 749 test: `pytest -q` → `749 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **48** file. 15 test mới, trong đó **6 FAIL
+trên đúng hai file nguồn trước khi sửa**; 9 test còn lại là các case phải giữ
+nguyên (`"mở trình duyệt youtube"` vẫn phải ra `youtube`, lệnh hệ thống thật
+vẫn phải chạy). Chạy thật qua `--once`: `"mo trinh duyet"` ra *"Chưa biết ứng
+dụng 'trình duyệt'. Hãy thêm vào app_map_linux..."* (gọi đúng tên), `"may
+tinh"` ra *"Bạn muốn làm gì với máy tính ạ?"*.
+
+**Còn lại, chưa sửa.** Intent sai vẫn còn, chỉ là không còn tự tin đến mức vô
+lý nữa: `"chat giup toi"` → `play_media` 0.84, `"lac wifi"` → `play_media` 0.44,
+`"bat den"` → `play_media` 0.22 (ba câu này đều dưới ngưỡng nên bị hỏi lại, an
+toàn). `"thoi tiet ha noi"` ra target `hà nói` thay vì `Hà Nội` - thuộc 75 khoá
+`ACCENT_MAP` mơ hồ đã ghi ở v7.8, cần từ điển tần suất thật mới giải được.
+`log`/`mod` trong toán học; `"nhắc tôi họp sáng mai"` còn để lại "sáng mai" trong
+nội dung nhắc; `cuối tuần`/`thứ hai tuần sau` (cần lịch thật).
+
+
+## v7.9 (bổ sung 2) - STT: đừng đánh đổi vĩnh viễn vì một lần lỗi; 734 test
+
+Cả ba lỗi dưới đây cùng một dạng: **lỗi bị nuốt rồi biến thành hành vi sai**,
+không phải thành thông báo lỗi. Người dùng không biết trợ lý đã chuyển sang
+chế độ khác, và cũng không biết vì sao.
+
+**Một lần tải model hỏng thì bỏ offline VĨNH VIỄN.** `_load_model` ghim
+`_use_google` ngay lần thất bại đầu tiên, và `_load_model` mở đầu bằng
+`if self._pipe is not None or self._use_google: return` - nên một lần lỗi tải
+(mạng chập chờn lúc tải ~1GB, đĩa bận một lát) giáng phiên đó xuống STT đám
+mây **vĩnh viễn**, và âm thanh người dùng bắt đầu nằm trên máy người khác mà
+không ai báo. Nay thử tối đa 3 lần trước khi bỏ. Phải có giới hạn: thử vô hạn
+là treo máy lúc khởi động.
+
+**Nuốt mọi lỗi thành `return ""` khiến "mất mạng" nghe như "nói không ra".**
+`_google_from_array`/`_google_from_file` bắt `Exception` rồi trả `""` - người
+dùng nghe im và tưởng mình nói không ra, trong khi thật ra là mất mạng hoặc hết
+hạn mức. Hai chuyện cần hai cách xử lý khác nhau (nói lại vs gõ tay), và hàm
+`listen_once` ở tầng trên **vốn đã phân biệt được** (`UnknownValueError` vs
+`RequestError`); lớp `STT` thì không. Nay dùng chung cách phân biệt đó, và chỉ
+cảnh báo lần đầu + mỗi 10 lần liên tiếp để không thành spam trong lúc dùng.
+
+**Bộ đếm hỏng không được reset khi nghe lại được.** Lỗi của chính bản sửa đầu
+tiên: chỉ nhánh "không nghe rõ" mới reset, còn lúc thành công thì không - nên
+một lần mất mạng 3 giây giữa phiên làm bộ đếm leo lên mãi, và câu cảnh báo
+*"lần 1001"* xuất hiện ở một câu nói hoàn toàn bình thường. Bắt được nhờ test
+viết "hỏng rồi nghe lại được" thay vì chỉ kiểm chiều hỏng.
+
+**Lỗi giải mã offline làm SẬT cả câu lệnh.** `transcribe_array`/
+`transcribe_file` để lỗi từ `self._pipe(...)` nổ thẳng ra ngoài, trong khi đường
+Google gặp lỗi cùng tình huống thì trả `""` êm. Không công bằng: một file âm
+thanh hỏng đang giật người dùng về tận chỗ gõ lệnh.
+
+**Kiểm chứng (đo, không ước lượng).** 734 test: `pytest -q` → `734 passed`;
+`ruff check` 0; `mypy` 0 lỗi trên **47** file. 10 test mới, trong đó **7 FAIL
+trên `stt.py` trước khi sửa**.
+
+**Điểm yếu thật của bộ test này, nói thẳng:** máy CI không có
+`transformers`/`torch`/`speech_recognition`/`numpy`, nên các test dựng hậu bối
+giả cho đúng những chỗ v7.9 sửa. Nếu `_load_model` đổi tên biến, test vẫn xanh.
+Các đường thật (tải model 1GB, gọi Google) **không được kiểm ở đây** và phải
+thử tay trên máy có đủ thư viện.
+
+
+## v7.9 (bổ sung) - Nhắc nhở lặp lại; 724 test
+
+"mỗi ngày" là câu người dùng hỏi rất nhiều mà bản trước không có nơi để lưu.
+Hệ quả là im lặng: mỗi lần đến giờ thì nhắc xong là **xoá hẳn khỏi danh sách**,
+nên "uống thuốc mỗi ngày" chỉ nhắc đúng MỘT lần rồi thôi - và người dùng tin
+là đã hẹn cả tháng, vì bản cũ chỉ hẹn một lần.
+
+Nhịp lặp được đọc bằng `parse_repeat` (`mỗi/hằng` + ngày/tuần/tháng, hoặc buổi:
+"mỗi sáng"), lưu thành trường `repeat` trong `reminders.json`, và mỗi lần nổ
+thì lời nhắc tự hẹn lại lần kế. Câu xác nhận **nói ra nhịp lặp** ("Lặp lại mỗi
+ngày") - không nói thì người dùng tưởng đã hẹn cả tháng trong khi thực ra chỉ
+một lần.
+
+**Nội dung nhắc nuốt mất môn đề.** `_reminder_task` không gỡ được "mỗi ngày",
+nên trợ lý đọc thành *"Nhắc bạn: uống thuốc mỗi ngày"*. Tệ hơn nữa: `"đặt báo
+thức 6 giờ sáng mỗi ngày"` để lại nội dung rỗng, rơi về mặc định `"mỗi ngày"` -
+tức người dùng dặn báo thức 6 giờ sáng mỗi ngày và nhận được lời nhắc tên là
+"mỗi ngày". Nay gỡ sạch, nên câu đó ra đúng `"báo thức"`.
+
+**Lần sau phải GIỮ nhịp lặp - lỗi âm thầm đắt nhất của vòng này.** Bản đầu tính
+mốc kế tiếp rồi bỏ luôn `repeat` khi gọi `_schedule_reminder`, nên nhắc hằng ngày
+chạy đúng **hai** lần rồi hạ xuống thành nhắc một lần. Cả tháng đầu vẫn ngon nên
+rất khó phát hiện bằng tay; chỉ lộ ra khi bắn hai lần liên tiếp rồi đọc lại
+`reminders.json`.
+
+**Lịch dài hơn trần `threading.Timer` phải chia chặng, và mỗi chặng phải được
+phân biệt.** Windows trần ở ~49.7 ngày nên lặp hằng tháng cần chia chặng. Nếu
+mỗi chặng bị coi là lần nhắc thật thì nó bắn tiếng và hẹn thêm một lịch mới -
+một nhắc hằng tháng thành nhắc vài lần mỗi tháng. Nay chặng nối tiếp mang cờ
+`continuation`: chỉ bật chặng kế, không báo, không hẹn lại.
+
+**Mở lại máy thì phải CUỘN vòng, không phải nhích một bước.** Mốc giờ đã trôi qua
+lúc máy tắt (ngủ qua giờ uống thuốc) phải cuộn tới lần kế tiếp. Cuộn đúng
+**một** bước thì với lịch "mỗi ngày" bỏ sót một ngày là vẫn nằm trong quá khứ,
+`_schedule_reminder` từ chối, và cả chuỗi biến mất - đúng cái hỏng mà hàm này
+sinh ra để chặn. Có chặn 400 bước để đồng hồ hỏng không quay vô hạn.
+
+**Nhịp lặp sống sót qua câu hỏi "mấy giờ?".** "uống thuốc mỗi ngày" chưa nói
+giờ thì trợ lý hỏi lại; nếu không mang nhịp lặp qua câu hỏi thì câu trả lời sau
+ra một lời nhắc một lần. Hành vi có ý thức sẵn có là người dùng nói sang chuyện
+khác thì bỏ câu hỏi đang treo ("mở nhạc" không phải giờ nhắc) - nhịp lặp đi theo
+cả hành vi này, không tự ý giữ lại.
+
+**Rác trong `reminders.json` bị chặn lúc ĐỌC.** `repeat` do người dùng sửa tay có
+thể là bất cứ thứ gì; lỗi đó phải bị `_coerce_repeat` chặn khi đọc chứ không phải
+lúc nhắc nổ. `bool` bị lo có chủ đích: trong Python `isinstance(True, int)` là
+True, nên `weekday=True` sẽ lọt vào phép tính ngày nếu không kiểm riêng. Ngày 31
+tháng không có (31/1) được lùi về ngày cuối tháng thay vì nổ `ValueError`.
+
+**Kiểm chứng (đo, không ước lượng).** 724 test: `pytest -q` → `724 passed`;
+`run_tests.py -q` → `724 passed`; `ruff check` 0; `mypy` 0 lỗi trên **46** file.
+45 test mới, trong đó **41 test FAIL trên đúng hai file nguồn trước khi sửa**
+(kiểm bằng `git stash push`); 4 test còn lại là các case phải giữ nguyên. Chạy
+thật: đặt lịch `uống thuốc` 8h daily, `họp` 9h thứ-Hai, `báo thức` 6h daily đều
+ghi `repeat` vào `reminders.json`; bắn thật một lời nhắc 2 giây thì tự hẹn lại
+ngày hôm sau **và giữ nguyên `repeat`**; lịch hằng tuần/tháng tính đúng (30/09 →
+05/10 cho thứ Hai, 31/01 → 28/02 không nổ).
+
+**Còn lại, chưa sửa.** "nhắc tôi họp sáng mai" để lại "sáng mai" trong nội dung
+(cùng họ với lỗi ở phần trên nhưng là mốc giờ dạng "sáng mai", chưa gỡ); `log`
+và `mod` trong toán học; STT ghim `_use_google` vĩnh viễn khi Google lỗi; intent
+sai nhưng tự tin (`"mo trinh duyet"` → `open_app` với `target='unknown'` ở 0.97);
+`cuối tuần`/`thứ hai tuần sau` (cần lịch thật); 75 khoá `ACCENT_MAP` mơ hồ (v7.8).
+
+
+## v7.9 (2026-09-30) - Sửa lỗi thật ngoài phạm vi test; 679 test
+
+Bộ test v7.8 xanh hoàn toàn, nên vòng này **không soi lại code cũ** mà đo trực
+tiếp trên câu lệnh tự nhiên rồi sửa những chỗ sai. Bốn nhóm lỗi dưới đây đều
+không có test nào chạm tới, và phần lớn cùng một dạng: **tính năng làm được
+một nửa** - tầng trên hiểu, tầng dưới không, hoặc hai tầng hiểu khác nhau.
+
+**Số học: `normalize_text` xoá mất `%` và `^`.** Hai ký hiệu này không khớp
+`[^\w\s./:\\-]` nên bị lớp chuẩn hóa xoá trước khi parser kịp thấy: `"12% của
+200"` và `"2^10"` trả `(None, None)`, trong khi `"15 + 27"` - đúng ví dụ trong
+`--help` - chạy được. Người dùng gõ phép tính đúng mà không bao giờ được tính,
+rồi kết luận máy hỏng. Cùng kiểu với lỗi dấu chấm ở v7.8: bước chuẩn hóa phía
+trước ăn mất ký hiệu trước khi parser kịp phân tích.
+
+Có hai chỗ phải sửa cùng lúc, vì chỉ sửa một chỗ thì `--once` vẫn hỏng:
+`_protect_math_syntax` (giữ ký hiệu qua `normalize_text`) **và** `_MATH_SYNTAX_RE`
+- mẫu này quyết định `entity_source` lấy từ câu gốc hay từ bản đã chuẩn hóa,
+nên bỏ sót `%`/`^` thì tầng NLU vẫn tính trên bản đã bị xoá ký hiệu. Luỹ thừa
+gộp thành MỘT token trước khi `*` bị đổi thành placeholder, nếu không `"2 ** 10"`
+thành `"2 * * 10"` và biểu thức ghép không được. Biểu thức trả về được đọc thành
+tiếng cho người dùng nên `**` đổi lại thành `^` ở chỗ hiển thị, **không** sửa
+`_restore_math_syntax` (hàm đó chạy **trước** bước `eval`). Chỉ nhận `%` khi nó
+đứng **sau một chữ số** và trước `"của"` - nên `"100% rồi"` và `"tăng âm lượng
+20%"` vẫn không bị tính nhầm.
+
+**Mốc giờ tính bằng ngày/tuần/tháng không tồn tại.** `"nhắc tôi họp sau 3 ngày"`
+là câu rất tự nhiên, nhưng `parse_time_expression` chỉ biết giây/phút/giờ nên
+rơi xuống cuối hàm và trả `type=None`. Nay `"sau 3 ngày"` → 4320 phút, `"2 ngày
+nữa"` → 2880, `"sau 2 tuần"` → 20160, `"sau 1 tháng"` → 43200, `"ngày kia"` →
+2880; đều phát ra dưới dạng `type="delay"` mà `executor._reminder_when()` đã xử
+lý sẵn, nên không phải sửa gì ở tầng thực thi. Giữ nguyên chốt chặn an toàn của
+`_parse_delay`: **bắt buộc có dấu hiệu khoảng cách** (`sau`/`nữa`), nếu không
+thì "câu này dài 3 ngày" - một câu hỏi dài 3 ngày - cũng bị đọc thành nhắc nhở.
+
+Chi tiết đáng ghi vì rất dễ làm sai: dấu hiệu `sau`/`nữa` được so trên bản **CÓ
+DẤU** khi câu gõ có dấu, và trên bản bỏ dấu khi gõ không dấu. So mẫu có dấu với
+bản bỏ dấu thì **không bao giờ trúng** (`nữa` → `nua`), và đó chính là lý do
+`"2 ngày nữa"` im lặng. Đổi chiều thì lại hỏng tên riêng ("Sáu" → "sau"), nên
+phải làm y hệt cách `_parse_delay` đang làm.
+
+**Parser hiểu mốc giờ, phần bóc nội dung thì không.** Nhắc vẫn được đặt đúng
+thời điểm, nhưng `_reminder_task` bóc mốc giờ bằng hai regex chỉ biết
+"giờ/phút/tiếng" nên bỏ lại phần thời gian trong nội dung, và trợ lý đọc thành
+*"Đến giờ rồi. Nhắc bạn: họp sau 3 ngày"* - tự nhắc lại chính mốc giờ như thể
+đó là việc cần làm. Nay bóc thêm khoảng cách theo ngày/tuần/tháng và giờ viết
+tắt kiểu tin nhắn (`"7h"`, `"6h30"`, `"7h tối nay"`), với đuôi hai từ giống hệt
+`_REMINDER_TIME_RE` để `"7h tối nay"` không còn sót chữ `nay`.
+
+**Lời nhắc có động từ rõ ràng bị đoán thành câu HỎI ngày giờ.** Chữ "ngày" trong
+mốc giờ kéo model về `get_datetime` (0.44): `"nhắc tôi rửa xe ngày kia"` không
+hề đặt nhắc, trợ lý chỉ đọc ngày giờ rồi im - trong khi người dùng đã nói rõ
+"nhắc tôi". Nay `_rescue_reminder_intent` ép về `set_reminder`, theo **đúng
+nguyên tắc an toàn đã dùng cho cứu câu toán ở v7.8**: chỉ sửa khi model **không
+chắc** (dưới 0.5) và cả năm điều kiện đúng - model đoán `get_datetime`, câu MỞ
+ĐẦU bằng động từ nhắc nhở, câu CÓ mốc giờ thật (`parse_time_expression` là bằng
+chứng quyết định, không phải suy đoán từ ký tự), và câu **không phải câu hỏi
+lịch**. Điều kiện cuối là chốt chặn quan trọng nhất: không có nó thì
+`"nhắc tôi mai là thứ mấy"` - một câu hỏi thật - sẽ bị đổi thành lời nhắc.
+
+**Còn lại, chưa sửa (cần quyền hoặc dữ liệu ngoài).** Lịch lặp lại
+(`reminders.json` chưa có trường `repeat`); `cuối tuần`/`cuối tháng`/`thứ hai
+tuần sau` - cần lịch, không suy từ câu rời; STT khi Google STT lỗi thì
+`_use_google` bị ghim vĩnh viễn, không tự thử lại; intent sai nhưng tự tin
+(`"mo trinh duyet"` → `open_app` với `target='unknown'` ở 0.97); `log`/`mod`; và
+75 khoá `ACCENT_MAP` mơ hồ về bản thân việc phục hồi dấu (xem v7.8).
+
+**Kiểm chứng (đo, không ước lượng).** 679 test: `pytest -q` → `679 passed`;
+`ruff check` 0; `mypy` 0 lỗi (45 file). 35 test mới, trong đó **24 test FAIL
+trên đúng file nguồn trước khi sửa** (đã kiểm chắc bằng `git stash push` chỉ
+hai file nguồn) - 11 test còn lại là các case phải giữ nguyên, đúng như thiết
+kế. Chạy thật qua `--once`: `12% của 200` → 24, `2^10` → 1024, `2 ** 10` →
+1024, `12 phần trăm của 200` → 24, `15 + 27` → 42, `1.234,5 chia 3` → 411.5,
+còn `100% rồi` vẫn báo không tính được. Hai lời nhắc ghi vào `reminders.json` đúng
+ngày và nội dung sạch: `họp` → 2026-10-03, `rửa xe` → 2026-10-02 (không còn
+dính "ngày kia").
+
+
+## v7.8 (2026-09-27) - Số bị "bảo vệ" rồi hỏng; 644 test
+
+Ba vòng trước soi chỗ nhận dữ liệu. Vòng này soi chỗ **giữ** dữ liệu, và lỗi
+tìm được đều có cùng một dạng: **một lớp bảo vệ chạy trước làm hỏng thứ nó định
+bảo vệ**. `normalize_text` xoá toán tử để câu nói dễ phân loại, rồi chính con số
+bị mất dấu trong lớp bảo vệ đó.
+
+**Số học: `target` và `result` nói hai đằng khác nhau.** Câu `"12,75 + 1"` cho
+`target = "75 + 1"` (= 76) nhưng `result = 13.75` - vì `target` đi qua
+`extract_entity` → `_EntityContext.raw` (đã bị `normalize_text` nuốt mất `12,`)
+còn `result` đi qua `parse_math_expression(entity_source)`. Người dùng nhìn
+thấy "75 + 1" cùng đáp án 13.75, không cách nào tự kiểm được. Nay `_entity_calculate`
+ưu tiên câu GỐC, và `predict_intent` dùng câu gốc cho phần trích thực thể khi
+thấy toán tử số (đúng cách nó đã làm với URL/đường dẫn từ v6).
+
+**Dấu chấm là dấu PHẨY NGHÌN kiểu Việt Nam.** `"1.234,5 chia 3"` trả **78.17**
+(= 234.5 / 3) thay vì 411.5: phần `1.` bị mất, và kết quả sai vẫn trông như
+một phép tính bình thường - tệ hơn hẳn việc không tính được. Nay nhóm 3 chữ số
+sau dấu chấm được đọc là nghìn (`1.234.567,89` → 1234567.89), còn `1.5`/`12.75`
+(nhóm không đủ 3 số) vẫn là thập phân kiểu Anh như cũ. Nhóm đầu bắt đầu bằng `0`
+(`0.250`) giữ nguyên - không ai viết "0.250" nghĩa là 250.
+
+**`split_commands` cắt dấu phẩy thập phân.** `"2,5 nhân 4"` bị tách thành HAI
+lệnh (`"2"` và `"5 nhân 4"`), lệnh đầu không phải lệnh tính, và câu đó ra 20 thay
+vì 10. Nay phẩy chỉ tách khi không nằm giữa hai chữ số; `"mở chrome, phát nhạc"`
+vẫu tách đúng như cũ.
+
+**Câu toán hỏng dấu `+` còn bị model đoán nhầm intent.** `"1.234 + 5"` qua
+`normalize_text` thành `"1.234 5"`; model đoán `system_control` với 0.20 (tưởng
+là số phiên bản), người dùng gõ đúng biểu thức mà không bao giờ được tính. Nay
+`_rescue_calculate_intent` ép về `calculate` **chỉ khi cả ba** điều kiện đúng:
+model không đoán calculate, model không chắc (dưới 0.5), và câu gốc thật sự ra
+một biểu thức tính được. Model chắc thì để model quyết - không cãi ý kiến đã
+vững. `parse_math_expression` không nhận nhầm câu thường (đã thử "mở chrome",
+"mấy giờ", "mở file report.pdf", "tìm bài hát abc"...).
+
+**`parse_math_expression` hiểu cả câu gõ KHÔNG DẤU.** Bản cũ ghép regex CHỈ có
+dấu, nên `"can bac hai cua 81"`, `"15 phan tram cua 200"`, `"16 binh phuong"`,
+`"3 mu 2"` trả `(None, None)` - trong khi README quảng cáo "hiểu tiếng Việt có
+dấu lẫn không dấu" và người gõ nhanh (hay cả STT) hay bỏ dấu. Nay nhận diện trên
+bản bỏ dấu rồi hiển thị lại bằng tên CÓ DẤU; có test parity bắt buộc hai kiểu
+gõ cho cùng kết quả và cùng câu mô tả.
+
+**Ngưỡng tự tin: `NaN` đi thẳng qua cửa an toàn.** `nan < x` luôn False, nên
+`execute_command` với `"confidence": NaN` BỎ QUA ngưỡng rồi chạy lệnh - mà JSON
+của Python mặc định chấp nhận `NaN`/`Infinity`, và `--json` là đường dùng thật.
+Tương tự, `NLU._judge` trả "ok" cho NaN (lệnh ĐƯỢC THỰC THI) và nổ `TypeError`
+khi confidence là chuỗi. Nay `_read_confidence` chỉ nhận số hữu hạn trong `[0,1]`;
+còn `nlu_advanced` dùng `_as_confidence` và `last_intent` không còn nổ `KeyError`.
+
+**Dữ liệu bị đánh cắp bởi chính lớp bảo vệ.** `log_feedback` ghi vào một file
+CSV **RỖNG** (mất điện) không ghi dòng tiêu đề; `train_nlu.py` đọc bằng
+`csv.DictReader` nên ăn mất dòng đầu và **bỏ qua toàn bộ phần còn lại** - mọi câu
+người dùng đã dạy biến mất khỏi huấn luyện. File không có header nay được sửa
+lại trước khi ghi. Cùng kiểu: `lite_model` để lại file tạm khi ghi lỗi OSError
+(đúng nhánh lỗi hay xảy ra nhất: đĩa đầy, thiếu quyền), và nhắc nhở được đăng ký
+**sau** khi bộ đếm đã chạy nên lệnh huỷ ngay lập tức không tìm thấy nó.
+
+**Sửa nguồn ghi mà không sửa nguồn đọc thì người dùng cũ vẫn mất dữ liệu.**
+`train_nlu.py` đọc `feedback.csv` bằng `csv.DictReader`, mà `DictReader` coi
+DÒNG ĐẦU là tên cột: file không có header thì dòng dữ liệu đầu bị ăn mất thành
+tên cột và mọi dòng sau không còn khoá `verified` - kết quả **"0 câu"**, đúng bằng
+câu "bạn chưa dạy gì", không hề có cảnh báo. Đây chính là file mà `log_feedback`
+bản cũ tạo ra khi ghi vào một file rỗng (mục trên đã sửa nguồn ghi) - nên người
+dùng đã có sẵn file hỏng trên đĩa, sửa nguồn ghi không cứu được họ. Nay đọc
+chịu được cả bốn kiểu (header đầy đủ / thiếu cột phụ / không header), đọc theo
+vị trí cột khi thiếu header, và **báo rõ** để người dùng biết file của họ có vấn
+đề thay vì tưởng mình chưa dạy gì. `my_dataset.csv` (file người dùng tự viết
+tay) nên thiếu dòng tiêu đề là chuyện rất bình thường.
+
+**Cùng lỗi đó lặp lại ở một chỗ nữa — và cùng một file.**
+`dataset.load_extra_csv` cũng dùng `csv.DictReader`, và nó đọc chính
+`my_dataset.csv` mà `train_nlu` đọc. Khi file thiếu tiêu đề, cả hai nơi
+cùng nhảy qua toàn bộ file và cùng in ra "0 câu" - đúng bằng câu "file
+của tôi rỗng". Vòng này gom cách đọc về `csv_utils.read_keyed_csv`
+(đặt ở module riêng vì `train_nlu` import `dataset`, đặt helper vào một
+trong hai sẽ tạo vòng import) và cho cả hai nơi dùng chung - sửa một bên
+thì bên kia không bị bỏ sót. Nhánh báo lỗi file Notepad kiểu Windows 7
+(lưu ANSI) được giữ nguyên.
+
+**Trợ lý sửa lỗi gõ đang phá câu người dùng gõ đúng.** `smart_normalize` là cửa
+vào của cả tầng NLU, nên mọi câu nói đều đi qua nó. Nhánh "sửa lỗi gõ nhẹ bằng
+fuzzy" bản cũ áp cho **mọi** từ dài ≥4 ký tự, kể cả từ người dùng đã gõ CÓ DẤU
+đúng. Đo trên 41 từ thông dụng: **12 từ bị đổi thành một từ khác**, trong đó có
+từ mất hẳn âm tiết:
+
+    "chơi" -> "cho"    "nhanh" -> "nhân"   "chậm" -> "cảm"   "giấy" -> "giá"
+    "thường" -> "trường"   "trưởng" -> "trường"   "tiền" -> "thiền"
+
+Nguyên nhân: `difflib` so độ tương đồng, nên từ 4 ký tự và từ 3 ký tự chung 3 ký
+tự vẫn đạt 2*3/7 = 0.86 > 0.82. Cắt/thêm một nguyên âm tiết vẫn "giống nhau"
+theo thang đo đó. Nay chỉ sửa nhánh này khi từ **không dấu** - người gõ dấu là cố
+ý, nên gần đúng với một từ khác nhiều khả năng là từ khác thật; còn lỗi gõ thật
+(gõ nhanh, STT) đều ra từ không dấu, đúng cái nhánh này sinh ra để sửa. Sửa sai
+còn tệ hơn không sửa. Đo lại: còn 3/41, và tính năng sửa lỗi vẫn chạy
+(`chorme`->`chrome`, `notpadd`->`notepad`).
+
+**Nội dung nhắc nhở dính dấu nối thời gian ở cuối.** Người Việt đặt mốc giờ
+SAU nội dung - "nhắc tôi uống nước **sau** 10 phút" - nên sau khi bóc mốc giờ thì
+chữ nối bị bỏ lại, và trợ lý đọc thành "Đến giờ rồi. Nhắc bạn: uống nước sau".
+Biểu thức cũ chỉ bắt đầu câu nên không bắt được dạng này. Nay gỡ phần dính đuôi
+(`sau`/`trước`/`trong`/`vào`/`nữa`/`khi`) khi nó là từ cuối cùng - nên câu hợp lệ
+"nhắc tôi đi mua đồ trước khi về nhà" còn nguyên.
+
+**Hạn chế đã biết, cố ý không sửa.** `ACCENT_MAP` có 75 khoá không dấu mà 2 từ có
+dấu cùng gốc ("nhac" -> `nhắc` hay `nhạc`; "can" -> `cần` hay `căn`). Đây là mơ
+hồ bản thân của việc phục hồi dấu, không phải lỗi code: đo thử quy tắc ưu tiên
+từ có tần suất cao nhất trong dataset thì cải thiện **0/75** khoá - lựa chọn
+hiện tại đã là tốt nhất theo dữ liệu sẵn có. Cần từ điển tần suất thật mới giải
+được; đụng vào đây chỉ là đoán mò.
+
+**Trèo khỏi thư mục dữ liệu.** `data_path("/etc/hosts")` và
+`voice_cache/index.csv` trỏ ra ngoài thư mục cache rồi bị phát - nay cả hai kiểm
+tra chứa trong thư mục gốc. `predict_proba` nhận hàng xác suất rỗng (file .pkl bị
+sửa tay) nổ `ValueError: max() arg is an empty sequence` giết cả câu lệnh.
+
+**Không đổi.** Không API nào bị bỏ; mọi câu hợp lệ cho kết quả y hệt; các chuỗi
+báo cho người dùng trong luồng hợp lệ giữ nguyên từng byte.
+
+**Kiểm chứng (đo, không ước lượng).** 644 test trên CẢ HAI đường: `pytest -q` →
+`644 passed`; `python run_tests.py -q` trên máy không pytest → `644 pass, 0 fail,
+0 skip`; `ruff check` 0; `mypy` 0 lỗi (45 file). Vì CI chưa từng chạy được trên
+repo này, tương thích Python 3.9 được tự quét bằng AST trên toàn bộ module,
+và `python -m build` xác nhận `csv_utils.py` có thật trong wheel. Toán học kiểm cả 10 cặp câu có
+dấu/không dấu cho cùng kết quả, và `--once` chạy thật trên 9 câu: `15 + 27` → 42,
+`2,5 nhân 4` → 10.0, `1.234,5 chia 3` → 411.5, `1.234 + 5` → 1239.
+
+
 ## v7.7 (2026-09-20) - Bốn hàm chưa ai audit: cùng một họ lỗi kiểu: 518 test
 
 v7.5-v7.6 audit các điểm vào công cộng (CLI, config, TTS, runner). Vòng này soi

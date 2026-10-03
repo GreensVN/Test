@@ -32,7 +32,6 @@ Kết quả: ghi đè intent_model.pkl -> main.py dùng được ngay, không c�
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import random
 import sys
@@ -72,6 +71,7 @@ except ImportError:  # pragma: no cover
     FeatureUnion = None
     Pipeline = None
 
+from csv_utils import read_keyed_csv
 from dataset import get_dataset_as_lists
 from nlu_advanced import TEEN_CODE, smart_normalize, strip_accents
 from paths import data_path
@@ -89,6 +89,18 @@ random.seed(42)
 # ============================================================================
 # 1. GỐP DỮ LIỆU TỪ NHIỀU NGUỒN
 # ============================================================================
+# v7.8: đọc CSV đã có sẵn ở `csv_utils.read_keyed_csv` vì `dataset.py` cũng
+# dùng chung (và `train_nlu` import `dataset`, nên helper không thể nằm ở đây).
+# Hàm bọc giữ lại tên cũ cho các test và caller đã dùng.
+def _read_keyed_csv(path: str, required: tuple[str, ...], source: str):
+    """Xem `csv_utils.read_keyed_csv`."""
+    return read_keyed_csv(path, required, source)
+
+
+# Thứ tự cột đúng như `nlu_advanced.log_feedback` ghi ra.
+FEEDBACK_COLUMNS = ("time", "text", "intent", "confidence", "verified")
+
+
 def load_all_data():
     """Gộp dataset gốc + my_dataset.csv + câu đã xác nhận trong feedback.csv."""
     texts, labels = get_dataset_as_lists()
@@ -98,30 +110,28 @@ def load_all_data():
     # (a) Dữ liệu bạn tự thêm: my_dataset.csv (2 cột text,intent)
     n_extra = 0
     if os.path.exists(EXTRA_CSV):
-        with open(EXTRA_CSV, encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                text = (row.get("text") or "").strip()
-                intent = (row.get("intent") or "").strip()
-                if text and intent:
-                    texts.append(text)
-                    labels.append(intent)
-                    n_extra += 1
+        for row in _read_keyed_csv(EXTRA_CSV, ("text", "intent"), "my_dataset.csv"):
+            text = (row.get("text") or "").strip()
+            intent = (row.get("intent") or "").strip()
+            if text and intent:
+                texts.append(text)
+                labels.append(intent)
+                n_extra += 1
     safe_print(f"[2] my_dataset.csv     : {n_extra} câu")
 
     # (b) Câu bạn đã dạy lại (verified = 1) trong feedback.csv
     n_fb = 0
     if os.path.exists(FEEDBACK_CSV):
-        with open(FEEDBACK_CSV, encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                if str(row.get("verified", "0")).strip() != "1":
-                    continue
-                text = (row.get("text") or "").strip()
-                intent = (row.get("intent") or "").strip()
-                if text and intent:
-                    # nhân 3 lần để mô hình ưu tiên học câu bạn đã sửa
-                    texts.extend([text] * 3)
-                    labels.extend([intent] * 3)
-                    n_fb += 1
+        for row in _read_keyed_csv(FEEDBACK_CSV, FEEDBACK_COLUMNS, "feedback.csv"):
+            if str(row.get("verified", "0")).strip() != "1":
+                continue
+            text = (row.get("text") or "").strip()
+            intent = (row.get("intent") or "").strip()
+            if text and intent:
+                # nhân 3 lần để mô hình ưu tiên học câu bạn đã sửa
+                texts.extend([text] * 3)
+                labels.extend([intent] * 3)
+                n_fb += 1
     safe_print(f"[3] feedback đã xác nhận: {n_fb} câu (nhân 3)")
 
     return texts, labels

@@ -452,7 +452,18 @@ def _importorskip(name, reason=None):
         raise _Skip(reason or f"module {name!r} chưa cài ({e})") from e
 
 
-def _shim_attributes():
+def _fail(msg: str = "", pytrace: bool = True) -> None:
+    """Tuong duong `pytest.fail` - dung khi can BAO SAI co chu dich.
+
+    Nham y het `pytest.fail` o day se sai: pytest nem `Failed`, thuoc nhanh
+    `BaseException`, con runner bat loi bang `AssertionError`. Nem `Failed` thi
+    runner khong gan nhanh la TEST FAIL ma de no lot ra ngoai. `AssertionError`
+    cho CUNG ket qua tren ca hai duong chay, va do la thu test can.
+    """
+    raise AssertionError(msg)
+
+
+def _shim_attributes() -> tuple[tuple[str, object], ...]:
     """(ten, gia tri) ma shim `pytest` cua runner phai co.
 
     Ban duoc ke o day VÌ test dung `pytest.X`; bo sung thu tuc o day ma quen
@@ -467,6 +478,7 @@ def _shim_attributes():
         ("raises", _raises),
         ("approx", _Approx),
         ("skip", _skip),
+        ("fail", _fail),
         ("importorskip", _importorskip),
     )
 
