@@ -1,7 +1,7 @@
 # Trợ lý ảo tiếng Việt v7.8
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 987 pass](https://img.shields.io/badge/tests-987%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1035 pass](https://img.shields.io/badge/tests-1035%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -18,7 +18,7 @@ trả **78.17** thay vì 411.5 vì dấu chấm là dấu **phẩy nghìn** ki�
 của Python mặc định chấp nhận `NaN`), và `feedback.csv` mất dòng tiêu đề làm
 `train_nlu.py` **bỏ qua toàn bộ** phần dạy còn lại (sửa cả đầu ghi lẫn đầu đọc, ở
 cả hai nơi đang đọc file đó); và `smart_normalize` không còn đổi từ người
-dùng gõ CÓ DẤU thành một từ khác ("chơi" -> "cho"). 987 test.
+dùng gõ CÓ DẤU thành một từ khác ("chơi" -> "cho"). 1035 test.
 
 **v7.7** soi bốn hàm CHƯA bị audit ở hai vòng trước và sửa đúng chỗ chúng im
 lặng trả kết quả sai: `lite_model.predict("mở youtube")` từng lặp qua TỪNG KÝ TỰ
@@ -82,7 +82,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 987 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1035 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -143,17 +143,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (987 test)
-    └── tests/             # 987 test (v7.2 - v7.9 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1035 test)
+    └── tests/             # 1035 test (v7.2 - v7.9 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 987 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1035 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 python vi_voice_assistant/run_tests.py
-# Ket qua: 987 pass, 0 fail, 0 skip
+# Ket qua: 1035 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
@@ -180,13 +180,14 @@ Xem issues và tạo PR từ nhánh `arena/*`.
 
 ## Lịch sử
 
-- v7.9 (bổ sung 8): dong tu mo dau loi nhac ("dat nhac", "tao nhac nho", "nhaс viec") va cau dat lich, 987 tests
-- v7.9 (bổ sung 7): "alarm clock" khong con khoa may (ranh gioi tu + cam sua loi go), 987 tests
-- v7.9 (bổ sung 6): `sqrt`/`√`/"can N cua M" tinh dung (truoc day "can 2 cua 8" ra 1.4142), 987 tests
-- v7.9 (bổ sung 5): nhac theo ngay trong tuan ("thu hai", "cuoi tuan", "cuoi thang") rut dung lich, 987 tests
-- v7.9 (bổ sung 4): `log`/`ln`/`mod` tinh duoc (mac dinh "log" theo quy uoc Viet: co so 10), 987 tests
-- v7.9 (bổ sung 3): chi cho trong `unknown` khong lot ra mieng nguoi dung, cau ngan "mo trinh duyet" ra duoc ten ung dung, 987 tests
-- v7.9 (bổ sung 2): STT tai lai model thay vi bo offline vinh vien, phan biet "mat mang" voi "noi khong roi", loi giai ma khong lam sap cau lenh, 987 tests
+- v7.9 (bổ sung 9): dau ngoac trong phep tinh - "(10-4)/2" ra 3 chu khong phai 8, 1035 tests
+- v7.9 (bổ sung 8): dong tu mo dau loi nhac ("dat nhac", "tao nhac nho", "nhaс viec") va cau dat lich, 1035 tests
+- v7.9 (bổ sung 7): "alarm clock" khong con khoa may (ranh gioi tu + cam sua loi go), 1035 tests
+- v7.9 (bổ sung 6): `sqrt`/`√`/"can N cua M" tinh dung (truoc day "can 2 cua 8" ra 1.4142), 1035 tests
+- v7.9 (bổ sung 5): nhac theo ngay trong tuan ("thu hai", "cuoi tuan", "cuoi thang") rut dung lich, 1035 tests
+- v7.9 (bổ sung 4): `log`/`ln`/`mod` tinh duoc (mac dinh "log" theo quy uoc Viet: co so 10), 1035 tests
+- v7.9 (bổ sung 3): chi cho trong `unknown` khong lot ra mieng nguoi dung, cau ngan "mo trinh duyet" ra duoc ten ung dung, 1035 tests
+- v7.9 (bổ sung 2): STT tai lai model thay vi bo offline vinh vien, phan biet "mat mang" voi "noi khong roi", loi giai ma khong lam sap cau lenh, 1035 tests
 - v7.9 (bổ sung): nhac nho lap lai (`mỗi ngày`/`hằng tuần`/`mỗi thứ hai`), noi dung khong con nuot mat mon de, lan sau giu nguyen nhip lap, 679 tests
 - v7.9 (2026-09-30): phan tram `%` va luy thua `^` tinh duoc, moc gio tinh bang ngay/tuan/thang, noi dung nhac khong con dinh moc gio, loi nhac co dong tu roi khong con bi doan thanh hoi ngay gio, 679 tests
 - v7.8 (2026-09-27): `target` va `result` khop nhau, dau cham la phay nghinh kieu Viet, `split_commands` khong cat dau phay thap phan, cau toan bi doan nham intent, so hoc hieu ca cau khong dau, `NaN` khong qua nguong an toan, `feedback.csv` giu duoc dong tieu de va doc ca file khong co header o CA `dataset` lan `train_nlu`, khong sua nham tu co dau, 644 tests

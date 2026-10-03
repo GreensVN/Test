@@ -1269,6 +1269,8 @@ _MATH_PERCENT = "zphantz"
 
 
 _MATH_ROOT_SQRT = "canducthu"   # token tạm cho dấu "√" (không phải từ tiếng Việt)
+_MATH_LPAREN = "znghoz"         # token tạm cho dấu mở ngoặc
+_MATH_RPAREN = "znghoc"         # token tạm cho dấu đóng ngoặc
 
 
 def _protect_math_syntax(text: str) -> str:
@@ -1287,6 +1289,15 @@ def _protect_math_syntax(text: str) -> str:
     # "√16" trước đây ra "chưa tính được phép tính 16", tức mất luôn cả dấu
     # hiệu cho biết đó là căn. Thay bằng chữ trước khi chuẩn hoá.
     guarded = re.sub(r"\s*[√∛]\s*", _MATH_ROOT_SQRT + " ", guarded)
+    # v7.9: DẤU NGOẶC. `_safe_eval` đã cho phép ngoặc trong danh sách node an
+    # toàn (docstring ghi rõ "và dấu ngoặc"), nhưng `_KEEP_RE` xoá chúng trước
+    # khi tới đó - nên người dùng gõ ngoặc để BỎ THỨ TỰ ƯU TIÊN thì không có tác
+    # dụng gì, và tệ hơn là câu ra SỐ SAI chứ không ra lỗi:
+    #   "(5 + 3) * 2"  -> "5 + 3 * 2" = 11   (đáng lẽ 16)
+    #   "(10-4) / 2"   -> "10-4 / 2"  = 8    (đáng lẽ 3)
+    #   "((5))"        -> "5" rồi mất dấu ngoặc, không ra biểu thức nào cả.
+    # Đổi thành từ rồi khôi phục lại, y hệt toán tử ở trên.
+    guarded = guarded.replace("(", _MATH_LPAREN).replace(")", _MATH_RPAREN)
     return guarded.replace("+", _MATH_PLUS).replace("*", _MATH_TIMES)
 
 
@@ -1320,7 +1331,8 @@ def _strip_thousands_separator(text: str) -> str:
 def _restore_math_syntax(text: str) -> str:
     return (text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
             .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%")
-            .replace(_MATH_ROOT_SQRT, "sqrt"))
+            .replace(_MATH_ROOT_SQRT, "sqrt")
+            .replace(_MATH_LPAREN, "(").replace(_MATH_RPAREN, ")"))
 
 
 def _math_display(expr: str) -> str:
@@ -1469,6 +1481,24 @@ def _math_root(u: str):
     return None
 
 
+_MATH_NUMBER_RE = r"-?\d+(?:[.,]\d+)?"
+_MATH_OPERATOR_RE = re.compile(r"\*\*|[+\-*/]")
+_PAREN_DEPTH = 4
+
+
+def _math_expr_pattern(depth: int) -> str:
+    """Mẫu biểu thức số học, lồng dấu ngoặc tới `depth` cấp."""
+    atom = _MATH_NUMBER_RE if depth <= 0 else (
+        rf"(?:{_MATH_NUMBER_RE}|\({_math_expr_pattern(depth - 1)}\))")
+    # `**` phải là MỘT nhánh của phần toán tử rồi mới theo sau là số - không
+    # tách nó thành nhánh riêng không kèm số, vì khi đó "2**10" chỉ khớp được
+    # "2**" rồi dừng, còn "10" rơi ngoài biểu thức và `eval` báo lỗi.
+    return rf"{atom}(?:\s*(?:\*\*|[+\-*/])\s*{atom})*"
+
+
+_MATH_EXPR_RE = re.compile(f"({_math_expr_pattern(_PAREN_DEPTH)})")
+
+
 def parse_math_expression(text: str):
     """
     Trích xuất và tính một biểu thức toán học đơn giản từ câu tiếng Việt.
@@ -1530,8 +1560,16 @@ def parse_math_expression(text: str):
 
     # v6: cho phép toán tử ** (luỹ thừa) trong biểu thức - trước đây lớp ký
     # tự [+\-*/] không nhận "**" nên "2 mũ 10" không bao giờ ghép được biểu thức.
-    m = re.search(r"(-?\d+(?:[.,]\d+)?(?:\s*(?:\*\*|[+\-*/])\s*-?\d+(?:[.,]\d+)?)+)", expr_text)
-    if not m:
+    #
+    # v7.9: DẤU NGOẶC. Mẫu cũ chỉ biết "số (toán tử số)*" nên bóc biểu thức
+    # dừng lại ở dấu `)` đầu tiên: "(5 + 3) * 2" ra "5 + 3" = 8 thay vì 16.
+    # `re` không hỗ trợ ngoặc lồng nhau không giới hạn, nên dựng mẫu theo độ
+    # sâu cố định (_PAREN_DEPTH) - đủ cho mọi biểu thức người dùng gõ tay.
+    m = re.search(_MATH_EXPR_RE, expr_text)
+    # Cần CÓ toán tử: không thì "5" trần sẽ bị coi là phép tính. Bỏ qua ký tự
+    # ĐẦU TIÊN khi kiểm tra - nếu không, dấu trừ của số âm "-123" được tính là
+    # toán tử và câu "abc-123-xyz" ra số -123.
+    if not m or not _MATH_OPERATOR_RE.search(m.group(1)[1:]):
         return None, None
 
     expr_display = m.group(1).replace(",", ".").strip()
@@ -1944,8 +1982,13 @@ def _has_literal_entity(s: str) -> bool:
 # không. Không có nó, "log2 1024" bị model đoán `system_control` (0.05) và câu
 # toán rơi xuống đường bình thường, nơi target là câu đã bị `normalize_text`
 # xé vụn.
+# v7.9: thêm `-` vào lớp toán tử. Thiếu nó khiến "10-4" và "5-3" (KHÔNG có
+# khoảng trắng, tức đúng cách viết tay) không được nhận là toán, dù "10 - 4"
+# có khoảng trắng thì chạy - cùng câu, hai kết quả, chỉ khác một dấu cách.
+# An toàn vì mẫu này chỉ là CỔNG cho `parse_math_expression`, và hàm đó mới là
+# bằng chứng quyết định: "abc-123" không có SỐ ở trước dấu `-` nên không bị tính.
 _MATH_SYNTAX_RE = re.compile(
-    r"\d\s*(?:\*\*|[+*/^])\s*\d|\d,\d|\d\s*%"
+    r"\d\s*(?:\*\*|[+\-*/^])\s*\d|\d,\d|\d\s*%"
     r"|\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
     r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
 )

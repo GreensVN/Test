@@ -1,5 +1,54 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9) - Dấu ngoặc trong phép tính; 1035 test
+
+**Lớp lỗi nguy hiểm nhất của toán: người dùng làm đúng mọi thứ, viết rõ ý
+mình, và vẫn nhận về một CON SỐ SAI.** `normalize_text()` xoá `(` `)`, nên ngoặc
+người dùng cố ý gõ để bỏ thứ tự ưu tiên bị xoá sạch, rồi trợ lý tính theo thứ
+tự ưu tiên mặc định:
+
+| Người gõ | Nhận về | Đáng lẽ |
+|---|---|---|
+| `(5 + 3) * 2` | 11 | 16 |
+| `(10-4) / 2` | **8** | 3 |
+| `2*(3+4)` | 10 | 14 |
+| `((5))` | không ra gì | 5 |
+
+Phải sửa ở **hai** tầng, sửa một tầng là không đủ. Giữ ngoặc qua `normalize_text`
+thì chưa đủ, vì mẫu bóc biểu thức chỉ biết "số (toán tử số)\*" nên dừng lại ở
+dấu `)` đầu tiên: `(5 + 3) * 2` ra "5 + 3" = 8. Tầng NLU cũng phải nhận, vì
+`_MATH_SYNTAX_RE` thiếu luôn `-`, nên "10-4" (không khoảng trắng) không được
+định tuyến tới `calculate`, trong khi "10 - 4" thì chạy - cùng một câu, hai kết
+quả, chỉ khác một dấu cách.
+
+`re` không hỗ trợ ngoặc lồng nhau không giới hạn, nên mẫu bóc biểu thức được
+dựng theo độ sâu cố định (`_PAREN_DEPTH = 4`) - đủ cho mọi biểu thức gõ tay.
+
+**Một lỗi do chính bản sửa tạo ra, đã bắt trước khi lên kệ.** Dấu trừ ở đầu số
+âm ("-123") được lớp ký tự `[+\-*/]` tính là TOÁN TỬ, nên câu "abc-123-xyz" ra
+số **-123**. Chốt chặn: bỏ qua ký tự đầu tiên khi kiểm tra có toán tử hay không.
+
+**Hai kỳ vọng test của tôi sai, đã sửa chứ không vòng qua.**
+- `2^3^2`: tôi viết 64, nhưng `**` trong Python là PHẢI KẾT, `2**3**2` = 512.
+  Rồi kiểm lại thì câu này **không tính được** - `_safe_eval` chỉ cho số mũ là
+  HẰNG SỐ, nên `2**(3**2)` bị chặn. Đó là hàng rào chống bom số từ v7.8, giữ
+  nguyên; test nay ghi rõ là hành vi CỐ Ý.
+- `normalize_text` giữ ngoặc: không đúng. Bước chuẩn hoá chung xoá ngoặc là
+  đúng (dùng cho mọi intent); việc giữ nằm ở `_protect_math_syntax`. Test nay
+  kiểm đúng thứ đáng kiểm: biểu thức còn nguyên khi tới parser.
+
+**An toàn: ngoặc KHÔNG mở đường thoát.** `_safe_eval` đã cho phép ngoặc trong
+danh sách node an toàn ngay từ trước, nhưng đó là danh sách node AST, không
+phải van `eval` mở. Đo lại: `(1).__class__`, `().__class__`, `(lambda:1)`,
+`(1)+open('/etc/passwd')`, `(1,2)`, `[1,2]`, `(1 if 1 else 2)`, `(2**999999999)`,
+`(10**400)` - **9/9 bị chặn**. Có 8 test chốt riêng cho điều này.
+
+**Kiểm chứng.** 1035 test: `pytest -q` -> `1035 passed`; `ruff check` 0; `mypy`
+0 lỗi trên **54** file. 48 test mới trong `test_v79_math_parens.py`, **18 FAIL**
+trên `intent_model.py` trước khi sửa. Chạy thật: `(5 + 3) * 2` -> 16,
+`(10-4)/2` -> 3, `2*(3+4)` -> 14, `10-4` -> 6.
+
+
 ## v7.9 (bổ sung 8) - Động từ mở đầu lời nhắc và câu đặt lịch; 987 test
 
 **1. Trợ lý tự nhắc lại chính động từ đặt nhắc.** `_REMINDER_LEAD_RE` liệt kê 8
