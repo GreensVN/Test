@@ -1,5 +1,56 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 7) - Đừng biến lời nói thường thành LỆNH trên máy thật; 945 test
+
+Ba lỗi dưới đây có cùng một hình dạng: trợ lý làm MỘT VIỆC KHÁC với điều
+người dùng nói, và người dùng không có tín hiệu nào để biết. Nghiêm trọng hơn
+mọi lỗi "ra số sai" ở các bổ sung trước, vì nó là lỗi **trên máy thật**.
+
+**1. `SYSTEM_KEYWORDS` không có ranh giới từ.** `lock` khớp NẰM TRONG `clock`
+và `unlock`, nên **"alarm clock" bị KHOÁ MÁY THẬT**. Tương tự `sleep` khớp
+trong `asleep`. Nay mọi mẫu bọc `\b` hai đầu - thêm một từ khoá sau này cũng
+không phải nghĩ lại chuyển này.
+
+**2. `smart_normalize` tự sửa lỗi gõ thành từ khoá hệ thống.** "alarm clock" ->
+"alarm **lock**", "tôi đang asleep" -> "tôi đang **sleep**" rồi máy ngủ thật.
+Đây là lớp sửa CHỒNG lên lớp 1: vá `SYSTEM_KEYWORDS` một mình là không đủ,
+vì câu đã bị đổi thành một từ đứng riêng trước khi tới đó.
+
+**3. "đọc báo hôm nay" bị đoán `get_weather` ở 0.70** -> trợ lý mở thời tiết rồi
+đọc ra *"Đang xem thời tiết đọc báo"*. "hôm nay" là dấu hiệu thời tiết rất
+mạnh, còn "đọc báo" là động từ hiếm. Đã thêm cơ chế cứu theo từ khoá rõ ràng -
+cùng cách đã làm cho toán ở bổ sung 4, và cùng giữ nguyên ngưỡng tự tin cho
+câu mơ hồ.
+
+**Vì sao chọn BỎ 22 lỗi gõ thật thay vì nâng ngưỡng sửa lỗi.** Đã đo trước khi
+quyết định: độ tương đồng của lỗi gõ THẬT (`slep`->`sleep` 0.889,
+`hutdown`->`shutdown` 0.875) **trùng** với từ tiếng Anh bị bắt (`clock`->`lock`
+0.889, `asleep`->`sleep` 0.909). Hai nhóm chồng lên nhau ở 0.86-0.91, nên
+**không có ngưỡng nào tách được**. Vì vậy chọn theo chi phí: sửa sai một từ
+thường thì người dùng gõ lại được; sửa sai thành lệnh khoá máy/ngủ/shutdown thì
+hậu quả là hành động thật và người dùng không biết vì sao. Bỏ 22 lỗi gõ thật để
+đổi lấy việc không khoá nhầm máy là chấp nhận đáng kể, và được ghi lại đây
+thay vì giấu đi.
+
+**"hôm nay" cố ý KHÔNG đưa vào danh sách từ khoá rõ ràng.** Nó nằm trong cả
+"đọc báo hôm nay", "lịch hôm nay" và "thời tiết hà nội hôm nay" - dẫn chứng yếu
+hơn cả cụm động từ. Bộ test có một guard riêng chống lại việc ai đó thêm
+"đọc báo" vào danh sách intent khác rồi nuốt luôn câu hỏi thời tiết.
+
+**Kiểm chứng.** 945 test: `pytest -q` -> `945 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **52** file. 38 test mới trong `test_v79_intent_safety.py`, **12 FAIL**
+trên `intent_model.py` + `nlu_advanced.py` trước khi sửa. Chạy thật:
+"alarm clock" và "tôi đang asleep" không còn khoá/ngủ máy, còn "khoá máy",
+"ngủ đi", "tắt máy", "mo chorme" -> "mở chrome" vẫn chạy.
+
+**Ghi chú môi trường (quan trọng cho người đọc PR).** Trong lúc làm bổ sung này
+môi trường cục bộ bị thay (repo được clone lại, mất toàn bộ lịch sử git cục
+bộ, và `.venv` biến mất). Công việc đã commit trước đó vẫn còn nguyên trên
+GitHub ở `c98b326` và đã được khôi phục lại; phần chưa commit của bổ sung này
+đã viết lại và kiểm chứng lại từ đầu. Các con số trong mục này đều đo lại sau
+khi khôi phục, không phải số của lần chạy trước.
+
+
 ## v7.9 (bổ sung 6) - Căn bậc N: `sqrt`, `√`, và lỗi đọc SAI SỐ; 907 test
 
 **Nguy hiểm ở đây không phải là thiếu, mà là SAI.** "căn 2 của 8" cho 1.4142 -

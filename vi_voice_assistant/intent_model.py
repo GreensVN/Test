@@ -322,17 +322,27 @@ _COMMAND_VERBS = {
 
 # Từ khoá chuẩn hoá cho system_control -> hành động chuẩn
 # (pattern sẽ tự động được thử thêm bản không dấu, xem _match_any_pattern)
+def _sys_kw(alt: str) -> str:
+    """Bọc ranh giới từ cho một nhánh từ khoá trong `SYSTEM_KEYWORDS`."""
+    return "|".join(fr"\b(?:{part})\b" for part in alt.split("|"))
+
+
+# v7.9: mọi mẫu dưới đây phải có RANH GIỚI TỪ ở hai đầu. Trước đây "lock"
+# khớp NẰM TRONG "clock"/"unlock" và "sleep" khớp nằm trong "asleep", nên câu
+# "alarm clock" bị khoá máy thật. Cùng lớp lỗi với "lock" khớp trong "block".
+# Từ khoá tiếng Việt vốn là từ riêng nên không cần, nhưng vẫn bọc cho đồng nhất
+# và để không sót - thêm một từ khoá sau này cũng không phải nghĩ lại chuyện này.
 SYSTEM_KEYWORDS = [
-    (r"khởi động lại|restart|reboot|bật lại máy", "restart"),
-    (r"tắt máy|shutdown|tắt nguồn|tắt (?:cái )?máy tính", "shutdown"),
-    (r"khoá màn hình|khóa màn hình|khoá máy|khóa máy|lock", "lock"),
-    (r"chụp màn hình|screenshot|chụp lại màn hình", "screenshot"),
-    (r"ngủ|sleep|chế độ ngủ", "sleep"),
-    (r"đăng xuất|logout|log out|thoát khỏi máy", "logout"),
-    (r"tắt âm|tắt tiếng|im lặng|mute", "mute"),
-    (r"bật âm|mở tiếng|bật tiếng|bật lại tiếng|unmute", "unmute"),
-    (r"tăng âm|to hơn|vặn to|volume up", "volume_up"),
-    (r"giảm âm|nhỏ hơn|vặn nhỏ|volume down", "volume_down"),
+    (_sys_kw(r"khởi động lại|restart|reboot|bật lại máy"), "restart"),
+    (_sys_kw(r"tắt máy|shutdown|tắt nguồn|tắt (?:cái )?máy tính"), "shutdown"),
+    (_sys_kw(r"khoá màn hình|khóa màn hình|khoá máy|khóa máy|lock"), "lock"),
+    (_sys_kw(r"chụp màn hình|screenshot|chụp lại màn hình"), "screenshot"),
+    (_sys_kw(r"ngủ|sleep|chế độ ngủ"), "sleep"),
+    (_sys_kw(r"đăng xuất|logout|log out|thoát khỏi máy"), "logout"),
+    (_sys_kw(r"tắt âm|tắt tiếng|im lặng|mute"), "mute"),
+    (_sys_kw(r"bật âm|mở tiếng|bật tiếng|bật lại tiếng|unmute"), "unmute"),
+    (_sys_kw(r"tăng âm|to hơn|vặn to|volume up"), "volume_up"),
+    (_sys_kw(r"giảm âm|nhỏ hơn|vặn nhỏ|volume down"), "volume_down"),
 ]
 
 
@@ -2038,7 +2048,48 @@ def _rescue_reminder_intent(intent: str, confidence: float,
 # Thứ tự cố ý: toán trước, nhắc nhở sau. Mỗi hàm trả về `intent` khi không
 # can thiệp, nên gọi chồng vô hại. Gom vào một hàm để `predict_intent` không
 # phải thêm nhánh phụ (nó đã sát trần số phức tạp tối đa của ruff).
-_RESCUE_FUNCS = (_rescue_calculate_intent, _rescue_reminder_intent)
+# ---------------------------------------------------------------------------
+# Từ khoá KHÔNG THỂ nhầm sang intent khác (v7.9 bổ sung 7)
+# ---------------------------------------------------------------------------
+# "đọc báo hôm nay" bị model đoán `get_weather` ở 0.70 - trợ lý mở thời tiết rồi
+# đọc ra là "Đang xem thời tiết đọc báo". Nguyên nhân rõ: "hôm nay" là dấu hiệu
+# thời tiết rất mạnh, còn "đọc báo" là động từ hiếm, nên model nghiêng về nhãn
+# quen thuộc.
+#
+# Danh sách ở đây chỉ gồm cụm mà KHÔNG BAO GIỜ có nghĩa intent kia, nên cãi
+# model là an toàn và không cần xét độ tự tin. Ngược lại "hôm nay" thì KHÔNG
+# được đưa vào đây: nó nằm trong cả "đọc báo hôm nay", "lịch hôm nay" và
+# "thời tiết hà nội hôm nay" - chỉ dẫn chứng yếu hơn cả cụm động từ.
+_UNAMBIGUOUS_INTENT_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("search_web", re.compile(r"\b(?:doc\s*bao|doc\s*tin\s*uc|doc\s*tin)\b")),
+    ("play_media", re.compile(
+        r"\b(?:phat\s*nhac|mo\s*nhac|bat\s*bai\s*hat|nghe\s*nhac)\b")),
+)
+# "đọc" cùng nghĩa với "đọc báo" nhưng LÀ việc khác: đọc file, đọc trong ứng
+# dụng. Ở đây "đọc" là động từ chứ không phải "đọc báo".
+_UNAMBIGUOUS_CONFLICT_RE = re.compile(
+    r"\b(?:mo\s*file|doc\s*file|tren\s*file|doc\s*trong)\b"
+)
+
+
+def _rescue_unambiguous_keywords(intent: str, confidence: float,
+                                 raw_text: str | None) -> str:
+    """Cụm động từ không thể nhầm thì cãi model, không xét độ tự tin."""
+    if not raw_text or intent == "chitchat":
+        return intent
+    u = strip_diacritics(raw_text)
+    if _UNAMBIGUOUS_CONFLICT_RE.search(u):
+        return intent
+    for wanted, pattern in _UNAMBIGUOUS_INTENT_KEYWORDS:
+        if intent != wanted and pattern.search(u):
+            logger.info("Cụm %r bị đoán thành %r (%.2f) -> %s",
+                        raw_text, intent, confidence, wanted)
+            return wanted
+    return intent
+
+
+_RESCUE_FUNCS = (_rescue_calculate_intent, _rescue_reminder_intent,
+                 _rescue_unambiguous_keywords)
 
 
 def _rescue_intent(intent: str, confidence: float,

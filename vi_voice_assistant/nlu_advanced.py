@@ -273,6 +273,34 @@ for _plain, _accented in COMMON_ACCENTS.items():
     ACCENT_MAP.setdefault(_plain, _accented)
 PLAIN_VOCAB = {strip_accents(w) for w in VOCAB}
 
+# ---------------------------------------------------------------------------
+# KHÔNG tự sửa lỗi gõ thành một từ khoá HỆ THỐNG (v7.9 bổ sung 7)
+# ---------------------------------------------------------------------------
+# "alarm clock" bị đổi thành "alarm lock" rồi KHOÁ MÁY thật. "tôi đang asleep"
+# thành "tôi đang sleep" rồi cho máy ngủ. Nguyên nhân là nhánh (d) sửa lỗi gõ:
+# "clock" không có trong VOCAB nên bị kéo về "lock" (ratio 0.889), "asleep" về
+# "sleep" (0.909), "block"/"locks" cũng về "lock".
+#
+# Đã cân nhắc nâng ngưỡng cho riêng nhóm này nhưng KHÔNG khả thi, và đây là
+# số đo: độ tương đồng của lỗi gõ THẬT ("slep"->"sleep" 0.889, "slep"->"sleep",
+# "hutdown"->"shutdown" 0.875) trùng với từ tiếng Anh bị bắt ("clock"->"lock"
+# 0.889, "asleep"->"sleep" 0.909). Hai nhóm CHỒNG LÊN nhau ở 0.86-0.91, nên
+# không có ngưỡng nào tách được chúng.
+#
+# Vì vậy chọn theo CHI PHÍ: sửa sai một từ thường thì người dùng gõ lại được;
+# sửa sai thành lệnh khoá máy/ngủ/shutdown thì hậu quả là hành động trên máy
+# thật, và người dùng không có cách nào biết vì sao. Bỏ 22 lỗi gõ thật để đổi
+# lấy việc không khoá nhầm máy là chấp nhận đáng kể.
+_UNSAFE_TO_CORRECT = frozenset({
+    "lock", "sleep", "restart", "shutdown", "logout", "mute", "unmute",
+    "screenshot", "volumeup", "volumedown",
+})
+
+
+def _safe_to_correct_to(candidate: str) -> bool:
+    """Không tự kéo một từ lạ thành từ khoá hệ thống."""
+    return strip_accents(candidate).replace("_", "").lower() not in _UNSAFE_TO_CORRECT
+
 
 def smart_normalize(text: str) -> str:
     """
@@ -321,7 +349,7 @@ def smart_normalize(text: str) -> str:
         # dùng gõ lại được, còn đổi nghĩa thì trợ lý làm sai việc.
         if len(word) >= 4 and strip_accents(word) == word:
             near = difflib.get_close_matches(word, VOCAB, n=1, cutoff=0.82)
-            if near:
+            if near and _safe_to_correct_to(near[0]):
                 out.append(near[0])
                 continue
             near = difflib.get_close_matches(strip_accents(word), ACCENT_MAP, n=1, cutoff=0.85)
