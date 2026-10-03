@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9e) - Lệnh DỪNG không được thành lệnh PHÁT; 1105 test
+
+**Cùng lớp lỗi với `"alarm clock"` khoá nhầm máy: làm việc KHÁC hẳn với điều
+người dùng nói, mà không có tín hiệu nào cho người dùng nghi ngờ.**
+`play_media` mở YouTube tìm từ khoá lấy từ câu, nên lệnh DỪNG rơi vào đó thì máy
+mở trình duyệt tìm **chính những từ dừng đó**:
+
+| Người gõ | Nhận về (đã kiểm chứng qua executor) |
+|---|---|
+| `tắt nhạc` | `Đang phát tắt nhạc` + mở YouTube (0.92) |
+| `dừng nhạc` | `Đang phát dừng nhạc` + mở YouTube (0.52) |
+| `ngừng phát nhạc` | `Đang phát ngừng phát nhạc` + mở YouTube |
+| `bật đèn` | `Đang phát đèn` + mở YouTube (0.24) |
+| `mở đèn` | mở **FILE** tên `đèn` |
+| `tắt youtube` | `Đang phát tắt youtube` + mở YouTube |
+
+Nguyên nhân chung: **cực tính DỪNG chưa tồn tại trong hệ thống.** Không có gì
+để nhận ra "dừng" khác "phát", nên "tắt nhạc" trở thành "phát (tắt nhạc)".
+
+Máy này không điều khiển được đèn, cũng không dừng được phát (nó chỉ mở URL).
+Nên kết quả **đúng** là thừa nhận không hỗ trợ - và `action_system_control` đã
+có sẵn câu đó. Việc cần sửa chỉ là cho các lệnh này rơi đúng chỗ:
+`SYSTEM_KEYWORDS` (đăng ký hành động) + `_UNAMBIGUOUS_INTENT_KEYWORDS` (cãi
+model, không xét độ tự tin - vì `"dừng nhạc"` không thể là lệnh phát).
+
+**Thêm một lỗ hổng của chính bộ test, phát hiện khi viết test cho mục này.**
+`pytest.fail` dùng trong test mới mà shim `run_tests.py` không có, và shim thiếu
+thuộc tính thì **máy có pytest vẫn xanh** - đúng cái bẫy mà
+`test_shim_phai_co_du_moi_pytest_attr_ma_test_dang_dung` sinh ra để chặn. Đã bổ
+sung `_fail` vào shim. Nhưng bổ sung thuộc tính thôi là chưa đủ: shim "no-op"
+vẫn xanh, nên đã thêm test đánh giá CẢ HAI ĐƯỜNG CHẠY - một test cố tình gọi
+`pytest.fail` trên runner thật, và runner phải **thoát với mã 1** và in
+`0 pass, 1 fail`. Đã kiểm chứng.
+
+`pytest.fail` của pytest ném `Failed` (thuộc `BaseException`); ném đúng vậy thì
+runner không gán nhận là test thất, nó lọt ra ngoài. `AssertionError` cho cùng
+kết quả trên cả hai đường chạy, và đó là thứ test cần.
+
+**Kiểm chứng.** 1105 test: `pytest -q` -> `1105 passed`; `run_tests.py -q` ->
+`1105 passed`; `ruff check` sạch; `mypy` sạch trên 59 file nguồn. Trong 24 test
+mới, **10 test FAIL trên `3af710f`**. Có test ở tầng executor: lệnh không hỗ
+trợ thì **không được mở trình duyệt**.
+
 ## v7.9 (bổ sung 9d) - Câu chỉ có động từ thì HỎI, không đoán; 1080 test
 
 **Người dùng chỉ nói *"tìm kiếm"* - một lệnh rất tự nhiên - và máy mở thật

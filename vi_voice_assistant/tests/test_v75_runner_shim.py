@@ -163,6 +163,23 @@ def test_parametrize_rong_bai_thanh_that_bai_khong_phai_xanh_gia(tmp_path):
     assert "1 fail" in proc.stdout and "1 pass" in proc.stdout, proc.stdout[-300:]
 
 
+def test_fail_trong_shim_that_su_lam_test_that():
+    """`pytest.fail` phai BAO SAI chứ khong phai im lang.
+
+    `pytest.fail` nen nem `Failed` (thuoc `BaseException`); nem that thi runner
+    khong gan nhanh la test that, no lot ra ngoai. `AssertionError` cho cung
+    ket qua tren ca hai duong chay. Test nay danh gia ca nhanh: chi kiem tra
+    co thuoc tinh thi mot shim "no-op" van xanh.
+    """
+    shim, _ = _shim()
+    try:
+        shim.fail("co y chu ky la test that")
+    except AssertionError as e:
+        assert "co y chu ky" in str(e), e
+    else:
+        raise AssertionError("shim.fail() im lang - test sai se bi bao PASS")
+
+
 def test_shim_phai_co_du_moi_pytest_attr_ma_test_dang_dung():
     """Ranh gioi cho tuong lai: them `pytest.X` vao test thi shim phai co X."""
     shim, _ = _shim()

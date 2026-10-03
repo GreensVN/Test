@@ -343,6 +343,16 @@ SYSTEM_KEYWORDS = [
     (_sys_kw(r"bật âm|mở tiếng|bật tiếng|bật lại tiếng|unmute"), "unmute"),
     (_sys_kw(r"tăng âm|to hơn|vặn to|volume up"), "volume_up"),
     (_sys_kw(r"giảm âm|nhỏ hơn|vặn nhỏ|volume down"), "volume_down"),
+    # v7.9 (bổ sung 9e): các lệnh mà máy này KHÔNG làm được, nhưng trước đây
+    # rơi vào `play_media` và mở trình duyệt. Đăng kê ở đây để chúng rơi vào
+    # `system_control`, nơi đã có sẵn câu trả lời thành thật là "không hỗ trợ",
+    # thay vì bịa ra một hành động người dùng không hề yêu cầu.
+    (_sys_kw(r"bật (?:hết )?đèn|mở (?:hết )?đèn|lights? on"), "lights_on"),
+    (_sys_kw(r"tắt (?:hết )?đèn|lights? off"), "lights_off"),
+    (_sys_kw(r"dừng nhạc|ngừng (?:phát )?(?:nhạc|media|video)|tạm dừng (?:nhạc|phát)"
+             r"|tắt nhạc|stop (?:music|media|playback|playing)"), "stop_media"),
+    (_sys_kw(r"đóng (?:youtube|facebook|netflix|spotify|tiktok)"
+             r"|tắt (?:youtube|facebook|netflix|spotify|tiktok)"), "close_app"),
 ]
 
 
@@ -2268,6 +2278,17 @@ _UNAMBIGUOUS_INTENT_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("search_web", re.compile(r"\b(?:doc\s*bao|doc\s*tin\s*uc|doc\s*tin)\b")),
     ("play_media", re.compile(
         r"\b(?:phat\s*nhac|mo\s*nhac|bat\s*bai\s*hat|nghe\s*nhac)\b")),
+    # v7.9 (bổ sung 9e): "dừng nhạc"/"tắt nhạc"/"bật đèn" là lệnh DỪNG/bật
+    # thiết bị, không phải lệnh phát. Không khoá ở đây thì model đoán
+    # `play_media` và `action_play_media` mở YouTube tìm chính chữ "dừng nhạc"
+    # (0.52-0.92) - làm việc KHÁC hẳn với điều người dùng nói, kiểu lỗi mà
+    # người dùng không có tín hiệu nào để nghi ngờ.
+    ("system_control", re.compile(
+        r"\b(?:bat|mo|tat)\s*(?:het\s*)?den\b"
+        r"|\b(?:dung|ngung|tam\s*dung)\s*(?:phat\s*)?(?:nhac|media|video)\b"
+        r"|\btat\s*nhac\b"
+        r"|\bstop\s*(?:music|media|playback|playing)\b"
+        r"|\b(?:dong|tat)\s*(?:youtube|facebook|netflix|spotify|tiktok)\b")),
 )
 # "đọc" cùng nghĩa với "đọc báo" nhưng LÀ việc khác: đọc file, đọc trong ứng
 # dụng. Ở đây "đọc" là động từ chứ không phải "đọc báo".
