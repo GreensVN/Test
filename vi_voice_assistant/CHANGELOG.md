@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9c) - Sửa lỗi DO CHÍNH BẢN SỬA 9b tạo ra; 1064 test
+
+**Bổ sung 9b tự hỏng thêm một lỗi, và hỏng kiểu tệ nhất: im lặng.**
+`phát podcast về công nghệ` -> **`podcast về công`**. Câu vẫn ra, lệnh vẫn
+chạy, chỉ là dữ liệu bị cắt cụt ở đuôi. Nguyên nhân: nhánh khớp trên bản BỎ
+DẤU mà bổ sung 9b thêm vào không phân biệt được `nghe` với `nghệ`, vì bỏ dấu
+thì cả hai đều ra `nghe`.
+
+Đã đối chiếu `7ffd814` (trước 9b) để xác nhận đây là hồi quy do 9b gây ra chứ
+không phải lỗi có sẵn: bản đó cho `podcast về công nghệ` - đúng.
+
+**Hai hàng rào, mỗi cái ứng với đúng một cách hỏng đã quan sát được:**
+
+| Hàng rào | Chặn cái gì | Ví dụ |
+|---|---|---|
+| **Trọn từ** | mẫu ăn vào giữa một từ khác | `ho toi` nằm trong `cho toi` -> *"doc bao c nghe"* |
+| **Chốt dấu** | mẫu không dấu ăn vào từ CÓ dấu | `nghe` ăn vào `nghệ` -> *"podcast về công"* |
+
+Hàng rào chốt dấu có một lập luận đứng vững: nhánh bỏ dấu sinh ra để phục vụ
+người gõ **không dấu**, nên nó chỉ được bắn vào chỗ người dùng đã chủ động bỏ
+dấu. Ai gõ `nghệ` là đã chứng minh mình gõ được dấu - lúc đó `nghệ` không phải
+`nghe`.
+
+**Hai lần vỡ trong lúc sửa, ghi lại vì chúng chỉ ra cái bẫy thật:**
+
+1. Hàng rào đầu tiên lấy nguyên khớp để xét biên. Mẫu hay kết thúc bằng `\s+`,
+   nên ký tự ngay sau khớp luôn là chữ của từ kế tiếp và hàng rào chặn nhầm
+   **chính cái bóc dấu cần làm** - mọi câu bị bỏ nguyên. Phải thu khớp về phần
+   chữ trước khi xét biên.
+2. Bản viết lại dùng mẫu **đã bỏ dấu** ở cả hai nhánh. Ở nhánh có dấu thì mẫu
+   đó không bao giờ khớp được gì, và hàm trả về nguyên câu - hỏng mà không có
+   dấu hiệu nào. Chỉ nhánh không dấu mới được dùng mẫu đã bỏ dấu.
+
+**Còn lại, KHÔNG sửa được và đã ghi rõ.** Người gõ không dấu thì `cong nghe` và
+`con nghe` là MỘT - thông tin phân biệt không còn trong câu, sửa được là bịa.
+`phat podcast về cong nghe` -> `podcast về cong` là hành vi tệ nhất còn lại, và
+nó là hệ quả của việc chấp nhận bất khả phân định, không phải là sơ suất.
+
+**Kiểm chứng.** 1064 test: `pytest -q` -> `1064 passed`; `run_tests.py -q` ->
+`1064 passed`; `ruff check` sạch; `mypy` sạch trên 57 file nguồn. Trong 16 test
+mới, **5 test FAIL trên `f699ad4`** - đúng bản đã tạo ra hồi quy.
+
 ## v7.9 (bổ sung 9b) - Gõ KHÔNG DẤU vẫn bóc được động từ; 1048 test
 
 **Cùng một câu, hai kết quả, chỉ khác dấu.** `MEDIA_PREFIX` viết có dấu

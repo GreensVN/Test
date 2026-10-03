@@ -399,16 +399,74 @@ def _sub_keep_accents(text: str, pattern: str) -> str:
 
     `strip_diacritics` tra ký tự 1-1 nên **giữ nguyên độ dài**: chỉ số trên hai
     bản là của chung nhau, chỉ cần cắt bằng chính hai chỉ số đó trên bản gốc.
+
+    Khớp trên bản bỏ dấu là điều CẦN THIẾT nhưng tự nó là một cái bẫy: nó xoá
+    mất đúng cái thông tin phân biệt các từ với nhau. Hai hàng rào dưới đây
+    sinh ra vì đã vỡ ra thật, không phải vì sợ lý thuyết:
+
+    1. **TRỌN TỪ** - không có thì "nghe" ăn vào giữa "cho toi" và câu "doc bao
+       cho toi nghe" mất đoạn "ho toi" thành *"doc bao c nghe"*.
+    2. **CHỐT DẤU** - không có thì "nghe" khớp trọn với "nghệ", và câu
+       "phát podcast về công nghệ" bị cắt mất đuôi thành *"podcast về công"*.
+       Lý do: nhánh bỏ dấu sinh ra để phục vụ người gõ KHÔNG dấu, nên nó chỉ
+       được bắn vào chỗ người dùng đã CHỦ ĐỘNG bỏ dấu. Ai gõ "nghệ" là đã
+       chứng minh mình gõ được dấu - lúc đó "nghệ" KHÔNG phải "nghe".
     """
     if not text or not pattern:
         return text
-    if re.search(pattern, text):                 # câu có dấu, mẫu có dấu
-        return re.sub(pattern, "", text)
-    plain = strip_diacritics(text)
-    m = re.search(strip_diacritics(pattern), plain)
-    if not m:
-        return text
-    return text[:m.start()] + text[m.end():]
+    accented = re.search(pattern, text) is not None
+    # Nhánh có dấu khớp bằng chính mẫu gốc; chỉ nhánh không dấu mới được dùng
+    # mẫu đã bỏ dấu. Dùng nhầm mẫu bỏ dấu ở nhánh có dấu thì không bao giờ
+    # khớp được gì - và im lặng trả về nguyên câu, đúng kiểu hỏng mà khó thấy.
+    haystack, pat = (text, pattern) if accented else (
+        strip_diacritics(text), strip_diacritics(pattern))
+    for m in re.finditer(pat, haystack):
+        core = _core_span(haystack, m)
+        if core is None:
+            continue                                   # khớp toàn khoảng trắng
+        if not _is_whole_word(haystack, core):
+            continue                                   # ăn vào giữa một từ
+        if not accented and _has_diacritics(text, core):
+            continue                                   # người đã gõ dấu
+        return text[:m.start()] + text[m.end():]
+    return text
+
+
+def _core_span(haystack: str, m: re.Match[str]) -> tuple[int, int] | None:
+    r"""Thu khớp về phần CHỮ, bỏ khoảng trắng mẫu mang theo.
+
+    Mẫu hay kết thúc bằng `\s+`/`\s*$`; nếu lấy nguyên khớp thì ký tự ngay
+    sau luôn là chữ của từ kế tiếp và hàng rào trọn từ sẽ chặn nhầm chính cái
+    bóc dấu mà ta muốn.
+    """
+    lo, hi = m.start(), m.end()
+    while lo < hi and not _is_word_char(haystack[lo]):
+        lo += 1
+    while hi > lo and not _is_word_char(haystack[hi - 1]):
+        hi -= 1
+    return (lo, hi) if lo < hi else None
+
+
+def _has_diacritics(text: str, core: tuple[int, int]) -> bool:
+    """Đoạn bị cắt có mang dấu không."""
+    lo, hi = core
+    return bool(strip_diacritics(text[lo:hi]) != text[lo:hi])
+
+
+def _is_whole_word(haystack: str, core: tuple[int, int]) -> bool:
+    """Khớp có nằm TRỌN trong một từ, hay chỉ là một đoạn nằm trong từ.
+
+    Khoảng trống, gạch dưới và dấu chấm câu đều tách từ, nên chỉ chặn khi ký tự
+    ngay cạnh là CHỮ hoặc SỐ.
+    """
+    lo, hi = core
+    before = haystack[lo - 1] if lo > 0 else ""
+    after = haystack[hi] if hi < len(haystack) else ""
+    return not _is_word_char(before) and not _is_word_char(after)
+
+
+def _is_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "_")
 
 
 def _strip_affixes(text: str, prefix: str, suffix: str) -> str:

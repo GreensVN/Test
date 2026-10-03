@@ -15,7 +15,7 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 > False, mà JSON mặc định chấp nhận `NaN`); `feedback.csv` mất dòng tiêu
 > đề khiến `train_nlu.py` bỏ qua toàn bộ phần dạy còn lại - nay sửa cả đầu ghi lẫn đầu
 > đọc (đọc được cả file không có header, và báo rõ thay vì im lặng);
-> `data_path`/`voice_cache` không trèo ra ngoài thư mục dữ liệu. **1048 test**.
+> `data_path`/`voice_cache` không trèo ra ngoài thư mục dữ liệu. **1064 test**.
 >
 > **v7.7 (2026-09-20)** - **biên kiểu ở những hàm chưa bị audit**:
 > `lite_model.predict("mở youtube")` lặp qua từng KÝ TỰ (model chấm chữ "ở", "y"
