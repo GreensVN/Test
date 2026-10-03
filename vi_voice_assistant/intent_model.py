@@ -1560,11 +1560,35 @@ _WEATHER_TAIL_RE = re.compile(
     r"nắng không|nang khong|lạnh không|lanh khong|nóng không|nong khong|"
     r"bao nhiêu độ|bao nhieu do|bao nhiêu|bao nhieu|thế|the|nhỉ|nhi|vậy|vay)\s*$"
 )
+# v7.9 (bổ sung 8): cấu trúc câu thay vì liệt kê TỪNG CỤM.
+#
+# Bản cũ liệt kê 8 cụm cố định nên sót những cách nói rất phổ biến: "đặt
+# nhắc", "tạo nhắc nhở", "nhắc việc", "nhắc bạn", "đặt lời nhắc" (đo được 7/18
+# câu mở đầu lỗi). Liệt kê thêm nghĩa là lỡ thêm mãi, và "^" neo đầu nên
+# "đặt hẹn giờ" không bao giờ khớp vì "hẹn giờ" không nằm ngay đầu.
+#
+# Nay ghép từ ba thành phần CÓ THỨ TỰ: [động từ tạo] [danh từ nhắc] [người].
+# Ràng buộc thứ tự là điểm mấu chốt - nó giữ "tạo" trong "nhắc tôi TẠO FILE"
+# là phần nội dung cần làm, chứ không nuốt mất thành "file". Mỗi thành phần
+# khớp TRỌN TỪ, nên "nhắc việc" ăn đúng cụm còn "nhắn tin cho Lan" dừng lại.
+_REMINDER_CREATE_RE = r"(?:đặt|dat|tạo|tao|nhớ|nho|thiết lập|thiet lap|set|remind)"
+# Thứ tự CÓ Ý NGHĨA: Python lấy nhánh khớp ĐẦU TIÊN tại cùng vị trí, nên
+# cụm dài phải đứng trước. "hẹn giờ" trước "hẹn".
+# Cố ý KHÔNG có "hẹn" đứng riêng: test v6.1 chốt "hẹn 8 giờ kém 15" phải giữ
+# lại chữ "hẹn" làm TÊN lời nhắc ("hẹn" = cuộc hẹn), và điều đó vẫn đúng.
+_REMINDER_NOUN_RE = (
+    r"(?:hẹn giờ|hen gio|đồng hồ đếm ngược|dong ho dem nguoc|"
+    r"lời nhắc|loi nhac|nhắc nhở|nhac nho|nhắc việc|nhac viec|việc nhắc|"
+    r"viec nhac|nhắc lịch|nhac lich|báo thức|bao thuc|"
+    r"đồng hồ|dong ho|báo thức|bao thuc|nhắc|nhac|việc|viec|giờ|gio)"
+)
+_REMINDER_PERSON_RE = (
+    r"(?:cho\s+)?(?:tôi|toi|mình|minh|bạn|ban|tớ|toi|ta)"
+)
 _REMINDER_LEAD_RE = re.compile(
-    r"^(nhắc tôi|nhac toi|nhắc mình|nhac minh|đặt nhắc nhở|dat nhac nho|"
-    r"tạo lời nhắc|tao loi nhac|nhớ nhắc tôi|nho nhac toi|hẹn giờ|hen gio|"
-    r"đặt báo thức|dat bao thuc|báo thức|bao thuc|"
-    r"đặt đồng hồ đếm ngược|dat dong ho dem nguoc)\s*"
+    r"^\s*(?:" + _REMINDER_CREATE_RE + r"\s+)?"
+    r"(?:" + _REMINDER_NOUN_RE + r"\s+)?"
+    r"(?:" + _REMINDER_PERSON_RE + r"\s+)?"
 )
 _REMINDER_TIME_RE = re.compile(
     r"(?:lúc|luc|vào|vao)?\s*" + _NUMBER_WORD_RUN
@@ -1687,6 +1711,10 @@ _REPEAT_STRIP_RE = re.compile(
 )
 _REMINDER_TAIL_RES = (
     re.compile(r"^(sau|nữa|vào)\s+"),
+    # v7.9: "nhắc tôi NHỚ uống nước" - "nhớ" ở đây là vô nghĩa ("nhớ" = nhớ),
+    # không phải việc cần nhớ. Cùng nhóm với "sau"/"vào" ở trên: dấu nối đầu câu
+    # dính lại sau khi đã bóc mốc giờ.
+    re.compile(r"^(nhớ|nho)\s+"),
     re.compile(r"\s*(giúp tôi|giup toi|nhé|nhe|đi)\s*$"),
     # v7.8: dấu nối thời gian CÒN DÍNH ở CUỐI nội dung. Người Việt nói
     # "nhắc tôi uống nước SAU 10 phút" - mốc giờ đứng SAU câu, nên sau khi bóc
@@ -2006,6 +2034,22 @@ _DATE_QUESTION_RE = re.compile(
 _REMINDER_INTENT_MIN_CONFIDENCE = 0.5
 
 
+_CLOCK_TIME_RE = re.compile(
+    r"\d{1,2}\s*(?:h|gio|giờ)\b"
+    r"|\d+\s*(?:phut|phút|tieng|tiếng|giay|giây)\b"
+)
+
+
+def _has_clock_time(plain: str) -> bool:
+    """Câu có GIỜ CỤ THỂ (số + đơn vị) chứ không chỉ có ngày.
+
+    Đây là chốt chặn cuối cho ngưỡng tự tin: "đặt lịch hẹn khách 14 giờ" có
+    "14 giờ" nên rõ ràng là đặt lịch, còn một câu chỉ nói ngày mà không có giờ
+    thì vẫn để model quyết - vì lúc đó "hẹn"/"lịch" chưa đủ để cãi.
+    """
+    return _CLOCK_TIME_RE.search(plain) is not None
+
+
 def _rescue_reminder_intent(intent: str, confidence: float,
                             raw_text: str | None) -> str:
     """Lời nhắc có động từ rõ ràng bị đoán thành hỏi ngày giờ -> "set_reminder".
@@ -2029,8 +2073,6 @@ def _rescue_reminder_intent(intent: str, confidence: float,
     """
     if intent != "get_datetime" or not raw_text:
         return intent
-    if confidence >= _REMINDER_INTENT_MIN_CONFIDENCE:
-        return intent
     plain = strip_diacritics(raw_text).strip()
     if not plain or not _REMINDER_LEAD_RE.match(plain):
         return intent
@@ -2039,6 +2081,14 @@ def _rescue_reminder_intent(intent: str, confidence: float,
     has_schedule = (parse_time_expression(raw_text).get("type") is not None
                     or parse_repeat(raw_text) is not None)
     if not has_schedule:
+        return intent
+    # v7.9: động từ hẹn RÕ RÀNG ("đặt lịch", "hẹn") kèm MỘT MỐC GIỜ CỤ THỂ
+    # thì không có cách đọc nào là câu hỏi lịch - cãi model dù nó tự tin đến
+    # mấy. "đặt lịch hẹn khách 14 giờ ngày mai" bị model đoán `get_datetime` ở
+    # 0.72, tức trợ lý đọc ra hôm nay là thứ mấy cho một câu người dùng rõ
+    # ràng đang đặt lịch. Ngưỡng 0.5 vẫn giữ nguyên cho câu MƠ HỜ không có
+    # mốc giờ ("ngày kia là thứ mấy" - đã bị chặn ở điều kiện 5 trước đó).
+    if confidence >= _REMINDER_INTENT_MIN_CONFIDENCE and not _has_clock_time(plain):
         return intent
     logger.info("Lời nhắc %r bị đoán nhầm thành %r (%.2f) -> set_reminder",
                 raw_text, intent, confidence)

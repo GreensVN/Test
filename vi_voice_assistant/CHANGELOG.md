@@ -1,5 +1,45 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 8) - Động từ mở đầu lời nhắc và câu đặt lịch; 987 test
+
+**1. Trợ lý tự nhắc lại chính động từ đặt nhắc.** `_REMINDER_LEAD_RE` liệt kê 8
+cụm cố định nên sót những cách nói rất phổ biến - đo được **7/18 câu mở đầu
+bị lỗi**. "đặt nhắc uống nước 10 giờ sáng" cho nội dung nhắc là *"đặt nhắc uống
+nước"*, "tạo nhắc nhở gọi mẹ" cho *"tạo nhắc nhở gọi mẹ"*. Cùng lớp rò rỉ chữ
+đã sửa ở bổ sung 5.
+
+**Cách sửa: ghép CẤU TRÚC câu, không liệt kê từng cụm.** Liệt kê thêm nghĩa là
+lỡ thêm mãi, và `"^"` neo đầu nên `"đặt hẹn giờ"` không bao giờ khớp vì
+"hẹn giờ" không nằm ngay đầu. Nay là ba thành phần **có thứ tự**: [động từ tạo]
+[danh từ nhắc] [người].
+
+Ràng buộc thứ tự là điểm mấu chốt, vì nó giữ nội dung cần làm. Bóc theo từng
+từ thì "nhắc tôi **tạo** file báo cáo" sẽ thành "file" - mất hẳn việc cần nhớ.
+Còn khớp **trọn từ** thì "nhắc việc" ăn đúng cụm, "nhắn tin cho Lan" dừng lại
+đúng chỗ vì "nhắn" khác "nhắc".
+
+**2. "đặt lịch hẹn khách 14 giờ ngày mai" bị đoán thành CÂU HỎI LỊCH** ở 0.72
+- tức trợ lý đọc ra *"Hôm nay là thứ Bảy, ngày 3 tháng 10"* cho một câu người
+dùng rõ ràng đang đặt lịch. Động từ hẹn rõ ràng kèm **mốc giờ cụ thể** thì
+không có cách đọc nào là hỏi lịch, nên cãi model dù nó tự tin.
+
+**Chốt chặn, vì mở ngưỡng cứu thì nuốt mất câu hỏi thật.** Cứu chỉ chạy khi câu
+có **số + đơn vị thời gian** ("14 giờ"), không phải chỉ có ngày. Câu chỉ nói
+ngày mà không có giờ thì vẫn để model quyết. Bộ test có 7 câu hỏi lịch thật
+("hôm nay là thứ mấy", "thứ hai tuần sau là thứ mấy"...) làm chốt chặn ngược.
+
+**Một giả thiết của tôi sai và đã bỏ, ghi lại để không ai làm lại.** Thử thêm
+"lịch hẹn" làm cụm danh từ thì nội dung nhắc thành *"khách"* - mất mất chữ
+"hẹn", chỉ còn lại danh từ trần. "lịch hẹn khách" vốn đã là một tên lời nhắc
+có nghĩa, nên đã bỏ. Sửa bằng cách đo, không đoán.
+
+**Kiểm chứng.** 987 test: `pytest -q` -> `987 passed`; `ruff check` 0; `mypy` 0
+lỗi trên **53** file. 42 test mới trong `test_v79_reminder_lead.py`, **13 FAIL**
+trên `intent_model.py` trước khi sửa. Chạy thật: "đặt nhắc uống nước 10 giờ
+sáng" -> nội dung *"uống nước"*; "đặt lịch hẹn khách 14 giờ ngày mai" -> đặt
+nhắc lúc 14 giờ ngày mai thay vì đọc ngày hôm nay.
+
+
 ## v7.9 (bổ sung 7) - Đừng biến lời nói thường thành LỆNH trên máy thật; 945 test
 
 Ba lỗi dưới đây có cùng một hình dạng: trợ lý làm MỘT VIỆC KHÁC với điều
