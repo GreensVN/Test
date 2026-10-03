@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## v7.9 (bổ sung 9f) - "nhắc tôi X" phải NHẮC, không phải LÀM LUÔN X; 1134 test
+
+**Lỗi nguy hiểm nhất tìm được trong đợt này: không có dấu hiệu báo lỗi.**
+Người nói *"nhắc tôi thời tiết hà nội"* và nghe phản hồi hợp lý. Máy kiểm tra
+thời tiết NGAY, báo xong - và **không có lời nhắc nào được tạo**. Người dùng
+tưởng đã đặt nhắc. Không có cách nào phát hiện ngoài việc đợi mãi không thấy nhắc.
+
+| Người gõ | Trước | Việc máy làm thật |
+|---|---|---|
+| `nhắc tôi thời tiết hà nội` | `get_weather` **0.99** | xem thời tiết ngay |
+| `nhắc tôi tính 5 cộng 7` | `calculate` **0.95** | tính ngay |
+| `nhắc tôi tìm giá vé` | `search_web` **0.93** | tìm ngay |
+| `nhắc tôi mở file hóa đơn` | `open_file` **0.81** | mở file thật |
+
+Lý do: nội dung của lời nhắc chứa từ khoá của lệnh khác, và model bị từ đó kéo
+đi. **"Nhắc tôi ..." là DỮ LIỆU TRỰC TIẾP của lệnh nhắc nhở, mạnh hơn bất kỳ từ
+nào trong phần nội dung** - nên nó phải được cãi, không xét độ tự tin.
+
+**Một chỗ dễ sửa sai, đã sửa sai một lần.** Rule này phải chạy TRƯỚC
+`_UNAMBIGUOUS_CONFLICT_RE`, vì `"nhắc tôi mở file hóa đơn"` chứa `"mở file"` nên
+xung đột sẽ giữ nguyên nhánh sai. Nhưng nó cũng phải để `nhắc tôi hôm nay là
+thứ mấy` là câu HỎI ngày giờ, không phải lệnh nhắc.
+
+**Phần hai, cùng bổ sung: mốc giờ đứng TRƯỚC thì động từ sống sót.**
+`_REMINDER_LEAD_RE` neo `^`, nên nó chỉ thấy động từ khi động từ đứng đầu câu.
+Khi mốc giờ đứng trước thì động từ bị mốc giờ che:
+
+    "mai nhắc tôi họp"          -> "nhắc tôi họp"
+    "2 ngày nữa nhắc tôi đi chợ" -> "nhắc tôi đi chợ"
+
+Trợ lý đọc thành *"Nhắc bạn: nhắc tôi họp"* - máy tự nhắc mình nhắc lại. Sửa:
+bóc mốc giờ xong thì bóc tiếp động từ.
+
+**Bóc tiếp một cách vô điều kiện thì hỏng câu khác - bắt được nhờ test có sẵn.**
+`"nhắc tôi tảo file báo cáo"`: lần đầu ăn `"nhắc tôi"`, nếu bóc tiếp thì lần
+hai ăn `"tảo file"` và nội dung còn `"báo cáo"` - trong khi `"tảo file báo cáo"`
+mới đúng là VIỆC CẦN LÀM. Lần đầu sống sót chỉ là do `re.sub` thay khớp ngoài
+cùng bên trái. Nên chỉ bóc lại khi lần đầu KHÔNG bóc được gì.
+
+**Một lỗ hổng của bộ test, phát hiện khi truy vết.** Test cũ gọi thẳng
+`_reminder_task` nên xanh, nhưng người dùng thật đi qua `predict_intent`, và ở
+đó câu này còn bị đoán nhầm `open_file` vì chữ "file". Test mới gọi đúng đường
+người dùng đi (`predict_intent`) chứ không chỉ gọi hàm nội bộ.
+
+**Kiểm chứng.** 1134 test: `pytest -q` -> `1134 passed`; `run_tests.py -q` ->
+`1134 passed`; `ruff check` sạch; `mypy` sạch trên 60 file nguồn. Trong 29 test
+mới, **16 test FAIL trên `59b8da0`**.
+
 ## v7.9 (bổ sung 9e) - Lệnh DỪNG không được thành lệnh PHÁT; 1105 test
 
 **Cùng lớp lỗi với `"alarm clock"` khoá nhầm máy: làm việc KHÁC hẳn với điều

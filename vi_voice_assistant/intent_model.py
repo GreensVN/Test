@@ -1904,7 +1904,12 @@ def _weather_location(raw: str) -> str:
 
 def _reminder_task(raw: str) -> str:
     """Nội dung công việc của lời nhắc, sau khi bỏ động từ đầu + mốc giờ."""
-    task = _REMINDER_LEAD_RE.sub("", raw).strip()
+    lead = _REMINDER_LEAD_RE.sub("", raw).strip()
+    # Mẫu bọc cả ba nhóm đều tuỳ chọn, nên nó luôn "khớp" (khớp rỗng) ở vị trí
+    # đầu. Chỉ khi nó thực sự BÓC ĐI THỨ GÌ thì câu mới coi như đã có động từ
+    # ở đầu và không cần bóc lần hai.
+    lead_untouched = lead == raw.strip()
+    task = lead
     # v6.2: bóc mốc giờ viết bằng CHỮ SỐ hoặc TỪ-SỐ (kể cả "kém X" ở đuôi,
     # trước đây "hẹn 8 giờ kém 15" để sót lại "kém 15" trong nội dung).
     task = _REMINDER_TIME_RE.sub("", task).strip()
@@ -1924,6 +1929,26 @@ def _reminder_task(raw: str) -> str:
     task = _REPEAT_STRIP_RE.sub("", task).strip()
     for pattern in _REMINDER_TAIL_RES:
         task = pattern.sub("", task).strip()
+    # v7.9 (bổ sung 9f): bóc LẠI động từ đầu, sau khi đã bóc mốc giờ.
+    # `_REMINDER_LEAD_RE` neo `^`, nên nó chỉ thấy động từ khi động từ đứng
+    # ĐẦU CÂU. Khi mốc giờ đứng trước thì động từ bị MỐC GIỜ che, và nó sống
+    # sót lại trong nội dung:
+    #     "mai nhắc tôi họp"          -> "nhắc tôi họp"
+    #     "2 ngày nữa nhắc tôi đi chợ" -> "nhắc tôi đi chợ"
+    # Trợ lý đọc thành "Nhắc bạn: nhắc tôi họp" - máy tự nhắc mình nhắc lại.
+    # Bóc mốc giờ xong thì động từ mới lộ ra ở đầu, nên bóc tiếp - NHƯNG
+    # chỉ khi lần đầu KHÔNG bóc được gì. Nếu bóc lại vô điều kiện thì hỏng câu
+    # "nhắc tôi tảo file báo cáo": lần đầu ăn "nhắc tôi", lần hai ăn tiếp
+    # "tảo file" và nội dung còn lại là "báo cáo" - trong khi "tảo file báo
+    # cáo" mới đúng là VIỆC CẦN LÀM. Lần đầu sống sót chính là do `re.sub`
+    # chỉ thay khớp ngoài cùng bên trái; bóc thêm lần nữa là mất cái may mắn
+    # đó, và mất cả nghĩa của câu.
+    if lead_untouched:
+        for _ in range(3):
+            stripped = _REMINDER_LEAD_RE.sub("", task).strip()
+            if stripped == task:
+                break
+            task = stripped
     return task or "báo thức"
 
 
@@ -2296,6 +2321,23 @@ _UNAMBIGUOUS_CONFLICT_RE = re.compile(
     r"\b(?:mo\s*file|doc\s*file|tren\s*file|doc\s*trong)\b"
 )
 
+# v7.9 (bổ sung 9f): "nhắc tôi..." là DỮ LIỆU TRỰC TIẾP của lệnh nhắc nhở, mạnh
+# hơn BẤT KỲ từ nào nằm trong phần nội dung. Trước đây nội dung thắng, và hậu
+# quả là máy LÀM LUÔN việc đó thay vì nhắc:
+#     "nhắc tôi thời tiết hà nội"  -> get_weather 0.99 (kiểm tra ngay)
+#     "nhắc tôi tính 5 cộng 7"      -> calculate    0.95
+#     "nhắc tôi tìm giá vé"         -> search_web   0.93
+#     "nhắc tôi mở file hóa đơn"   -> open_file    0.81 (mở file thật)
+# Người dùng nghe phản hồi hợp lý, tưởng đã đặt nhắc - và không có nhắc nào.
+# Đây là lỗi nguy hiểm nhất tìm được: KHÔNG có dấu hiệu báo lỗi, chỉ có hành
+# động sai, và người dùng không có cách nào phát hiện ngoài việc đợi mãi không
+# thấy nhắc.
+_REMINDER_LEAD_STRONG_RE = re.compile(
+    r"\b(?:nhac|nho)\s*(?:toi|ban|minh|co|em|anh|chi|ong|ba|tui|ay|cuc)\b"
+    r"|\bdat\s*(?:lich|hen|gio|nhac|reminder|alarm|job)\b"
+    r"|\bset\s+(?:a\s+)?(?:reminder|alarm|notification)\b"
+)
+
 
 def _rescue_unambiguous_keywords(intent: str, confidence: float,
                                  raw_text: str | None) -> str:
@@ -2303,6 +2345,16 @@ def _rescue_unambiguous_keywords(intent: str, confidence: float,
     if not raw_text or intent == "chitchat":
         return intent
     u = strip_diacritics(raw_text)
+    # Động từ "nhắc tôi..." phải được xét TRƯỚC cả danh sách xung đột: "nhắc tôi
+    # mở file hóa đơn" chứa "mở file" nên xung đột sẽ giữ nguyên nhánh sai.
+    # Câu hỏi ngày giờ ("nhắc tôi hôm nay là thứ mấy") thì vẫn là câu hỏi, không
+    # phải lệnh nhắc - nên hỏi ngày trước.
+    if (_REMINDER_LEAD_STRONG_RE.search(u)
+            and not _DATE_QUESTION_RE.search(u)):
+        if intent != "set_reminder":
+            logger.info("Động từ nhắc trong %r bị đoán thành %r (%.2f) "
+                        "-> set_reminder", raw_text, intent, confidence)
+        return "set_reminder"
     if _UNAMBIGUOUS_CONFLICT_RE.search(u):
         return intent
     for wanted, pattern in _UNAMBIGUOUS_INTENT_KEYWORDS:
