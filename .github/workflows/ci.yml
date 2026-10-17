@@ -1,4 +1,4 @@
-name: CI - Trợ lý ảo tiếng Việt v7.8
+name: CI - Trợ lý ảo tiếng Việt
 
 on:
   push:
@@ -9,6 +9,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  PYTHONUTF8: "1"
 
 jobs:
   test:
@@ -95,7 +98,7 @@ jobs:
     - name: Install mypy
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "mypy>=1.11,<2"
+        python -m pip install "mypy>=1.11"
     - name: mypy (package + install.py)
       run: |
         mypy --version
@@ -176,18 +179,101 @@ jobs:
         python -m pip install .
     - name: Console scripts must run
       shell: bash
+      working-directory: ${{ runner.temp }}
       run: |
         vi-assistant --version
         vi-assistant --doctor
         vi-assistant --dry-run --once "mở youtube"
         vi-doctor --json > doctor.json
-        python -c "import json;d=json.load(open('doctor.json'));print('ok' if d['sections'] else 'empty')"
+        python -c "import json;d=json.load(open('doctor.json', encoding='utf-8'));print('ok' if d['sections'] else 'empty')"
     - name: Module entry point + run from another cwd
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
         cd ~
         python -m vi_voice_assistant --version
+    - name: Installed version and strict JSON CLI (outside the repo)
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        python - <<'PY'
+        import json
+        import os
+        import pathlib
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from importlib.metadata import version
+
+        import vi_voice_assistant
+        import vi_voice_assistant.main as cli
+
+        assert version("vi-voice-assistant") == vi_voice_assistant.__version__ == cli.APP_VERSION
+        script = shutil.which("vi-assistant")
+        assert script, "console script missing"
+
+        def no_nonfinite(value):
+            raise AssertionError(f"non-standard JSON number: {value}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, VI_ASSISTANT_HOME=str(pathlib.Path(directory) / "data"))
+            for entry in ([sys.executable, "-m", "vi_voice_assistant"], [script]):
+                cases = (("15 + 27", True, 0), ("", True, 0),
+                         ("đừng tắt máy tính", True, 0), ("đừng tắt máy tính", False, 2))
+                for text, dry_run, expected_code in cases:
+                    command = [*entry, "--once", text, "--json"]
+                    if dry_run:
+                        command.append("--dry-run")
+                    result = subprocess.run(
+                        command,
+                        capture_output=True, text=True, encoding="utf-8", env=env, timeout=120)
+                    assert result.returncode == expected_code, result.stdout + result.stderr
+                    body = json.loads(result.stdout, parse_constant=no_nonfinite)
+                    if not text:
+                        assert body == [], body
+                    elif text == "15 + 27":
+                        assert len(body) == 1 and body[0]["result"] == 42, body
+                    else:
+                        assert len(body) == 1 and body[0]["status"] == "unknown", body
+        print("installed metadata/API/CLI versions match; JSON stdout is clean")
+        PY
+    - name: Installed feedback, context and zero-threshold safety
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        python - <<'PY'
+        import pathlib
+        import tempfile
+        import vi_voice_assistant.nlu_advanced as nlu
+        from vi_voice_assistant.csv_utils import read_keyed_csv
+
+        memory = nlu.ContextMemory(0)
+        memory.remember({"target": "google"})
+        assert memory.history == []
+        memory = nlu.ContextMemory()
+        target = "https://example.com/no/AbC"
+        payload = {"target": target}
+        memory.remember(payload)
+        payload["target"] = "changed"
+        assert memory.resolve("MỞ NÓ") == "MỞ " + target
+        assert memory.resolve("mở https://other.com/no") == "mở https://other.com/no"
+        nlu.CONFIDENCE_ASK = nlu.CONFIDENCE_ACCEPT = 0.0
+        assert nlu.NLU._judge({"intent": "system_control", "target": "shutdown",
+                               "confidence": 0.0}) == "unknown"
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "private" / "feedback.csv"
+            nlu.FEEDBACK_PATH = str(path)
+            assert nlu.log_feedback("mở chrome", "open_app", 1.0, correct=True) is True
+            rows = read_keyed_csv(path, ("time", "text", "intent", "confidence", "verified"))
+            assert rows[0]["text"] == "mở chrome" and rows[0]["verified"] == "1"
+            blocked = pathlib.Path(directory) / "blocked"
+            blocked.mkdir()
+            nlu.FEEDBACK_PATH = str(blocked)
+            message = nlu.NLU.__new__(nlu.NLU).teach("mở chrome", "open_app")
+            assert "Đã ghi nhớ" not in message
+        print("installed feedback/context/zero-confidence safety passed")
+        PY
     - name: User data must NOT be written into site-packages
       shell: bash
       run: |
@@ -237,6 +323,7 @@ jobs:
         PY
     - name: User data must land in the DATA DIR (not a fixed XDG path)
       shell: bash
+      working-directory: ${{ runner.temp }}
       run: |
         python - <<'PY'
         # Kiem tra THAT, khong `|| echo ok`. Dung chinh paths.data_path() de lay
@@ -248,24 +335,32 @@ jobs:
         assert not missing, f"thieu du lieu nguoi dung tai thu muc du lieu: {missing}"
         print("du lieu nam o:", data_path(".history.json").parent)
         PY
-    - name: Wheel must not carry private runtime files
+    - name: Wheel and sdist must not carry private runtime files
       shell: bash
       run: |
-        python -m pip install wheel
-        python -m pip wheel . --no-deps -w dist
+        python -m pip install build
+        python -m build
         python - <<'PY'
-        import glob, zipfile
+        import glob, tarfile, zipfile
         wheel = glob.glob("dist/*.whl")[0]
         names = zipfile.ZipFile(wheel).namelist()
         bad = [n for n in names if any(k in n for k in
                (".history.json", "reminders.json", "feedback.csv", "lite_model.pkl",
-                "logs/", "__pycache__", "/tests/"))]
+                "intent_model.pkl", "voice_cache/", "logs/", "__pycache__", "/tests/"))]
         assert not bad, f"wheel rò rỉ file runtime/tests: {bad}"
         need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
-                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py"}
+                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py",
+                "vi_voice_assistant/_version.py"}
         missing = need - set(names)
         assert not missing, f"wheel thiếu: {missing}"
         print("wheel ok:", len(names), "files")
+        with tarfile.open(glob.glob("dist/*.tar.gz")[0]) as archive:
+            names = archive.getnames()
+        bad = [n for n in names if any(k in n for k in
+               (".history.json", "reminders.json", "feedback.csv", ".pkl", "voice_cache/",
+                "logs/", "__pycache__"))]
+        assert not bad, f"sdist rò rỉ file runtime: {bad}"
+        print("sdist ok:", len(names), "entries")
         PY
 
   # Cai bang script huong dan cua chinh du an (install.py) - kiem tra no khong

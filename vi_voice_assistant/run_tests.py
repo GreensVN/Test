@@ -174,10 +174,14 @@ def _raises(exc_type, *args, match=None, **kwargs):
 
 class _MarkParam:
     def __init__(self, argnames, argvalues):
-        self.argnames = [n.strip() for n in argnames.split(",")]
-        self.argvalues = argvalues
+        self.argnames = ([n.strip() for n in argnames.split(",")]
+                         if isinstance(argnames, str) else list(argnames))
+        self.argvalues = list(argvalues)
     def __call__(self, fn):
-        fn.__parametrize__ = (self.argnames, self.argvalues); return fn
+        # Decorator phía ngoài không được ghi đè decorator phía trong.
+        fn.__parametrize__ = [*getattr(fn, "__parametrize__", []),
+                              (self.argnames, self.argvalues)]
+        return fn
 
 class _MarkSkipif:
     def __init__(self, cond, reason=""):
@@ -621,6 +625,33 @@ def _keyword_matches(keyword: str, nodeid: str) -> bool:
     return False
 
 
+def _parametrize_cases(name, fn):
+    """Tích Descartes của tất cả decorator, cùng thứ tự như pytest."""
+    cases: list[Any] = [(name, fn, {})]
+    for arg_names, arg_values in getattr(fn, "__parametrize__", []):
+        if not arg_values:
+            return [("%s[empty-parametrize]" % name, _empty_parametrize, {})]
+        expanded = []
+        for case_name, test_fn, existing in cases:
+            for vals in arg_values:
+                # Một tham số nhận nguyên list/tuple, không bị bung ra.
+                try:
+                    seq = (vals,) if len(arg_names) == 1 else tuple(vals)
+                except TypeError:
+                    return [("%s[invalid-parametrize]" % name, _invalid_parametrize, {})]
+                if len(seq) != len(arg_names) or set(existing).intersection(arg_names):
+                    return [("%s[invalid-parametrize]" % name, _invalid_parametrize, {})]
+                pkw = dict(existing, **dict(zip(arg_names, seq)))
+                cid = "-".join(str(v)[:18] for v in seq)
+                expanded.append(("%s[%s]" % (case_name, cid), test_fn, pkw))
+        cases = expanded
+    return cases
+
+
+def _invalid_parametrize(*args, **kwargs):
+    raise AssertionError("@parametrize trùng tên tham số hoặc sai số lượng giá trị")
+
+
 def run(keyword=None, verbose=False, quiet=False):
     test_dir = pathlib.Path(__file__).parent / "tests"
     files = sorted(test_dir.glob("test_*.py"))
@@ -651,32 +682,7 @@ def run(keyword=None, verbose=False, quiet=False):
             if keyword and not _keyword_matches(keyword, "%s::%s" % (path.name, name)):
                 continue
 
-            cases: list[Any] = [(name, fn, {})]
-            if hasattr(fn, "__parametrize__"):
-                arg_names, arg_values = fn.__parametrize__
-                cases = []
-                for vals in arg_values:
-                    # MOT tham so thi gia tri duoc truyen NGUYEN VAN: dung quy
-                    # tac cua pytest. Ban cu dung `isinstance(vals,(list,tuple))`
-                    # de tach ra -> voi @parametrize("flags", [["--version"],
-                    # ["--doctor"]]) no tang chu "--version" thanh 10 ki tu cho
-                    # 10 tham so, test goi main.py bang ["-", "h", "i", ...] va
-                    # che do -q cua CI chay fail khong giai thich duoc.
-                    if len(arg_names) == 1:
-                        pkw = {arg_names[0]: vals}
-                        shown = (vals,)
-                    else:
-                        seq = tuple(vals) if isinstance(vals, (list, tuple)) else (vals,)
-                        pkw = dict(zip(arg_names, seq))
-                        shown = seq
-                    cid = "-".join(str(v)[:18] for v in shown)
-                    cases.append(("%s[%s]" % (name, cid), fn, pkw))
-                if not arg_values:
-                    # @parametrize khong gia tri -> vong lap tren chay 0 lan, test
-                    # bien "khong co gi de kiem tra" thanh PASS. Do la mau xanh
-                    # gia ( cung ho voi `|| echo passed`), nen no phai la MOT
-                    # that bai co ten ro.
-                    cases.append(("%s[empty-parametrize]" % name, _empty_parametrize, {}))
+            cases = _parametrize_cases(name, fn)
 
             for case_name, test_fn, extra_kw in cases:
                 total += 1

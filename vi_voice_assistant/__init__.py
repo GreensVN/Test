@@ -1,5 +1,5 @@
 """
-Trợ lý ảo tiếng Việt - gói Python (v7.8)
+Trợ lý ảo tiếng Việt - gói Python (v7.10.1)
 -----------------------------------------
 
 Toàn bộ mã nguồn trong thư mục này từ trước tới nay dùng LỆNH IMPORT PHẲNG
@@ -33,7 +33,9 @@ if _HERE not in _sys.path:
     # CO MAT trong path.
     _sys.path.append(_HERE)
 
-__version__ = "7.9"
+# Chỉ nạp sau khi thêm thư mục gói: giữ cách import phẳng từ source và wheel.
+from _version import __version__  # noqa: E402
+
 __all__ = ["__version__", "main"]
 
 

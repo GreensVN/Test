@@ -102,10 +102,11 @@ SPEAK_ENABLED: bool = False
 
 def reload_config(path: str | Path | None = None) -> dict[str, Any]:
     """Nạp lại config.json khi đang chạy, cập nhật tại chỗ."""
-    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS
+    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS, CONFIG_ERROR
     fresh = load_config(path) if path else load_config()
     CONFIG.clear()
     CONFIG.update(fresh)
+    CONFIG_ERROR = None
     CONFIDENCE_THRESHOLD = float(CONFIG.get("confidence_threshold", 0.35))
     DANGEROUS_ACTIONS = {str(a) for a in CONFIG.get("dangerous_actions", [])}
     # v7.2: đồng bộ cả ngưỡng của tầng NLU. Trước đây "nap lai"/--config chỉ
@@ -173,6 +174,7 @@ EXECUTABLE_EXTENSIONS = {
     ".pyw",
     ".app",
     ".lnk",  # v7.0: chặn thêm shortcut
+    ".desktop", ".url", ".scf", ".command", ".application", ".sct",
 }
 
 CHITCHAT_REPLIES: list[tuple[str, list[str]]] = [
@@ -309,6 +311,15 @@ def respond(text: str) -> None:
 
 
 def _open_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+                 and not any(ord(char) < 32 or ord(char) == 127 for char in url))
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        safe_print("[TỪ CHỐI] Chỉ mở URL HTTP(S) có tên máy chủ hợp lệ.")
+        return False
     if SYSTEM == "Linux" and is_wsl():
         if _run_first_available([["wslview", url], ["explorer.exe", url]]):
             return True
@@ -325,7 +336,7 @@ def _open_path(path: str) -> bool:
     # Expand và resolve
     try:
         expanded = os.path.expandvars(os.path.expanduser(path))
-        p = Path(expanded)
+        p = Path(expanded).resolve()
         # Kiểm tra tồn tại, không follow symlink nguy hiểm quá mức
         if not p.exists():
             safe_print(f"[LỖI] Không tìm thấy đường dẫn: {expanded}")
@@ -417,6 +428,9 @@ def _app_map_for_platform() -> dict[str, str]:
 # System actions
 # ============================================================================
 def action_open_website(target: str) -> bool:
+    if not target or target == "unknown":
+        respond("Bạn muốn mở trang web nào ạ?")
+        return False
     url, matched_key = _best_match(target, CONFIG.get("website_map", {}), fuzzy=False)
     if url is None:
         if _URL_SCHEME_RE.match(target):
@@ -430,8 +444,7 @@ def action_open_website(target: str) -> bool:
 
     safe_print(f"[THỰC THI] Mở trình duyệt: {url}")
     logger.info("Mở website: target=%r matched=%r url=%s", target, matched_key, url)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def action_open_app(target: str) -> bool:
@@ -514,8 +527,16 @@ def _run_first_available(candidates: list[list[str]]) -> bool:
 
 
 def _is_executable_path(path: str) -> bool:
-    cleaned = (path or "").strip().rstrip("\"'")
-    return Path(cleaned).suffix.lower() in EXECUTABLE_EXTENSIONS
+    cleaned = os.path.expandvars(os.path.expanduser((path or "").strip().rstrip("\"'")))
+    try:
+        # Kiểm cả tên được nhập lẫn đích symlink/biến môi trường. Windows bỏ
+        # dấu chấm/khoảng trắng cuối tên khi mở file, nên không được lách .exe.
+        paths = (Path(cleaned), Path(cleaned).resolve())
+        return any(Path(str(p).rstrip(". ")).suffix.lower() in EXECUTABLE_EXTENSIONS
+                   or (p.is_file() and os.name != "nt" and os.access(p, os.X_OK))
+                   for p in paths)
+    except (OSError, ValueError, RuntimeError):
+        return True  # đường dẫn không kiểm tra được thì từ chối, không mở liều
 
 
 def action_open_file(target: str) -> bool:
@@ -891,8 +912,7 @@ def action_search_web(target: str) -> bool:
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(target)
     respond(f"Đang tìm kiếm {target}")
     logger.info("Tìm kiếm web: %s", target)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def action_play_media(target: str) -> bool:
@@ -900,8 +920,7 @@ def action_play_media(target: str) -> bool:
     url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
     respond(f"Đang phát {query}")
     logger.info("Phát media: %s", query)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def _format_number(value: Any) -> str:
@@ -925,7 +944,8 @@ def action_calculate(target: str, data: dict[str, Any] | None = None) -> bool:
         except Exception:
             result = None
 
-    if result is None:
+    if (type(result) not in (int, float)
+            or (isinstance(result, float) and not math.isfinite(result))):
         respond(f"Xin lỗi, tôi chưa tính được phép tính {target}")
         return False
 
@@ -939,8 +959,7 @@ def action_get_weather(target: str) -> bool:
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
     respond(f"Đang xem {query}")
     logger.info("Xem thời tiết: %s", query)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 WEEKDAYS_VI = ["thứ Hai", "thứ Ba", "thứ Tư", "thứ Năm", "thứ Sáu", "thứ Bảy", "Chủ nhật"]
@@ -970,19 +989,23 @@ def action_chitchat(target: str) -> bool:
 
 
 # --- Reminders với atomic write và lock ---
-def _reminder_at(item: dict[str, Any]):
-    """Lấy mốc giờ của một lời nhắc, chấp nhận cả khi nó được lưu dạng chuỗi.
-
-    v7.2: ``reminders.json`` có thể bị sửa tay hoặc được ghi bởi phiên bản cũ,
-    nên mọi chỗ đọc danh sách này phải dùng hàm "an toàn" thay vì index thẳng.
-    """
-    at = item.get("at")
-    if isinstance(at, str):
+def _local_datetime(value: object) -> datetime.datetime | None:
+    """Đổi ISO có timezone về giờ địa phương; nội bộ chỉ dùng datetime naive."""
+    if isinstance(value, str):
         try:
-            return datetime.datetime.fromisoformat(at)
+            value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-    return at if isinstance(at, datetime.datetime) else None
+    if not isinstance(value, datetime.datetime):
+        return None
+    try:
+        return value.astimezone().replace(tzinfo=None) if value.tzinfo else value
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _reminder_at(item: dict[str, Any]) -> datetime.datetime | None:
+    return _local_datetime(item.get("at")) if isinstance(item, dict) else None
 
 
 # --- Nhịp lặp (v7.9) --------------------------------------------------------
@@ -1022,55 +1045,46 @@ def _coerce_repeat(repeat: object) -> dict[str, Any] | None:
 
 def _next_occurrence(run_at: datetime.datetime,
                      repeat: dict[str, Any]) -> datetime.datetime | None:
-    """Lần xuất hiện KẾ TIẾP sau `run_at`. None nếu không tính được.
-
-    Luôn trả về mốc **sau** `run_at`. Nếu vì lý do gì đó trả về mốc đã qua,
-    `_schedule_reminder` từ chối đặt (delay <= 0) và chuỗi lặp dừng lại - tức
-    lỗi sẽ thày một nhắc bị bỏ, chứ không thành vòng lặp treo máy.
-    """
+    """Lần kế tiếp sau run_at; ngày cuối tháng được chặn về ngày có thật."""
     kind = repeat.get("kind")
-    if kind == "daily":
-        nxt = run_at + datetime.timedelta(days=1)
-    elif kind == "weekly":
-        weekday = repeat.get("weekday")
-        if weekday is None:
-            nxt = run_at + datetime.timedelta(days=7)
-        else:
-            # run_at.weekday() là 0=thứ hai; weekday của người dùng cùng hệ.
-            ahead = (weekday - run_at.weekday()) % 7 or 7
-            nxt = run_at + datetime.timedelta(days=ahead)
-    elif kind == "monthly":
-        year, month = run_at.year, run_at.month + 1
-        if month > 12:
-            year, month = year + 1, 1
-        # Ngày 31 tháng 2 không tồn tại -> lùi về ngày cuối tháng đó thay vì nổ.
-        day = min(run_at.day, _days_in_month(year, month))
-        nxt = run_at.replace(year=year, month=month, day=day)
-    else:
-        return None
-    return nxt if nxt > run_at else None
+    try:
+        if kind == "daily":
+            return run_at + datetime.timedelta(days=1)
+        if kind == "weekly":
+            weekday = repeat.get("weekday")
+            ahead = (weekday - run_at.weekday()) % 7 or 7 if weekday is not None else 7
+            return run_at + datetime.timedelta(days=ahead)
+        if kind == "monthly":
+            year, month = run_at.year, run_at.month + 1
+            if month > 12:
+                year, month = year + 1, 1
+            day = min(run_at.day, _days_in_month(year, month))
+            return run_at.replace(year=year, month=month, day=day)
+    except (ValueError, OverflowError):
+        logger.warning("Lịch lặp vượt quá phạm vi datetime: %s", run_at)
+    return None
 
 
 def _next_future_occurrence(run_at: datetime.datetime, repeat: dict[str, Any],
                             now: datetime.datetime) -> datetime.datetime | None:
-    """Lần xuất hiện đầu tiên SAU `now`, cuộn từng bước.
-
-    Vì sao phải cuộn vòng chứ không gọi `_next_occurrence` một lần: máy tắt 3
-    ngày thì lịch "mỗi ngày" cần cuộn 3 bước mới tới tương lai. Cuộn đúng MỘT
-    bước thì vẫn nằm trong quá khứ, `_schedule_reminder` từ chối, và cả chuỗi
-    biến mất - đúng cái hỏng mà hàm này sinh ra để chặn.
-
-    Có chặn trên để đồng hồ hỏng (lùi hàng năm) không quay vô hạn.
-    """
-    nxt = run_at
-    for _ in range(400):
-        step = _next_occurrence(nxt, repeat)
-        if step is None:
-            return None
-        nxt = step
-        if nxt > now:
-            return nxt
-    logger.warning("Không cuộn được tới lần lặp kế tiếp cho %r", repeat)
+    """Bỏ các lần đã lỡ (kể cả máy ngủ nhiều năm), không làm mất cả chuỗi."""
+    nxt = _next_occurrence(run_at, repeat)
+    if nxt is None or nxt > now:
+        return nxt
+    kind = repeat.get("kind")
+    try:
+        if kind in ("daily", "weekly"):
+            period = 1 if kind == "daily" else 7
+            steps = (now - nxt).days // period + 1
+            return nxt + datetime.timedelta(days=steps * period)
+        # Tối đa 9999 năm mà datetime biểu diễn được; không chặn 400 lần
+        # (trước đây một lịch hàng ngày mất hẳn sau khi máy tắt >400 ngày).
+        for _ in range(12 * 9999):
+            nxt = _next_occurrence(nxt, repeat)
+            if nxt is None or nxt > now:
+                return nxt
+    except (ValueError, OverflowError):
+        return None
     return None
 
 
@@ -1097,7 +1111,7 @@ def _repeat_label(repeat: dict[str, Any] | None) -> str:
 
 
 
-def _save_reminders() -> None:
+def _save_reminders() -> bool:
     try:
         with ACTIVE_REMINDERS_LOCK:
             data: list[dict[str, Any]] = []
@@ -1114,11 +1128,13 @@ def _save_reminders() -> None:
                 if repeat:
                     entry["repeat"] = repeat
                 data.append(entry)
-        # Atomic write (paths.atomic_write_json) - chap nhận ca Path lan str de
-        # test monkeypatch REMINDERS_PATH duoc de dang.
-        atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
-    except OSError as e:
+            # Giữ lock ĐẾN KHI ghi xong: snapshot cũ không được ghi đè một
+            # lần huỷ/đặt mới từ luồng timer khác.
+            atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
+        return True
+    except (OSError, TypeError, ValueError) as e:
         logger.warning("Không lưu được danh sách nhắc nhở: %s", e)
+        return False
 
 
 def _arm_timer(task: str, delay: float, reminder_id: str,
@@ -1138,71 +1154,79 @@ def _arm_timer(task: str, delay: float, reminder_id: str,
     return timer
 
 
+def _start_reminder_timer(entry: dict[str, Any], delay: float) -> None:
+    """Chỉ MỘT timer đang chạy cho mỗi lời nhắc, kể cả lịch dài nhiều năm."""
+    entry["timer"] = _arm_timer(
+        entry["task"], min(delay, _MAX_TIMER_SECONDS), entry["id"],
+        entry.get("repeat"), continuation=delay > _MAX_TIMER_SECONDS,
+    )
+
+
 def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True,
-                       repeat: object = None) -> str | None:
-    clean_repeat = _coerce_repeat(repeat)
-    delay = (run_at - datetime.datetime.now()).total_seconds()
+                       repeat: object = None, *, reminder_id: str | None = None) -> str | None:
+    at = _local_datetime(run_at)
+    if at is None:
+        return None
+    delay = (at - datetime.datetime.now()).total_seconds()
     if delay <= 0:
         return None
-    reminder_id = f"{run_at.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    # v7.8: ĐĂNG KÝ MỤC VÀO DANH SÁCH TRƯỚC KHI BẬT TIMER. Bản cũ `timer.start()`
-    # đứng trước, nên với độ trễ rất ngắn (vài trăm phần nghìn giây, hợp lệ khi
-    # `--json` gửi "0.001" phút) timer nổ trước lúc mục được thêm vào
-    # ACTIVE_REMINDERS: `_fire_reminder` quét không thấy id của mình nên không
-    # gỡ gì, rồi mục mới được thêm vào - một lời nhắc "ma" không bao giờ tắt,
-    # cứ nằm trong `nhac nho` tới cuối phiên.
-    entry: dict[str, Any] = {"id": reminder_id, "task": task, "at": run_at,
-                             "timer": None}
+    clean_repeat = _coerce_repeat(repeat)
+    reminder_id = reminder_id or f"{at:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
+    entry: dict[str, Any] = {"id": reminder_id, "task": task, "at": at, "timer": None}
     if clean_repeat:
         entry["repeat"] = clean_repeat
     with ACTIVE_REMINDERS_LOCK:
+        if any(item.get("id") == reminder_id for item in ACTIVE_REMINDERS):
+            return None
+        # Đăng ký trước khi start; giữ lock tới khi có handle để huỷ.
         ACTIVE_REMINDERS.append(entry)
-    # Timer dài hơn trần của threading (Windows ~49.7 ngày) nổ OverflowError
-    # lúc khởi tạo; cắt thành nhiều chặng ngắn (chặng sau nối tiếp ở
-    # `_fire_reminder` nhờ `repeat`).
-    while delay > _MAX_TIMER_SECONDS:
-        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id, clean_repeat,
-                   continuation=True)
-        delay -= _MAX_TIMER_SECONDS
-    entry["timer"] = _arm_timer(task, delay, reminder_id, clean_repeat)
-    if persist:
-        _save_reminders()
+        try:
+            _start_reminder_timer(entry, delay)
+        except (OSError, RuntimeError, OverflowError) as e:
+            ACTIVE_REMINDERS.remove(entry)
+            logger.warning("Không tạo được timer nhắc nhở: %s", e)
+            return None
+        if persist and not _save_reminders():
+            safe_print("[CẢNH BÁO] Lời nhắc chỉ còn trong phiên này vì không lưu được xuống đĩa.")
     return reminder_id
+
+
+def _restore_reminder(item: object) -> bool:
+    if not isinstance(item, dict):
+        logger.warning("Bỏ qua mục nhắc nhở không phải object: %r", item)
+        return False
+    run_at = _reminder_at(item)
+    if run_at is None:
+        logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
+        return False
+    repeat = _coerce_repeat(item.get("repeat"))
+    now = datetime.datetime.now()
+    if repeat and run_at <= now:
+        run_at = _next_future_occurrence(run_at, repeat, now)
+    if run_at is None:
+        return False
+    rid = item.get("id")
+    rid = rid if isinstance(rid, str) and rid else None
+    return _schedule_reminder(as_text(item.get("task")) or "báo thức", run_at,
+                              persist=False, repeat=repeat, reminder_id=rid) is not None
 
 
 def restore_reminders() -> int:
     rem_path = Path(REMINDERS_PATH)
-    if not rem_path.exists():
-        return 0
-    try:
-        with rem_path.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError, json.JSONDecodeError) as e:
-        logger.warning("Không đọc được reminders.json: %s", e)
-        return 0
-
-    restored = 0
-    for item in data if isinstance(data, list) else []:
-        if not isinstance(item, dict):
-            logger.warning("Bỏ qua mục nhắc nhở không phải object trong reminders.json: %r", item)
-            continue
-        run_at = _reminder_at(item)
-        if run_at is None:
-            logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
-            continue
-        task = str(item.get("task") or "báo thức")
-        repeat = _coerce_repeat(item.get("repeat"))
-        # v7.9: máy tắt rồi mở lại, mốc giờ lặp đã trôi qua trong lúc đó
-        # (ngủ qua giờ uống thuốc chẳng hạn). Không cuộn tới lần kế thì lời nhắc
-        # bị bỏ vĩnh viễn - và với "mỗi ngày" thì mất luôn cả chuỗi.
-        if repeat and run_at <= datetime.datetime.now():
-            rolled = _next_future_occurrence(run_at, repeat,
-                                             datetime.datetime.now())
-            if rolled is not None:
-                run_at = rolled
-        if _schedule_reminder(task, run_at, persist=False, repeat=repeat):
-            restored += 1
-    _save_reminders()
+    with ACTIVE_REMINDERS_LOCK:
+        if not rem_path.exists():
+            return 0
+        try:
+            with rem_path.open(encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("Không đọc được reminders.json: %s", e)
+            return 0
+        if not isinstance(data, list):
+            logger.warning("reminders.json phải là danh sách; giữ nguyên file để sửa.")
+            return 0
+        restored = sum(_restore_reminder(item) for item in data)
+        _save_reminders()
     if restored:
         logger.info("Đã khôi phục %d nhắc nhở còn hạn", restored)
     return restored
@@ -1239,35 +1263,49 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
     return removed
 
 
+def _continue_reminder(reminder_id: str | None) -> None:
+    """Hết một chặng: tra lại deadline, không tạo timer mồ côi sau khi huỷ."""
+    with ACTIVE_REMINDERS_LOCK:
+        entry = next((item for item in ACTIVE_REMINDERS
+                      if item.get("id") == reminder_id), None)
+        if entry is None:
+            return
+        at = _reminder_at(entry)
+        if at is None:
+            return
+        delay = (at - datetime.datetime.now()).total_seconds()
+        if delay > 0:
+            _start_reminder_timer(entry, delay)
+            return
+    # Máy ngủ/đồng hồ nhảy qua deadline: bắn đúng một lần, không chờ thêm 24h.
+    _fire_reminder(entry["task"], reminder_id, entry.get("repeat"))
+
+
 def _fire_reminder(task: str, reminder_id: str | None = None,
                    repeat: object = None, continuation: bool = False) -> None:
-    clean_repeat = _coerce_repeat(repeat)
     if continuation:
-        # Chặng nối tiếp: chuyển sang chặng kế tiếp, KHÔNG nhắc và KHÔNG hẹn lại.
-        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id or "", clean_repeat,
-                   continuation=True)
+        _continue_reminder(reminder_id)
         return
-    fired_at: datetime.datetime | None = None
+    clean_repeat = _coerce_repeat(repeat)
     if reminder_id is not None:
         with ACTIVE_REMINDERS_LOCK:
-            for item in list(ACTIVE_REMINDERS):
-                if item.get("id") == reminder_id:
-                    fired_at = _reminder_at(item)
-                    ACTIVE_REMINDERS.remove(item)
-        # v7.9: nhắc có nhịp lặp tự hẹn lại lần kế thay vì biến mất. Làm
-        # TRƯỚC khi respond/popup để người dùng đang bị vỗ vẫn một giây mà
-        # `reminders.json` lỡ ghi hỏng không mất luôn lịch đã hẹn.
-        #
-        # `repeat` PHẢI truyền LẠI vào lịch mới. Bản đầu chỉ dùng nó để tính mốc
-        # kế tiếp rồi bỏ, nên nhắc hằng ngày chỉ nhắc ĐÚNG HAI LẦN rồi hạ
-        # xuống thành nhắc một lần - hỏng đúng kiểu khó phát hiện nhất, vì cả
-        # tháng đầu vẫn chạy ngon.
-        nxt = _next_occurrence(fired_at, clean_repeat) if (
-            fired_at is not None and clean_repeat) else None
-        if nxt is not None and _schedule_reminder(task, nxt,
-                                                  repeat=clean_repeat) is None:
-            nxt = None
-        _save_reminders()
+            item = next((item for item in ACTIVE_REMINDERS
+                         if item.get("id") == reminder_id), None)
+            # Timer.cancel() không thể dừng callback đã bắt đầu. Kiểm tra id
+            # là hàng rào cuối: lịch đã huỷ/đã bắn không được báo thêm lần nữa.
+            if item is None:
+                return
+            fired_at = _reminder_at(item)
+            timer = item.get("timer")
+            if timer is not None:
+                timer.cancel()
+            ACTIVE_REMINDERS.remove(item)
+            clean_repeat = _coerce_repeat(item.get("repeat")) or clean_repeat
+            nxt = (_next_future_occurrence(fired_at, clean_repeat, datetime.datetime.now())
+                   if fired_at is not None and clean_repeat else None)
+            if nxt is not None:
+                _schedule_reminder(task, nxt, persist=False, repeat=clean_repeat)
+            _save_reminders()
     respond(f"Đến giờ rồi. Nhắc bạn: {task}")
     try:
         if SYSTEM == "Windows":
@@ -1438,7 +1476,9 @@ def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool |
     if dry_run:
         safe_print(f"   [TEST] Sẽ nhắc {task!r} lúc {run_at:%H:%M} (chế độ test: không đặt lịch)")
         return True
-    _schedule_reminder(task, run_at, repeat=repeat)
+    if _schedule_reminder(task, run_at, repeat=repeat) is None:
+        respond("Không đặt được lịch nhắc. Bạn thử lại giúp tôi nhé.")
+        return False
     logger.info("Đặt nhắc nhở (trả lời sau khi hỏi lại): %s lúc %s", task, run_at)
     respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
@@ -1465,7 +1505,9 @@ def _reminder_when_phrase(run_at: datetime.datetime,
         return " ngày mai"
     if days <= 7:
         # "thứ X tuần sau" cũng rơi vào khoảng này và đọc đúng nghĩa.
-        return f" {_WEEKDAY_VI[run_at.weekday()]} tuần sau"
+        same_week = days + now.weekday() < 7
+        week = "tuần này" if same_week else "tuần sau"
+        return f" {_WEEKDAY_VI[run_at.weekday()]} {week}"
     if run_at.month == now.month:
         return f" ngày {run_at.day} tháng này"
     if run_at.year == now.year:
@@ -1508,7 +1550,9 @@ def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool
         return False
 
     clear_pending_reminder()
-    _schedule_reminder(task, run_at, repeat=repeat)
+    if _schedule_reminder(task, run_at, repeat=repeat) is None:
+        respond("Không đặt được lịch nhắc. Bạn thử lại giúp tôi nhé.")
+        return False
     logger.info("Đặt nhắc nhở: %s lúc %s (lặp %s)", task, run_at, repeat or "không")
     respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
@@ -1619,7 +1663,7 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
         logger.warning("Không hiểu ý định: %s", raw_intent)
         return action_unknown(target)
 
-    if confidence < CONFIDENCE_THRESHOLD:
+    if confidence <= 0.0 or confidence < CONFIDENCE_THRESHOLD:
         if confidence < 0:
             # Giá trị -1 = "độ tự tin không đọc được" (sai kiểu/NaN/vô hạn), khác
             # hẳn "thấp thật". In "-1.00" như thể là đo được sẽ khiến người dùng
@@ -1634,7 +1678,8 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
                 f"[TỪ CHỐI] Độ tự tin quá thấp ({confidence:.2f}). "
                 f"Bạn nói rõ hơn giúp tôi nhé."
             )
-            logger.info("Từ chối vì độ tự tin thấp: %.2f < %.2f", confidence, CONFIDENCE_THRESHOLD)
+            logger.info("Từ chối vì độ tự tin thấp/không có bằng chứng: %.2f (ngưỡng %.2f)",
+                        confidence, CONFIDENCE_THRESHOLD)
         return False
 
     if _handler_wants_data(handler):

@@ -1,12 +1,38 @@
-# Trợ lý ảo tiếng Việt v7.8
+# Trợ lý ảo tiếng Việt v7.10.1
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1134 pass](https://img.shields.io/badge/tests-1134%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1427 pass](https://img.shields.io/badge/tests-1427%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
-Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
+11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
+khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.10.1 (2026-10-17)** tiếp tục sửa các ranh giới chưa được bảo vệ:
+- Ngưỡng cấu hình bằng 0 vẫn từ chối confidence 0/không hợp lệ; `--yes` không
+  thể biến lệnh phủ định thành hành động hệ thống.
+- Ghi/đọc CSV dùng khóa OS có timeout; nhiều thread/process không tạo header/BOM
+  trùng hoặc trộn record. Phản hồi chỉ báo thành công sau flush/fsync; dạy model
+  báo lỗi thật nếu không lưu được, không tự xác nhận chuỗi `"false"`/`"0"`.
+- Ngữ cảnh giữ snapshot riêng, dung lượng 0 thực sự tắt nhớ; thay đại từ một lần,
+  không làm hỏng URL/path có `no`, không diễn giải lại nội dung vừa chèn.
+- **1427 ca kiểm thử**, thêm **83** ca ở đợt tiếp tục này; core vẫn chỉ cần stdlib.
+
+**v7.10.0 (2026-10-17)** nâng độ ổn định và an toàn tại các điểm vào:
+- Nhắc nhở xa ngày dùng từng chặng timer; huỷ nhắc chặn callback đã cũ, khôi phục
+  giữ ID và tránh nhân đôi; lịch lặp bỏ qua mốc đã lỡ thay vì dừng hẳn.
+- `--json` một lần chạy xuất đúng một giá trị JSON trên **stdout**; thông báo
+  khởi động/chẩn đoán sang **stderr**. `--dry-run` không khôi phục timer hay thực thi lệnh.
+- Chặn lệnh hệ thống có phủ định; giữ nguyên dấu câu của truy vấn và URL, không
+  coi `,`/`;` trong URL là lệnh riêng. Sửa trí nhớ ngữ cảnh và tách câu viết hoa.
+- Toán dùng AST có giới hạn tài nguyên, hỗ trợ căn/luỹ thừa âm/toán tử Unicode;
+  không nhận kết quả không hữu hạn hoặc biểu thức ghép mới tính được một phần.
+- Kiểm tra cấu hình, đường dẫn và JSON chặt hơn; cache lite chỉ đọc dữ liệu,
+  không giải tuần tự đối tượng tuỳ ý. Phiên bản gói/API/CLI dùng chung một nguồn.
+- **1344 ca kiểm thử** (tăng 210 so với bản gốc của đợt này), chạy được bằng
+  pytest và runner nhúng không cần thư viện ngoài. Chi tiết trong [CHANGELOG](vi_voice_assistant/CHANGELOG.md).
 
 **v7.8** soi chỗ **giữ** dữ liệu, và phần lớn lỗi tìm được đều có cùng một dạng:
 một lớp bảo vệ chạy trước rồi làm hỏng thứ nó định bảo vệ. `normalize_text` xoá
@@ -82,7 +108,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1134 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1427 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -125,7 +151,7 @@ python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 Test/
 ├── install.py             # Bootstrap cài đặt + tự kiểm tra (chỉ stdlib, mới v7.3)
-├── pyproject.toml         # deps = []; [full] [ml] [tts] [stt] [dev] [all]
+├── pyproject.toml         # deps = []; [full] [tts] [stt] [dev] [all]
 └── vi_voice_assistant/
     ├── __init__.py        # Nối import phẳng -> `pip install .` chạy được (mới v7.3)
     ├── __main__.py        # python -m vi_voice_assistant              (mới v7.3)
@@ -143,22 +169,44 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1134 test)
-    └── tests/             # 1134 test (v7.2 - v7.9 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1427 test)
+    └── tests/             # 1427 test (v7.2 - v7.10.1 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1134 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1427 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
-python vi_voice_assistant/run_tests.py
-# Ket qua: 1134 pass, 0 fail, 0 skip
+VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
+# Ket qua: 1427 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
 python -m mypy                             # 0 loi (doc [tool.mypy] trong pyproject.toml)
 ```
+
+## Dùng trong script
+
+```bash
+vi-assistant --once "15 + 27" --dry-run --json > result.json
+vi-assistant --doctor --json > doctor.json
+```
+
+`--json` cần câu lệnh một lần (`--once` hoặc đối số văn bản), hoặc `--doctor`;
+không dùng với REPL. Câu rỗng trả `[]`. Mã thoát cho lệnh một lần: **0** = đã
+xử lý, **1** = lỗi khởi động/cấu hình/thực thi, **2** = chưa hiểu, cần xác nhận
+hoặc không phân tích được. Riêng `--dry-run` trả **0** nếu đã phân tích được,
+kể cả khi JSON có `status: "unknown"`; script nên đọc trường `status`.
+`--yes` chỉ bỏ xác nhận hành động nguy hiểm, **không** bỏ ngưỡng tự tin.
+Nếu có cả đối số văn bản và `--once`, `--once` được ưu tiên. Confidence bằng
+0 luôn bị từ chối, kể cả khi đặt các ngưỡng bằng 0.
+
+Nhắc nhở cần tiến trình trợ lý còn chạy; bản này không tạo dịch vụ nền của hệ
+điều hành. Dry-run vẫn có thể tạo cache model, log và lịch sử. Kiểm chứng tại
+môi trường phát triển Linux/Python 3.11; micro, âm thanh, model giọng nói và
+thao tác hệ điều hành thật cần thử riêng trên máy đích. CI có ma trận
+Python 3.9–3.13 trên Windows/macOS/Linux.
 
 ## Tài liệu
 

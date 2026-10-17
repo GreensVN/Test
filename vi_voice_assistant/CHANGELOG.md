@@ -1,5 +1,105 @@
 # CHANGELOG
 
+## v7.10.1 (2026-10-17) - phản hồi đáng tin, ngữ cảnh không sửa dữ liệu và ngưỡng 0
+
+### Lỗi tái hiện và sửa
+
+- **Bỏ qua bảo vệ khi ngưỡng bằng 0:** `_judge` có thể biến confidence 0 của
+  câu phủ định thành `need_confirm`, rồi `--yes` cho qua; executor cũng nhận 0
+  nếu threshold 0. Cả hai tầng nay luôn từ chối confidence <= 0/sai kiểu, vẫn
+  giữ cấu hình chấp nhận confidence dương rất thấp khi người dùng chủ động chọn.
+- **Dạy thành công giả:** trước đây `teach` luôn báo "Đã ghi nhớ" dù thư mục đích
+  không ghi được. `log_feedback` nay trả bool sau flush/fsync; dạy báo lỗi khi
+  lưu thất bại hoặc không đọc được danh sách nhãn, không vô hiệu validation.
+  Lệnh huấn luyện trong thông báo dùng tên package đầy đủ để chạy ngoài source.
+- **CSV:** thêm append dưới khóa OS (flock trên POSIX, msvcrt trên Windows),
+  cùng khóa cho reader, timeout 5 giây. Kiểm tra header dưới khóa và ghi BOM
+  đúng một lần; record nhiều dòng/UTF-8 không trộn giữa các thread/process.
+  Theo thứ tự header hiện có; thiếu/trùng cột bắt buộc thì giữ nguyên file và
+  báo lỗi. Chấp nhận file cũ không header, BOM-only và dòng cuối thiếu newline.
+  Dữ liệu Unicode không mã hóa được bị từ chối trước khi ghi; xử lý short-write.
+- **Verified:** chỉ `True`/integer 1 được dùng làm xác nhận. Chuỗi `"false"`, `"0"`,
+  `"1"`, float hoặc container truthy không được biến thành nhãn huấn luyện đã duyệt.
+- **Context:** `max_items=0` không còn vô tình nhớ vô hạn do slicing `[-0:]`;
+  sai kiểu/âm báo lỗi rõ ràng. Lưu deepcopy, không giữ dict caller có thể sửa.
+  Thay đại từ một lượt, không quét lại target vừa chèn; bảo vệ URL/path ở câu
+  gốc, hỗ trợ chữ hoa. URL chứa `/no/` không còn bị nhân đôi khi nói "mở nó".
+
+### Kiểm chứng và giới hạn
+
+- Thêm **83 ca** trong 3 file `test_v7101_*.py`; trong 68 ca đầu tiên,
+  **52 thất bại trước bản sửa**. Giữ các test trước đó, tổng **1427**.
+- Pytest lite và scikit-learn/joblib/rapidfuzz: **1427 passed**; runner nhúng:
+  **1427 pass, 0 fail, 0 skip**. Có đối chứng ghi đồng thời 4 process/80 record,
+  2 thread cùng tạo file; có test timeout, fsync lỗi, short-write và MSVCRT giả.
+- Ruff/mypy sạch; build wheel/sdist và kiểm tra lại bản cài không optional deps
+  từ ngoài repo. CI thêm kiểm chứng feedback/context/ngưỡng 0 trên bản cài đặt.
+- Khóa CSV là advisory, chỉ bảo vệ writer/reader hợp tác; append không phải
+  transaction chống mất điện. History/reminders vẫn không có khóa liên process.
+- Xác minh tại Linux/Python 3.11; MSVCRT được mock, chưa chạy thiết bị Windows/macOS,
+  micro/âm thanh hay thao tác hệ điều hành thật. Nhắc nhở cần tiến trình còn chạy.
+
+## v7.10.0 (2026-10-17) - ổn định timer, JSON CLI và ranh giới dữ liệu
+
+### Sửa lỗi và nâng cấp
+
+- **Nhắc nhở:** timer xa ngày chia từng chặng tối đa 24 giờ, không tạo song song
+  nhiều lời nhắc; đăng ký trước khi start, rollback nếu start thất bại. Huỷ và
+  callback cũ/đúp được kiểm tra lại; restore giữ ID, tránh nhân đôi, đọc BOM và
+  múi giờ, bỏ mục sai kiểu. Lịch lặp có ID mới và bỏ qua các mốc đã lỡ; không báo
+  đặt thành công khi không tạo được timer. Chỉnh cách gọi Chủ nhật trong cùng tuần.
+- **CLI:** `--json` tách thông báo model/executor sang stderr để stdout chứa đúng
+  một JSON; câu rỗng trả `[]`, cấu hình riêng hỏng trả lỗi JSON/exit 1.
+  Dry-run bỏ qua khôi phục timer, thực thi, xác nhận và dạy model. Trạng thái
+  chưa hiểu/cần xác nhận trả exit 2; thực thi thất bại trả exit 1. Giữ dry-run
+  trả 0 khi phân tích được (kể cả status unknown), không giả là đã thực thi. `--yes` không
+  bỏ qua độ tự tin thấp. Giữ hành vi `--once` ưu tiên đối số văn bản.
+- **NLU:** chặn phủ định hệ thống (`đừng`, `không`, `do not`…); phân biệt `dừng`
+  và `đừng`. Tách câu không phân biệt hoa/thường, bảo vệ nội dung nhắc/tìm kiếm,
+  phẩy thập phân và dấu phân cách trong URL; từ `lock`/`shutdown` nằm trong
+  URL không được thành lệnh hệ thống, động từ mở URL rõ ràng được ưu tiên. Truy vấn không bị sửa typo hay mất
+  `C++ & C#`; `raw` giữ câu gốc và ngữ cảnh giữ chữ hoa/dấu câu URL. Sửa thay
+  `chúng nó` trước `nó`; thứ trong tuần không hợp lệ không gây KeyError.
+- **Toán:** AST giới hạn chiều dài/số node/kích thước số/luỹ thừa; hỗ trợ căn,
+  mũ âm và toán tử Unicode. Từ chối bool, kết quả phức/không hữu hạn, dấu ngoặc
+  lỗi và phần ghép chỉ tính được một phần; giữ biểu thức gốc khi trích thực thể.
+- **Cấu hình và I/O:** kiểm kiểu map, hành động nguy hiểm, ngưỡng hữu hạn và
+  thứ tự ngưỡng; deepcopy mặc định, đọc BOM và cấu hình đi kèm gói. Ghi JSON
+  atomic không nhận NaN, giữ file cũ/quyền file khi lỗi. Đường dẫn chặn ổ đĩa
+  Windows, NUL, traversal và symlink thoát vùng; vẫn cho thư mục con hợp lệ.
+  Không tự nhận lịch sử/lời nhắc/feedback cũ trong thư mục cài đặt.
+- **Model/doctor:** confidence sai/rỗng/NaN không được mặc định thành 100%; cache
+  lite dùng unpickler chỉ-dữ-liệu, kiểm tra bảng và tham số trước khi dùng.
+  TF-IDF hạ confidence theo tỷ lệ n-gram thực sự đã học, không tự tin vào câu
+  rác. Loại số phiên bản khỏi calculate; đồng bộ cách hiểu lệnh mở YouTube và
+  `google` thiếu truy vấn giữa lite và scikit-learn.
+  Doctor nhận đúng module `speech_recognition`, map app theo hệ điều hành và
+  lệnh sửa lỗi có tên package đầy đủ; xuất JSON không bị lẫn thông báo kiểm tra.
+- **Thực thi:** truyền lỗi mở trình duyệt, kiểm tra URL HTTP(S) và đường dẫn
+  thực thi/symlink; lịch sử lọc kiểu và giới hạn kích thước.
+- **Runner nhúng:** nhiều lớp `parametrize` chạy tích Descartes thay vì ghi đè;
+  hỗ trợ tên tham số dạng list, không bung list của một đối số; tham số trống,
+  trùng hoặc sai số giá trị trở thành lỗi test, không tạo kết quả xanh giả.
+- **Đóng gói:** `_version.py` là nguồn chung cho metadata, `__version__` và CLI
+  (trước đây lần lượt 7.8.0/7.9/7.9). License dùng SPDX, build backend
+  `setuptools>=77`; core vẫn stdlib-only, yêu cầu Python >= 3.9 không đổi.
+
+### Kiểm chứng
+
+- **1344 passed** bằng pytest ở cả môi trường lite và môi trường có
+  scikit-learn/joblib/rapidfuzz; **1344 pass, 0 fail, 0 skip** bằng runner nhúng.
+  Tăng **210** ca so với baseline 1134; thêm 7 file regression `test_v710_*.py`.
+- Ruff và mypy sạch. CI bổ sung kiểm tra stdout JSON và phiên bản metadata/API/CLI
+  trên bản đã cài, chạy từ ngoài repo.
+- Build được wheel và sdist; cài wheel không dependencies vào venv sạch,
+  kiểm phiên bản, entrypoint và stdout JSON từ ngoài repo; không thấy file
+  runtime/tests trong wheel hay dữ liệu riêng trong sdist.
+- Kiểm tra thực hiện trong Linux/Python 3.11; chưa xác minh micro/âm thanh,
+  model giọng nói, hay hành động hệ điều hành thật trên Windows/macOS.
+- Nhắc nhở cần tiến trình còn chạy; chưa có dịch vụ nền. Việc ghi atomic không
+  cung cấp khoá liên tiến trình; không cam kết an toàn khi nhiều phiên cùng ghi
+  một thư mục dữ liệu. Không khẳng định đã loại bỏ mọi lỗi ngoài phạm vi test.
+
 ## v7.9 (bổ sung 9f) - "nhắc tôi X" phải NHẮC, không phải LÀM LUÔN X; 1134 test
 
 **Lỗi nguy hiểm nhất tìm được trong đợt này: không có dấu hiệu báo lỗi.**

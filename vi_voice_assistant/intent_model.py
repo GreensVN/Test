@@ -39,8 +39,10 @@ import datetime
 import json
 import logging
 import math
+import operator
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -1267,16 +1269,18 @@ OPERATOR_WORDS = [
     (r"\bmũ\b|\bluỹ thừa\b|\blũy thừa\b", "**"),
 ]
 
-_SAFE_AST_NODES = (
-    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.UAdd, ast.USub, ast.Pow,
-)
-
-
-# Chặn "bom tính toán" kiểu 9**9**9: an toàn về mặt CHẠY MÃ nhưng vẫn đủ sức
-# treo cứng chương trình và ngốn sạch RAM, vì Python tính số nguyên lớn tùy ý (v6).
+# Giới hạn cả đầu vào lẫn kết quả trung gian: ngoặc không được phép
+# vượt hàng rào cơ số, và một chuỗi phép nhân không được ngốn RAM vô hạn.
 MAX_POW_BASE = 10 ** 6
 MAX_POW_EXPONENT = 64
+_MAX_EXPR_LENGTH = 4096
+_MAX_EXPR_NODES = 256
+_MAX_INTEGER_BITS = 4096
+_BINARY_MATH_OPERATORS = {
+    ast.Add: operator.add, ast.Sub: operator.sub,
+    ast.Mult: operator.mul, ast.Div: operator.truediv,
+}
+
 
 # v7.9: số trong mọi mẫu toán học đều để dạng `(-?\d+(?:\.\d+)?)` - CHẤP NHẬN
 # DẤU CHẤM thập phân, không phải phẩy. Các mẫu cũ viết `[.,]\d+`, nên chạy trên
@@ -1327,36 +1331,50 @@ _MOD_RE = re.compile(
 )
 
 
+def _checked_math_number(value):
+    if type(value) is int and value.bit_length() <= _MAX_INTEGER_BITS:
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    raise ValueError("Kết quả phải là số thực hữu hạn trong giới hạn cho phép")
+
+
+def _eval_math_node(node):
+    if isinstance(node, ast.Constant):
+        return _checked_math_number(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _eval_math_node(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp):
+        left = _eval_math_node(node.left)
+        right = _eval_math_node(node.right)
+        if isinstance(node.op, ast.Pow):
+            # Cho số mũ âm, nhưng không cho chuỗi mũ (9**9**9) hay mũ tính
+            # từ biểu thức. Cơ số kiểm SAU khi tính, không chỉ khi là literal.
+            literal = (isinstance(node.right, ast.Constant)
+                       or (isinstance(node.right, ast.UnaryOp)
+                       and isinstance(node.right.operand, ast.Constant)))
+            if (not literal or abs(right) > MAX_POW_EXPONENT
+                    or abs(left) > MAX_POW_BASE):
+                raise ValueError("Cơ số hoặc số mũ quá lớn / không hợp lệ")
+            return _checked_math_number(left ** right)
+        op = _BINARY_MATH_OPERATORS.get(type(node.op))
+        if op is not None:
+            return _checked_math_number(op(left, right))
+    raise ValueError("Biểu thức không hợp lệ / không an toàn")
+
+
 def _safe_eval(expr: str):
-    """Tính biểu thức số học AN TOÀN: chỉ cho phép số, + - * / ** và dấu ngoặc.
-    Không dùng eval() trực tiếp trên chuỗi thô để tránh chạy mã tuỳ ý."""
-    node = ast.parse(expr, mode="eval")
-    for child in ast.walk(node):
-        if not isinstance(child, _SAFE_AST_NODES):
-            raise ValueError(f"Biểu thức không hợp lệ / không an toàn: {expr!r}")
-        # v7.8: `ast.Constant` là hạt nhân của MỌI hằng số - kể cả CHUỖI, bytes
-        # và None - nên "chỉ cho phép số" trong docstring trước đây KHÔNG đúng:
-        # `_safe_eval("'ab' * 3")` chạy được. Không gọi được hàm nào (không có
-        # Name/Call), nhưng `str * int` là cách cấp phát bộ nhớ tùy ý kiểu bom
-        # (`'x' * 10**9`). Chặn ở đây thì hằng số bất hợp lệ bị chặn ngay từ
-        # node, đúng với tên hàm - và `parse_math_expression` vốn chỉ bóc
-        # chữ số nên không đổi hành vi.
-        if isinstance(child, ast.Constant) and not isinstance(child.value, (int, float)):
-            raise ValueError(f"Hằng số không phải số: {child.value!r}")
-        # Luỷ thừa được phép nhưng phải có GIỚI HẠN.
-        if isinstance(child, ast.BinOp) and isinstance(child.op, ast.Pow):
-            base = getattr(child.left, "value", None)
-            exponent = getattr(child.right, "value", None)
-            if not isinstance(exponent, (int, float)) or abs(exponent) > MAX_POW_EXPONENT:
-                raise ValueError("Số mũ quá lớn hoặc không hợp lệ")
-            if isinstance(base, (int, float)) and abs(base) > MAX_POW_BASE:
-                raise ValueError("Cơ số quá lớn")
-    # eval() ở đây AN TOÀN có kiểm chứng: vòng lặp phía trên đã
-    # duyệt từng node AST và CHỐI mọi node ngoài tập _SAFE_AST_NODES (chỉ số,
-    # + - * / ** và ngoặc). Không có Name/Attribute/Call/Subscript nên không thể
-    # gọi hàm hay chạm tới thuộc tính nào. ast.literal_eval() KHÔNG thay được vì
-    # nó không đánh giá biểu thức số học (chỉ parse hằng số).
-    return eval(compile(node, "<expr>", "eval"))  # noqa: S307
+    """Đánh giá AST số học có giới hạn, KHÔNG gọi eval/compile hay mã người dùng."""
+    if len(expr) > _MAX_EXPR_LENGTH:
+        raise ValueError("Biểu thức quá dài")
+    try:
+        node = ast.parse(expr, mode="eval")
+    except (SyntaxError, RecursionError) as e:
+        raise ValueError("Cú pháp toán không hợp lệ") from e
+    if sum(1 for _ in ast.walk(node)) > _MAX_EXPR_NODES:
+        raise ValueError("Biểu thức quá phức tạp")
+    return _eval_math_node(node.body)
 
 
 # v7.8: `normalize_text()` giữ lại đúng nhóm ký tự `[^\w\s./:\-]` nên XOÁ `+`,
@@ -1382,6 +1400,7 @@ _MATH_POW = "zlumlz"
 _MATH_PERCENT = "zphantz"
 
 
+_MATH_ROOT_CBRT = "canbacbaz"
 _MATH_ROOT_SQRT = "canducthu"   # token tạm cho dấu "√" (không phải từ tiếng Việt)
 _MATH_LPAREN = "znghoz"         # token tạm cho dấu mở ngoặc
 _MATH_RPAREN = "znghoc"         # token tạm cho dấu đóng ngoặc
@@ -1389,6 +1408,7 @@ _MATH_RPAREN = "znghoc"         # token tạm cho dấu đóng ngoặc
 
 def _protect_math_syntax(text: str) -> str:
     """Giữ toán tử + dấu phẩy thập phân qua bước `normalize_text`."""
+    text = text.replace("\u00d7", "*").replace("÷", "/").replace("\u2212", "-")
     guarded = _strip_thousands_separator(text)
     guarded = re.sub(r"(?<=\d),(?=\d)", ".", guarded)  # "2,5" -> "2.5"
     guarded = re.sub(r"(?<=\d)\s*%", _MATH_PERCENT, guarded)  # "12%" -> "12zphantz"
@@ -1402,7 +1422,8 @@ def _protect_math_syntax(text: str) -> str:
     # `_KEEP_RE` của normalize_text() xoá mất, chỉ còn lại con số trần - nên
     # "√16" trước đây ra "chưa tính được phép tính 16", tức mất luôn cả dấu
     # hiệu cho biết đó là căn. Thay bằng chữ trước khi chuẩn hoá.
-    guarded = re.sub(r"\s*[√∛]\s*", _MATH_ROOT_SQRT + " ", guarded)
+    guarded = re.sub(r"\s*√\s*", _MATH_ROOT_SQRT + " ", guarded)
+    guarded = re.sub(r"\s*∛\s*", _MATH_ROOT_CBRT + " ", guarded)
     # v7.9: DẤU NGOẶC. `_safe_eval` đã cho phép ngoặc trong danh sách node an
     # toàn (docstring ghi rõ "và dấu ngoặc"), nhưng `_KEEP_RE` xoá chúng trước
     # khi tới đó - nên người dùng gõ ngoặc để BỎ THỨ TỰ ƯU TIÊN thì không có tác
@@ -1446,6 +1467,7 @@ def _restore_math_syntax(text: str) -> str:
     return (text.replace(_MATH_PLUS, "+").replace(_MATH_TIMES, "*")
             .replace(_MATH_POW, "**").replace(_MATH_PERCENT, "%")
             .replace(_MATH_ROOT_SQRT, "sqrt")
+            .replace(_MATH_ROOT_CBRT, "root 3 of")
             .replace(_MATH_LPAREN, "(").replace(_MATH_RPAREN, ")"))
 
 
@@ -1457,6 +1479,19 @@ def _math_display(expr: str) -> str:
     chứ không trong `_restore_math_syntax`, vì hàm đó chạy TRƯỚC bước `eval`.
     """
     return expr.replace("**", "^")
+
+
+def _special_math_complete(text: str, match: re.Match) -> bool:
+    """Hàm đặc biệt chỉ hỗ trợ độc lập: không được âm thầm tính một phần câu.
+
+    sqrt(9)+1 / log 100 + 2 chưa có bộ phân tích hàm kết hợp; báo chưa tính
+    được an toàn hơn trả 3 / 2 như thể đã tính cả biểu thức.
+    """
+    tail = text[match.end():]
+    if "(" in match.group() and tail.lstrip().startswith(")"):
+        tail = tail.lstrip()[1:]
+    outside = text[:match.start()] + tail
+    return re.search(r"[\d+*/^%()\-]", outside) is None
 
 
 def _math_log(u: str):
@@ -1473,6 +1508,8 @@ def _math_log(u: str):
     m = _LOG_RE.search(u)
     if not m:
         return None
+    if not _special_math_complete(u, m):
+        return None, None
     value = _parse_math_number(m.group("value"))
     # Thứ tự: "cơ số" người dùng nói rõ > "logN" viết liền > mặc định theo fn.
     if m.group("base"):
@@ -1498,6 +1535,8 @@ def _math_mod(u: str):
     m = _MOD_RE.search(u)
     if not m:
         return None
+    if not _special_math_complete(u, m):
+        return None, None
     left = _parse_math_number(m.group("a") or m.group("a2") or m.group("a3"))
     right = _parse_math_number(m.group("b") or m.group("b2") or m.group("b3"))
     if right == 0:
@@ -1551,6 +1590,13 @@ def _root_result(num: float, degree: int, num_text: str):
     return f"{label} {shown}", round(result, 10)
 
 
+def _root_from_match(text: str, match: re.Match, degree: int, group: int):
+    if not _special_math_complete(text, match):
+        return None, None
+    number = match.group(group)
+    return _root_result(float(number.replace(",", ".")), degree, number)
+
+
 def _math_root(u: str):
     """Căn bậc N (2, 3, 4...) và lũy thừa. None nếu câu không khớp."""
     # "sqrt 144", "sqrt(144)", "√16", "square root of 16", "root 3 of 27".
@@ -1561,10 +1607,9 @@ def _math_root(u: str):
     if m is None:
         m = re.search(r"\broot\s+(\d+)\s+(?:of\s+)?\(?\s*" + _NUMBER_RE, u)
         if m is not None:
-            return _root_result(float(m.group(2).replace(",", ".")),
-                                int(m.group(1)), m.group(2))
+            return _root_from_match(u, m, int(m.group(1)), 2)
     if m is not None:
-        return _root_result(float(m.group(1).replace(",", ".")), 2, m.group(1))
+        return _root_from_match(u, m, 2, 1)
 
     # "căn bậc 3 của 27", "căn 3 của 27", "căn ba của 27", "căn 27".
     # Điểm mấu chốt: "căn N của M" có HAI con số, và bản cũ đọc con số thứ nhất
@@ -1575,7 +1620,6 @@ def _math_root(u: str):
         r"(?:([a-z]+|\d+)\s+cua\s+)?" + _NUMBER_RE, u)
     if m:
         degree_token = m.group(1) or m.group(2)
-        num = float(m.group(3).replace(",", "."))
         if degree_token is None:
             degree = 2
         elif degree_token in _ROOT_DEGREE_WORD:
@@ -1584,10 +1628,16 @@ def _math_root(u: str):
             degree = int(degree_token)
         else:
             return None          # "căn lực" - không phải căn bậc số
-        return _root_result(num, degree, m.group(3))
+        return _root_from_match(u, m, degree, 3)
 
+    return _math_power(u)
+
+
+def _math_power(u: str):
     m = re.search(r"(-?\d+(?:[.,]\d+)?)\s*(binh phuong|mu 2|lap phuong|mu 3)", u)
     if m:
+        if not _special_math_complete(u, m):
+            return None, None
         num = float(m.group(1).replace(",", "."))
         if m.group(2) in ("lap phuong", "mu 3"):
             return f"{num:g} lập phương", num ** 3
@@ -1595,25 +1645,13 @@ def _math_root(u: str):
     return None
 
 
-_MATH_NUMBER_RE = r"-?\d+(?:[.,]\d+)?"
 _MATH_OPERATOR_RE = re.compile(r"\*\*|[+\-*/]")
-_PAREN_DEPTH = 4
+# Lấy TOÀN BỘ dải ký tự toán rồi để AST kiểm cú pháp. Mẫu lồng ngoặc tối
+# đa 4 cấp trước đây cắt cụt "3+4)" thành "3+4" và trả kết quả sai.
+_MATH_EXPR_RE = re.compile(r"(?<![\w.])([+\-]?\s*(?:\d|\.\d|\()[\d.,\s()+*/-]*)")
 
 
-def _math_expr_pattern(depth: int) -> str:
-    """Mẫu biểu thức số học, lồng dấu ngoặc tới `depth` cấp."""
-    atom = _MATH_NUMBER_RE if depth <= 0 else (
-        rf"(?:{_MATH_NUMBER_RE}|\({_math_expr_pattern(depth - 1)}\))")
-    # `**` phải là MỘT nhánh của phần toán tử rồi mới theo sau là số - không
-    # tách nó thành nhánh riêng không kèm số, vì khi đó "2**10" chỉ khớp được
-    # "2**" rồi dừng, còn "10" rơi ngoài biểu thức và `eval` báo lỗi.
-    return rf"{atom}(?:\s*(?:\*\*|[+\-*/])\s*{atom})*"
-
-
-_MATH_EXPR_RE = re.compile(f"({_math_expr_pattern(_PAREN_DEPTH)})")
-
-
-def parse_math_expression(text: str):
+def _parse_math_expression(text: str):
     """
     Trích xuất và tính một biểu thức toán học đơn giản từ câu tiếng Việt.
 
@@ -1655,6 +1693,8 @@ def parse_math_expression(text: str):
         r"(-?\d+(?:[.,]\d+)?)\s*(?:%|\s*phan tram)\s*(?:cua)?\s*(-?\d+(?:[.,]\d+)?)", u
     )
     if m:
+        if not _special_math_complete(u, m):
+            return None, None
         pct = float(m.group(1).replace(",", "."))
         base = float(m.group(2).replace(",", "."))
         return f"{pct:g}% của {base:g}", base * pct / 100
@@ -1694,6 +1734,25 @@ def parse_math_expression(text: str):
     except Exception:
         return None, None
     return _math_display(expr_display), result
+
+
+def parse_math_expression(text: str):
+    """Tính toán tiếng Việt; từ chối kết quả phức/NaN/vô hạn và phép toán quá lớn."""
+    text = as_text(text)
+    if len(text) > _MAX_EXPR_LENGTH:
+        return None, None
+    balance = 0
+    for char in text:
+        balance += (char == "(") - (char == ")")
+        if balance < 0:
+            return None, None
+    if balance:
+        return None, None
+    try:
+        expr, result = _parse_math_expression(text)
+        return expr, _checked_math_number(result) if result is not None else None
+    except (ArithmeticError, ValueError, RecursionError):
+        return None, None
 
 
 # --- Cụm regex cho từng intent (biên dịch 1 lần, v7.2) ---
@@ -1841,7 +1900,9 @@ def parse_repeat(text: str) -> dict | None:
         m = _REPEAT_WEEKDAY_RE.search(u)
         if m:
             key = re.sub(r"\s+", " ", m.group(1)) if m.group(1) else "chu nhat"
-            return {"kind": "weekly", "weekday": _REPEAT_WEEKDAYS[key]}
+            weekday = _REPEAT_WEEKDAYS.get(key)
+            if weekday is not None:
+                return {"kind": "weekly", "weekday": weekday}
     m = _REPEAT_UNIT_RE.search(u)
     if m:
         return {"kind": _REPEAT_UNITS[m.group(1)]}
@@ -1990,22 +2051,11 @@ def _entity_chitchat(ctx: _EntityContext) -> str:
 
 
 def _entity_calculate(ctx: _EntityContext) -> str:
-    # v7.8: ưu tiên câu GỐC, fallback câu đã normalize.
-    # `ctx.raw` đã qua `normalize_text`, mà hàm đó XOÁ `+`/`*` và dấu phẩy
-    # thập phân. Hai hậu quả đo được:
-    #   "15 + 27"   -> "15 27"        : mất hẳn toán tử, không ra biểu thức.
-    #   "12,75 + 1" -> "12 75 + 1"    : VẪN ra biểu thức, nhưng SAI - "75 + 1"
-    #                                  (=76). Tệ hơn hẳn lỗi "không ra gì", vì
-    #                                  target sai còn result lại đúng.
-    # `original` giữ nguyên văn người gõ; `parse_math_expression` tự bỏ dấu
-    # bên trong nên câu không dấu vẫn chạy được. Fallback `ctx.raw` giữ hành
-    # vi cũ cho câu mà câu gốc không parse được.
-    if ctx.original:
-        expr, _ = parse_math_expression(ctx.original)
-        if expr:
-            return str(expr)
-    fallback, _ = parse_math_expression(ctx.raw)
-    return str(fallback) if fallback else ctx.raw
+    # Không fallback sang bản đã xoá cú pháp nếu bản gốc không hợp lệ:
+    # "3+4)" phải bị từ chối, không được âm thầm thử lại bằng "3+4".
+    source = ctx.original or ctx.raw
+    expr, _ = parse_math_expression(source)
+    return str(expr) if expr else source
 
 
 def _entity_search_web(ctx: _EntityContext) -> str:
@@ -2017,11 +2067,13 @@ def _entity_search_web(ctx: _EntityContext) -> str:
     để `action_search_web` hỏi lại - hỏi thì tốn một lượt, đoán thì mở nhầm
     cửa sổ mà người dùng không hề yêu cầu.
     """
-    return _strip_affixes(ctx.raw, SEARCH_PREFIX, SEARCH_SUFFIX)
+    query = unicodedata.normalize("NFC", ctx.original).lower()
+    return _strip_affixes(query, SEARCH_PREFIX, SEARCH_SUFFIX)
 
 
 def _entity_play_media(ctx: _EntityContext) -> str:
-    return _strip_affixes(ctx.raw, MEDIA_PREFIX, MEDIA_SUFFIX) or "nhạc"
+    query = unicodedata.normalize("NFC", ctx.original).lower()
+    return _strip_affixes(query, MEDIA_PREFIX, MEDIA_SUFFIX) or "nhạc"
 
 
 def _entity_open_website(ctx: _EntityContext) -> str:
@@ -2134,7 +2186,7 @@ def _has_literal_entity(s: str) -> bool:
 # An toàn vì mẫu này chỉ là CỔNG cho `parse_math_expression`, và hàm đó mới là
 # bằng chứng quyết định: "abc-123" không có SỐ ở trước dấu `-` nên không bị tính.
 _MATH_SYNTAX_RE = re.compile(
-    r"\d\s*(?:\*\*|[+\-*/^])\s*\d|\d,\d|\d\s*%"
+    r"(?:\d|\))\s*(?:\*\*|[+\-*/^\u00d7÷\u2212])\s*(?:[+\-]?\s*(?:\d|\())|\d,\d|\d\s*%"
     r"|\b(?:log|ln)\s*\d|\d\s*mod\s*\d"
     r"|\d\s*(?:chia\s*lay\s*du|phan\s*du|so\s*du)\s*\d"
 )
@@ -2157,7 +2209,7 @@ _UNAMBIGUOUS_MATH_RE = re.compile(
     r"|\bcan\s*(?:\w+\s*)?(?:\d+\s+cua\s+)?\d"
     # Dấu "√" viết dính số ("√16"): so trên bản BỎ DẤU thì ký hiệu này vẫn
     # còn nguyên, nhưng dấu nhân/chia cũng bị bỏ nên cần nhánh riêng.
-    r"|√\s*\d"
+    r"|[√∛]\s*\(?\s*-?\d"
 )
 
 
@@ -2300,9 +2352,11 @@ def _rescue_reminder_intent(intent: str, confidence: float,
 # được đưa vào đây: nó nằm trong cả "đọc báo hôm nay", "lịch hôm nay" và
 # "thời tiết hà nội hôm nay" - chỉ dẫn chứng yếu hơn cả cụm động từ.
 _UNAMBIGUOUS_INTENT_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("search_web", re.compile(r"\b(?:doc\s*bao|doc\s*tin\s*uc|doc\s*tin)\b")),
+    ("search_web", re.compile(
+        r"\b(?:doc\s*bao|doc\s*tin\s*uc|doc\s*tin)\b|^\s*google\s*$")),
     ("play_media", re.compile(
-        r"\b(?:phat\s*nhac|mo\s*nhac|bat\s*bai\s*hat|nghe\s*nhac)\b")),
+        r"\b(?:phat\s*nhac|mo\s*nhac|bat\s*bai\s*hat|nghe\s*nhac)\b"
+        r"|\bmo\s+youtube\b(?![./?#])")),
     # v7.9 (bổ sung 9e): "dừng nhạc"/"tắt nhạc"/"bật đèn" là lệnh DỪNG/bật
     # thiết bị, không phải lệnh phát. Không khoá ở đây thì model đoán
     # `play_media` và `action_play_media` mở YouTube tìm chính chữ "dừng nhạc"
@@ -2365,8 +2419,26 @@ def _rescue_unambiguous_keywords(intent: str, confidence: float,
     return intent
 
 
+_OPEN_LITERAL_WEBSITE_RE = re.compile(
+    r"^\s*(?:(?:ban|lam on|giup toi)\s+)*(?:mo|open|vao|truy cap)\s+"
+    r"(?:(?:trang web|trang|website|web)\s+)?$"
+)
+
+
+def _rescue_literal_website(intent: str, confidence: float, raw_text: str | None) -> str:
+    if not raw_text:
+        return intent
+    plain = strip_diacritics(raw_text)
+    url = _URL_ENTITY_RE.search(plain)
+    # Nội dung /lock, ?shutdown=... của URL là dữ liệu, không phải mệnh lệnh.
+    # Chỉ cãi model khi có động từ MỞ ngay trước URL, không nuốt nhắc/tìm kiếm.
+    if url and _OPEN_LITERAL_WEBSITE_RE.fullmatch(plain[:url.start()]):
+        return "open_website"
+    return intent
+
+
 _RESCUE_FUNCS = (_rescue_calculate_intent, _rescue_reminder_intent,
-                 _rescue_unambiguous_keywords)
+                 _rescue_unambiguous_keywords, _rescue_literal_website)
 
 
 def _rescue_intent(intent: str, confidence: float,
@@ -2389,6 +2461,70 @@ nên đọc `entity_source` là đọc câu rỗng.
     """
     repeat = parse_repeat(raw_text if raw_text else entity_source)
     return {"repeat": repeat} if repeat else {}
+
+
+def _feature_evidence(model, cleaned: str) -> float:
+    """TF-IDF không được tự tin vào phần n-gram chưa hề thấy khi huấn luyện.
+
+    Dùng đúng analyzer/vocabulary của model (kể cả dữ liệu người dùng tự dạy),
+    không thay bằng một từ điển cố định. Model khác giữ cách tính hiện có.
+    """
+    steps = getattr(model, "named_steps", {})
+    if not isinstance(steps, dict) or steps.get("tfidf") is None:
+        return 1.0
+    vectorizer = steps["tfidf"]
+    features = vectorizer.build_analyzer()(cleaned)
+    if not features:
+        return 0.0
+    return sum(feature in vectorizer.vocabulary_ for feature in features) / len(features)
+
+
+def _validate_calculate_prediction(intent: str, confidence: float,
+                                   source: str) -> tuple[str, float]:
+    if intent != "calculate":
+        return intent, confidence
+    source = as_text(source)
+    # "v2.0" không phải phép tính. Giữ yêu cầu toán rõ ràng (kể cả chưa đủ
+    # toán hạng) để executor có thể hỏi lại; đừng bịa kết quả cho tên phiên bản.
+    requested = re.search(r"\b(?:tinh|calculate)\b", strip_diacritics(source))
+    if requested or _has_math_syntax(source) or parse_math_expression(source)[1] is not None:
+        return intent, confidence
+    return "chitchat", 0.0
+
+
+def _model_confidence(model, cleaned: str) -> float:
+    """Không có xác suất/row hỏng là KHÔNG BIẾT, không phải chắc chắn 100%."""
+    try:
+        row = model.predict_proba([cleaned])[0]
+        if any(isinstance(value, bool) for value in row):
+            return 0.0
+        values = [float(value) for value in row]
+        if any(not 0.0 <= value <= 1.0 for value in values):
+            return 0.0
+        return max(values) * _feature_evidence(model, cleaned)
+    except (AttributeError, ValueError, TypeError, IndexError, OverflowError) as e:
+        logger.warning("Không lấy được xác suất hợp lệ từ model: %s", e)
+        return 0.0
+
+
+_SYSTEM_NEGATION_RE = re.compile(
+    r"\b(?:đừng|chớ|không|khong|ko|dont|do\s+not)\b|\bdon['\u2019]t\b", re.IGNORECASE
+)
+
+
+def _safe_command_confidence(intent: str, confidence: float, raw: str) -> float:
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        return 0.0
+    if intent == "system_control":
+        text = as_text(raw).lower()
+        if _URL_ENTITY_RE.search(text):
+            return 0.0
+        # Không biến lời phủ định thành shutdown/lock; "dung" không dấu mơ
+        # hồ giữa dừng/đừng nên cũng không được tự điều khiển hệ thống.
+        if (_SYSTEM_NEGATION_RE.search(text)
+                or (text == strip_diacritics(text) and re.search(r"\bdung\b", text))):
+            return 0.0
+    return confidence
 
 
 def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
@@ -2426,20 +2562,7 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
         intent, confidence = model.predict(cleaned)
     else:
         intent = str(model.predict([cleaned])[0])
-        try:
-            proba = model.predict_proba([cleaned])[0]
-            confidence = float(max(proba))
-        except AttributeError:
-            confidence = 1.0
-        except (ValueError, IndexError, TypeError) as e:
-            # v7.8: `except AttributeError` bản cũ chỉ che một trong những lỗi
-            # có thể xảy ra ở bước này. Model trả hàng xác suất RỖNG (file .pkl
-            # bị sửa tay, model chỉ có 0 lớp) làm `max([])` nổ `ValueError: max()
-            # arg is an empty sequence` bay ra ngoài, giết cả câu lệnh. Thiếu
-            # xác suất thì coi như chưa biết -> 1.0, đúng như nhánh AttributeError
-            # (quyết định làm/hỏi thuộc về tầng NLU, không phải ở đây).
-            logger.warning("Không lấy được xác suất từ model: %s", e)
-            confidence = 1.0
+        confidence = _model_confidence(model, cleaned)
 
     # v6: NGUỒN để trích xuất thực thể có thể khác nguồn để PHÂN LOẠI.
     # Tầng NLU đưa vào `text` đã chuẩn hoá (phục hồi dấu, hạ chữ thường, bỏ các
@@ -2449,7 +2572,8 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
     # "15 + 27" thành "15 27" và câu gốc là nơi duy nhất còn biểu thức.
     entity_source = (
         raw_text
-        if (raw_text and (_has_literal_entity(raw_text) or _has_math_syntax(raw_text)))
+        if (raw_text and (intent in ("calculate", "set_reminder", "search_web", "play_media")
+                          or _has_literal_entity(raw_text) or _has_math_syntax(raw_text)))
         else text
     )
 
@@ -2462,10 +2586,13 @@ def predict_intent(text: str, model=None, raw_text: str | None = None) -> dict:
         entity_source = raw_text
         confidence = 1.0
 
+    intent, confidence = _validate_calculate_prediction(
+        intent, confidence, raw_text or entity_source)
     result = {
         "intent": intent,
         "target": extract_entity(entity_source, intent),
-        "confidence": round(confidence, 4),
+        "confidence": round(_safe_command_confidence(intent, confidence,
+                                                      raw_text or entity_source), 4),
     }
 
     # Thêm thông tin thời gian cho lệnh nhắc nhở

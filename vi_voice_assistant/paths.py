@@ -53,9 +53,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 __all__ = [
@@ -139,17 +140,12 @@ def data_dir() -> Path:
         # KHÔNG ném lỗi ở đây: trợ lý vẫn phải chạy được (lời nhắc + log khi đó
         # chỉ nằm trong RAM). Rơi về temp dir - luôn ghi được trên mọi nền tảng.
         # /tmp chỉ là FALLBACK, tên thư mục mang PID riêng nên không ghi đè ai.
-        tmp_root = os.environ.get("TEMP", "/tmp")       # noqa: S108 - fallback, co PID rieng
-        chosen = Path(os.path.join(tmp_root, f"{_DIR_NAME}-{os.getpid()}"))
-        try:
-            chosen.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        chosen = Path(tempfile.mkdtemp(prefix=f"{_DIR_NAME}-{os.getpid()}-"))
         _verbose.append(f"không tạo được {source} ({e}) -> dùng {chosen}")
     _cached = chosen
     if _verbose:
         for line in _verbose:
-            print(f"[PATHS] {line}")
+            print(f"[PATHS] {line}", file=sys.stderr)
         _verbose.clear()
     return chosen
 
@@ -162,16 +158,23 @@ def data_path(filename: str | Path) -> Path:
     thay thế hẳn phần trước) và `../..` trèo ra ngoài - tức một tên file đi vào
     từ dữ liệu bên ngoài có thể ghi đè bất cứ thứ gì máy này cho phép. Mọi lời
     gọi trong dự án đều truyền hằng số, nên nay đây là hàng rào an toàn quanh
-    ranh giới dữ liệu, không phải đổi hành vi. Tên chứa ký tự phân tách đường
-    dẫn bị từ chối thay vì bị cắt bớt, để lỗi lộ ra đúng chỗ gọi.
+    ranh giới dữ liệu. Cho phép thư mục con nằm trong vùng dữ liệu; từ chối
+    đường dẫn tuyệt đối, ổ đĩa Windows, NUL, `..` và symlink trỏ ra ngoài.
     """
-    name = Path(str(filename))
-    if name.is_absolute() or ".." in name.parts:
-        raise ValueError(
-            f"data_path() nhận tên file trong thư mục dữ liệu, nhận được {str(filename)!r} "
-            f"(đường dẫn tuyệt đối hoặc chứa '..' sẽ thoát ra ngoài {data_dir()})."
-        )
-    return data_dir() / name
+    raw = str(filename)
+    name = Path(raw)
+    portable = PureWindowsPath(raw)
+    if (not name.parts or "\x00" in raw or name.anchor or portable.drive
+            or ".." in name.parts or ".." in portable.parts):
+        raise ValueError(f"data_path() cần đường dẫn tương đối trong thư mục dữ liệu: {raw!r}")
+    base = data_dir()
+    candidate = base / name
+    try:
+        candidate.resolve().relative_to(base.resolve())
+    except (OSError, ValueError, RuntimeError) as e:
+        raise ValueError(f"data_path() không cho phép thoát ra ngoài {base}: {raw!r}") from e
+    return candidate
+
 
 
 def describe() -> dict[str, object]:
@@ -219,17 +222,20 @@ def _writable(directory: Path) -> bool:
     directory = Path(directory)
     if not directory.is_dir():
         return False
-    probe = directory / f".write_probe_{os.getpid()}"
+    probe: str | None = None
     try:
-        probe.write_text("x", encoding="utf-8")
-        probe.unlink()
+        fd, probe = tempfile.mkstemp(dir=str(directory), prefix=".write_probe_")
+        os.close(fd)
         return True
     except OSError:
-        try:
-            probe.unlink()
-        except OSError:
-            pass
         return False
+    finally:
+        if probe is not None:
+            try:
+                os.unlink(probe)
+            except OSError:
+                pass
+
 
 
 def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = None,
@@ -251,6 +257,13 @@ def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = No
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        if os.name != "nt":
+            try:
+                mode = stat.S_IMODE(target.stat().st_mode)
+            except FileNotFoundError:
+                pass
+            else:
+                os.chmod(tmp_path, mode)
         os.replace(tmp_path, target)
     except Exception:
         try:
@@ -295,7 +308,7 @@ def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = No
     # Windows nhận CRLF do dịch ký tự xuống dòng). `json.load` đọc cả hai, và một
     # thư mục dữ liệu có hai kiểu xuống dòng khó xử lý hơn.
     target = Path(str(path))
-    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    text = json.dumps(payload, ensure_ascii=False, indent=indent, allow_nan=False)
     if trailing_newline:
         text += "\n"
     atomic_write_text(target, text, prefix=prefix or f".{target.stem}_tmp_")

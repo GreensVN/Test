@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.8
+main.py - Trợ lý ảo tiếng Việt v7.10.1
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -35,13 +35,16 @@ v7.1 nâng cấp (tiếp nối v7.0):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import math
 import signal
 import sys
 from dataclasses import dataclass
+from typing import TextIO
 
+from _version import __version__
 from paths import atomic_write_json, data_path
 from platform_utils import safe_print, setup_console
 
@@ -54,7 +57,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.9"
+APP_VERSION = __version__
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -156,7 +159,10 @@ def parse_args() -> argparse.Namespace:
         "--doctor", action="store_true",
         help="Chẩn đoán cài đặt: thư viện, model, config, quyền ghi, giọng nói + in lệnh khắc phục",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.json and args.once is None and args.text is None and not args.doctor:
+        parser.error("--json cần một câu lệnh (--once hoặc CÂU_LỆNH), hoặc --doctor.")
+    return args
 
 
 # --- History ---
@@ -166,7 +172,8 @@ def load_history() -> list[str]:
     try:
         with HISTORY_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, list) else []
+            return [entry for entry in data if isinstance(entry, str)][-MAX_HISTORY:] \
+                if isinstance(data, list) else []
     except Exception:
         return []
 
@@ -251,6 +258,11 @@ def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
         )
     )
 
+    if dry_run:
+        safe_print(f"   [{_confidence_percent(result):.0%} tự tin] "
+                   "(Chế độ test: không thực thi, không hỏi xác nhận, không dạy)")
+        return
+
     if status == "unknown":
         executor.respond("Xin lỗi, tôi chưa hiểu ý bạn")
         safe_print("   Mẹo: gõ  day <câu> = <intent>  để dạy tôi câu này.")
@@ -268,10 +280,9 @@ def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
             executor.respond("Đã huỷ lệnh")
             return
         nlu.teach(result.get("raw", ""), result.get("intent", ""))
-
-    if dry_run:
-        safe_print("   (Chế độ test: không thực thi)")
-        return
+        # Con người đã xác nhận một kết quả ít tự tin; không được từ chối
+        # lại bởi ngưỡng thấp hơn của executor. Không sửa object của caller.
+        result = dict(result, confidence=1.0)
 
     try:
         ok = execute_command(result)
@@ -289,46 +300,51 @@ def print_sysinfo() -> None:
     safe_print(format_capability_report(capability_report()))
 
 
-def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False) -> int:
-    try:
-        commands = nlu.understand(text)
-    except Exception as e:
-        logger.exception("Lỗi khi phân tích câu: %r", text)
-        if as_json:
-            print(json.dumps({"ok": False, "error": str(e), "raw": text}, ensure_ascii=False))
-        else:
-            safe_print(f"[LỖI] Không phân tích được: {e}")
+def _execute_once(result: dict, dry_run: bool) -> int:
+    if dry_run:
+        return 0
+    status = result.get("status")
+    if status == "need_confirm" and executor.AUTO_CONFIRM:
+        status = "ok"
+    # Chế độ một-câu không có lượt hỏi lại: không được thực thi kết quả
+    # low_confidence chỉ vì ngưỡng executor (0.35) thấp hơn NLU (0.45).
+    if status != "ok":
         return 2
+    try:
+        return 0 if execute_command(result) else 1
+    except Exception as e:
+        logger.exception("Lỗi khi thực thi lệnh (intent=%s)", result.get("intent"))
+        safe_print(f"[LỖI] Không thực thi được: {e}")
+        return 1
 
-    if as_json:
-        print(json.dumps(commands, ensure_ascii=False, indent=2, default=str))
 
-    exit_code = 0
-    for result in commands:
-        if not as_json:
-            safe_print(
-                "-> {} | {} | {:.0%} | {}".format(
-                    result.get("intent"),
-                    result.get("target"),
-                    _confidence_percent(result),
-                    result.get("status"),
-                )
-            )
-        if dry_run:
-            continue
-        status = result.get("status")
-        # v7.3: `--yes` phai co tac dung o CAI che do `--once`. Trc day no chi
-        # duoc executor dung den, con run_once luon tra ma 2 cho `need_confirm`
-        # -> nguoi dung dung script (vi-assistant --yes "tat may tinh") bi tu
-        # choi chinh lenh ma ho da bao "khoi hoi", va khong co loi bao nao.
-        if status == "need_confirm" and executor.AUTO_CONFIRM:
-            status = "ok"
-        if status in ("ok", "low_confidence"):
-            if not execute_command(result):
-                exit_code = 1
-        else:
-            exit_code = 2
-    return exit_code
+def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False,
+             *, json_output: TextIO | None = None) -> int:
+    output = json_output if json_output is not None else sys.stdout
+    # Cả model lẫn executor có thể in thông báo. stdout ở chế độ --json chỉ
+    # chứa đúng MỘT giá trị JSON; thông báo và lỗi đi về stderr.
+    with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
+        try:
+            commands = nlu.understand(text)
+        except Exception as e:
+            logger.exception("Lỗi khi phân tích câu: %r", text)
+            if as_json:
+                print(json.dumps({"ok": False, "error": str(e), "raw": text},
+                                 ensure_ascii=False), file=output)
+            else:
+                safe_print(f"[LỖI] Không phân tích được: {e}")
+            return 2
+        if as_json:
+            print(json.dumps(commands, ensure_ascii=False, indent=2, default=str,
+                             allow_nan=False), file=output)
+        exit_code = 0
+        for result in commands:
+            if not as_json:
+                safe_print("-> {} | {} | {:.0%} | {}".format(
+                    result.get("intent"), result.get("target"),
+                    _confidence_percent(result), result.get("status")))
+            exit_code = max(exit_code, _execute_once(result, dry_run))
+        return exit_code
 
 
 def setup_signal_handlers():
@@ -779,7 +795,7 @@ def _run_info_command(args: argparse.Namespace) -> int | None:
     if args.doctor:
         import diagnostic
 
-        code: int = diagnostic.main()
+        code: int = diagnostic.main(["--json"] if args.json else [])
         return code
     if args.sysinfo:
         print_sysinfo()
@@ -808,7 +824,7 @@ def _adopt_shipped_data() -> list[str]:
         if paths.describe()["from_source"]:
             return []
         return list(paths.migrate_from_package_dir(
-            ("config.json", "reminders.json", ".history.json", "feedback.csv")
+            ("config.json",)
         ))
     except Exception as e:                      # khong duoc phep lam chet tro ly vi sao chep
         logger.debug("không chép được dữ liệu từ gói: %s", e)
@@ -847,9 +863,20 @@ def _one_shot_text(args: argparse.Namespace) -> tuple[str | None, bool]:
     return one_shot, False
 
 
-def main() -> int:
-    args = parse_args()
+def _json_error(message: str, output: TextIO | None) -> None:
+    if output is not None:
+        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False), file=output)
 
+
+def _blank_once(args: argparse.Namespace, output: TextIO | None) -> int:
+    if args.json:
+        print("[]", file=output)
+    safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
+    safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
+    return 0
+
+
+def _main(args: argparse.Namespace, json_output: TextIO | None = None) -> int:
     early = _run_info_command(args)
     if early is not None:
         return early
@@ -864,6 +891,8 @@ def main() -> int:
 
     option_error = _apply_cli_options(args)
     if option_error is not None:
+        _json_error("Không áp dụng được tuỳ chọn dòng lệnh; xem stderr để biết chi tiết.",
+                    json_output)
         return option_error
 
     one_shot, blank_once = _one_shot_text(args)
@@ -873,11 +902,7 @@ def main() -> int:
             safe_print(BANNER)
         safe_print("Đang nạp mô hình hiểu ý...")
     elif blank_once:
-        # `--once ""`/`--once "   "`: da chi dinh che do mot-cau thi phai thoat,
-        # khong im lang roi roi vao REPL (kieu im lang do giết script/CI).
-        safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
-        safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
-        return 0
+        return _blank_once(args, json_output)
 
     _warn_missing_optional_features(args)
     try:
@@ -885,21 +910,32 @@ def main() -> int:
     except Exception as e:
         logger.exception("Không nạp được model NLU")
         safe_print(f"[LỖI NGHIÊM TRỌNG] Không nạp được mô hình hiểu ý: {e}")
-        safe_print("   Thử chạy: python -m dataset hoặc python train_nlu.py --fast")
+        safe_print("   Thử chạy: python -m vi_voice_assistant.train_nlu --fast")
+        _json_error(str(e), json_output)
         return 1
 
     logger.info("Đã nạp model, bắt đầu phiên làm việc mới.")
     setup_signal_handlers()
 
-    restored = executor.restore_reminders()
+    restored = 0 if args.dry_run else executor.restore_reminders()
     if restored:
         safe_print(f"[NHẮC NHỞ] Đã khôi phục {restored} lời nhắc còn hạn từ lần chạy trước.")
 
     if one_shot:
         save_history_entry(one_shot)
-        return run_once(one_shot, nlu, dry_run=args.dry_run, as_json=args.json)
+        return run_once(one_shot, nlu, dry_run=args.dry_run, as_json=args.json,
+                        json_output=json_output)
 
     return _run_repl(nlu, ReplState(dry_run=args.dry_run, mic_mode=args.voice))
+
+
+def main() -> int:
+    args = parse_args()
+    if args.json and not args.doctor:
+        output = sys.stdout
+        with contextlib.redirect_stdout(sys.stderr):
+            return _main(args, json_output=output)
+    return _main(args)
 
 
 if __name__ == "__main__":

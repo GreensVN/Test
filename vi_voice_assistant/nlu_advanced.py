@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.7
+nlu_advanced.py v7.10.1
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -53,6 +53,7 @@ v7.5 nâng cấp:
 # tests/test_v74_py39_compat.py de khong ai quen lai.
 from __future__ import annotations
 
+import copy
 import csv
 import difflib
 import logging
@@ -61,6 +62,7 @@ import os
 import re
 from datetime import datetime
 
+from csv_utils import append_keyed_csv
 from paths import data_path
 from platform_utils import safe_print, setup_console
 from text_utils import as_text, normalize_text
@@ -185,7 +187,7 @@ TEEN_CODE = {
 # Từ chỉ định (anaphora) -> thay bằng đối tượng đã nói trước đó
 ANAPHORA = [
     r"\bcái đó\b", r"\bcái ấy\b", r"\bthằng đó\b", r"\btrang đó\b",
-    r"\bứng dụng đó\b", r"\bapp đó\b", r"\bnó\b", r"\bchúng nó\b",
+    r"\bứng dụng đó\b", r"\bapp đó\b", r"\bchúng nó\b", r"\bnó\b",
 ]
 
 # Từ nối để tách nhiều lệnh trong một câu.
@@ -197,10 +199,11 @@ SPLIT_PATTERN = re.compile(
     # tách vô điều kiện, nên "2,5 nhân 4" thành HAI lệnh ("2" và "5 nhân 4") và
     # câu đó ra 20 thay vì 10 - sai mà không báo. Lookbehind chỉ dùng ở nhánh
     # phẩy; các nhánh còn lại (từ nối) vẫn so khớp như cũ.
-    r"\s*(?:(?<!\d),(?!\d)|;"
+    r"\s*(?:(?<!\d),|,(?!\d)|;"
     r"|\brồi sau đó\b|\broi sau do\b|\bsau đó\b|\bsau do\b"
     r"|\btiếp theo\b|\btiep theo\b|\brồi\b|\broi\b"
-    r"|\bđồng thời\b|\bdong thoi\b|\bvà cũng\b|\bva cung\b)\s*"
+    r"|\bđồng thời\b|\bdong thoi\b|\bvà cũng\b|\bva cung\b)\s*",
+    re.IGNORECASE,
 )
 
 # Những cụm KHÔNG được tách dù có từ nối (tránh cắt nhầm nội dung công việc /
@@ -209,7 +212,9 @@ SPLIT_PATTERN = re.compile(
 # năng tách đúng câu "mo chrome roi phat nhac tru tinh".
 NO_SPLIT_GUARD = re.compile(
     r"(nhắc tôi|nhac toi|nhắc mình|nhac minh|hẹn giờ|hen gio|báo thức|bao thuc"
-    r"|đếm ngược|dem nguoc|tìm|tim|tra cứu|tra cuu|search)"
+    r"|đếm ngược|dem nguoc|tìm|tim|tra cứu|tra cuu|search"
+    r"|nhắc nhở|nhac nho|đặt nhắc|dat nhac|tạo nhắc|tao nhac|đặt lịch|dat lich|remind)",
+    re.IGNORECASE,
 )
 
 
@@ -364,6 +369,25 @@ def smart_normalize(text: str) -> str:
 # ============================================================================
 # 3. TÁCH NHIỀU LỆNH TRONG MỘT CÂU
 # ============================================================================
+_SPLIT_LITERAL_RE = re.compile(
+    r"\b(?:https?://|www\.)\S+|\b[\w.-]+\.[a-z]{2,}[/?#]\S*", re.IGNORECASE
+)
+
+
+def _protect_split_literals(text: str) -> tuple[str, dict[str, str]]:
+    prefix = "zzliteralz"
+    while prefix in text:
+        prefix += "z"
+    literals: dict[str, str] = {}
+
+    def protect(match: re.Match) -> str:
+        token = f"{prefix}{len(literals)}zz"
+        literals[token] = match.group()
+        return token
+
+    return _SPLIT_LITERAL_RE.sub(protect, text), literals
+
+
 def split_commands(text: str):
     """
     "mở chrome rồi phát nhạc trữ tình" -> ["mở chrome", "phát nhạc trữ tình"]
@@ -375,40 +399,65 @@ def split_commands(text: str):
     lỗi không chỉ ra chỗ nên sửa.
     """
     text = as_text(text)
-    if NO_SPLIT_GUARD.search(text):
+    protected, literals = _protect_split_literals(text)
+    if NO_SPLIT_GUARD.search(protected):
         return [text]
 
-    parts = [p.strip() for p in SPLIT_PATTERN.split(text) if p and p.strip()]
+    parts = [p.strip() for p in SPLIT_PATTERN.split(protected) if p and p.strip()]
     # Cắt thêm bằng "và"/"va" chỉ khi vế sau bắt đầu bằng động từ ra lệnh
     # (v6.2: thêm động từ KHÔNG DẤU - "mo chrome va tat may").
     verbs = (r"(?:mở|mo|bật|bat|tắt|tat|phát|phat|chạy|chay|khởi|khoi|tìm|tim"
              r"|chụp|chup|đóng|dong|khóa|khoa|khoá)")
     final: list[str] = []
     for part in parts:
-        pieces = re.split(rf"\s+(?:và|va)\s+(?={verbs}\b)", part)
+        pieces = re.split(rf"\s+(?:và|va)\s+(?={verbs}\b)", part, flags=re.IGNORECASE)
         final.extend(p.strip() for p in pieces if p.strip())
+    for i, chunk in enumerate(final):
+        for token, literal in literals.items():
+            chunk = chunk.replace(token, literal)
+        final[i] = chunk
     return final or [text]
 
 
 # ============================================================================
 # 4. BỘ NHỚ NGỮ CẢNH
 # ============================================================================
+_ANAPHORA_PATTERN = "|".join(dict.fromkeys(
+    pattern for original in ANAPHORA for pattern in (original, strip_accents(original))
+))
+_CONTEXT_REFERENCE_RE = re.compile(
+    rf"(?P<literal>{_SPLIT_LITERAL_RE.pattern}"
+    r"|\b[a-z]:[\\/]\S+|(?<!\w)/\S+"
+    r"|\b[\w-]+(?:\.[\w-]+)+\b(?:[/?#]\S*)?)"
+    rf"|{_ANAPHORA_PATTERN}",
+    re.IGNORECASE,
+)
+
+
 class ContextMemory:
     """Ghi nhớ lệnh gần nhất để hiểu được "nó", "cái đó", "trang đó"."""
 
     def __init__(self, max_items: int = 10):
+        if isinstance(max_items, bool) or not isinstance(max_items, int):
+            raise TypeError("max_items phải là số nguyên không âm.")
+        if max_items < 0:
+            raise ValueError("max_items không được âm.")
         self.history: list[dict] = []
         self.max_items = max_items
 
     def remember(self, result: dict):
-        self.history.append(result)
+        if not isinstance(result, dict):
+            raise TypeError("result phải là dict.")
+        if self.max_items == 0:
+            return
+        self.history.append(copy.deepcopy(result))
         self.history = self.history[-self.max_items:]
 
     @property
     def last_target(self):
         for item in reversed(self.history):
             target = item.get("target")
-            if target and target not in ("unknown", "time", "date"):
+            if isinstance(target, str) and target and target not in ("unknown", "time", "date"):
                 return target
         return None
 
@@ -420,23 +469,15 @@ class ContextMemory:
         return self.history[-1].get("intent") if self.history else None
 
     def resolve(self, text: str) -> str:
-        """Thay từ chỉ định bằng đối tượng đã nhắc đến trước đó."""
+        """Thay một lần trên câu gốc; không diễn giải URL/path hay dữ liệu chèn."""
+        text = as_text(text)
         target = self.last_target
         if not target:
             return text
-        for pattern in ANAPHORA:
-            if re.search(pattern, text):
-                # QUAN TRỌNG: dùng HÀM (lambda) làm replacement, KHÔNG dùng
-                # chuỗi target trực tiếp. re.sub() với replacement là CHUỖI
-                # sẽ hiểu các dấu \ trong đó là escape đặc biệt của regex
-                # (vd \1 = backreference nhóm 1). target rất hay là đường
-                # dẫn Windows (vd "C:\Users\...") - dấu \U, \A trong đó sẽ
-                # bị hiểu nhầm thành escape không hợp lệ và ném
-                # `re.error: bad escape` ngay khi user nói "đóng nó lại"
-                # sau khi vừa mở 1 file bằng đường dẫn đầy đủ. Dùng lambda
-                # trả về nguyên văn, không bị regex diễn giải thêm.
-                text = re.sub(pattern, lambda m: target, text)
-        return text
+        return _CONTEXT_REFERENCE_RE.sub(
+            lambda match: match.group() if match.group("literal") is not None else target,
+            text,
+        )
 
     def clear(self):
         self.history.clear()
@@ -464,46 +505,26 @@ def _as_confidence(value: object) -> float:
     return min(1.0, max(0.0, number))
 
 
-def log_feedback(text: str, intent: str, confidence: float, correct: bool = False):
-    """
-    Ghi câu nói vào feedback.csv. File này sẽ được train_nlu.py / train_phobert.py
-    đọc lại để huấn luyện, giúp trợ lý ngày càng hiểu đúng ý bạn hơn.
+def log_feedback(text: str, intent: str, confidence: float, correct: bool = False) -> bool:
+    """Ghi feedback dưới khóa OS; chỉ trả True sau khi record đã flush/fsync.
 
-    Cột: time, text, intent, confidence, verified
-    - verified = 1 : nhãn đã được bạn xác nhận đúng -> được dùng để huấn luyện
-    - verified = 0 : máy đoán, chưa chắc đúng -> chỉ để bạn xem lại
+    `verified=1` chỉ khi người gọi xác nhận bằng True hoặc integer 1, không
+    đánh đồng chuỗi "false"/"0" hay container khác với phản hồi đã xác nhận.
     """
     try:
-        # v7.8: file RỖNG (0 byte) phải được coi là "chưa có" chứ không phải
-        # "đã có". Bản cũ chỉ kiểm tra `os.path.exists`, nên sau một lần mất
-        # điện/hết đĩa để lại file 0 byte, lần ghi kế tiếp KHÔNG ghi dòng
-        # tiêu đề - mà `train_nlu.py` đọc bằng `csv.DictReader`, tức lấy dòng
-        # dữ liệu đầu tiên làm TÊN CỘT. Hậu quả: câu đầu bị ăn mất và mọi câu
-        # sau đó không còn khoá "text"/"verified" nên bị bỏ qua lặng lẽ - toàn
-        # bộ "dạy" của người dùng im lặng biến mất khỏi lần huấn luyện sau.
-        is_new = not os.path.exists(FEEDBACK_PATH) or os.path.getsize(FEEDBACK_PATH) == 0
-        with open(FEEDBACK_PATH, "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            if is_new:
-                writer.writerow(["time", "text", "intent", "confidence", "verified"])
-            # `round(float(confidence))` tung lam hong buoc ghi khi NLU truyen
-            # chuoi ("0.8") hoac None; file nay la Dau vao cua lan huan luyen ke
-            # tiep nen mot dong hong co the keo theo train_nlu.py. v7.8: dung
-            # chung `_as_confidence` de NaN/inf cung khong loi vao CSV (NaN thi
-            # doc lai cung khong so sanh duoc, "0" thi lam mau so loi).
-            conf = round(_as_confidence(confidence), 4)
-            writer.writerow([
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                as_text(text), as_text(intent), conf, 1 if correct else 0,
-            ])
-    except OSError as e:
-        # Hàm này được gọi TỰ ĐỘNG mỗi khi độ tự tin thấp (rất thường xuyên
-        # trong lúc dùng bình thường) - đây chỉ là tính năng "học thêm" phụ,
-        # không quan trọng bằng việc hiểu lệnh chính, nên lỗi ghi file (thiếu
-        # quyền, đĩa đầy...) KHÔNG được phép làm gián đoạn trải nghiệm chính.
-        # Chỉ ghi log 1 dòng cảnh báo, không safe_print ra console (tránh
-        # spam liên tục nếu lỗi lặp lại ở mọi câu nói).
-        logging.getLogger(__name__).warning("Không ghi được feedback.csv: %s", e)
+        conf = round(_as_confidence(confidence), 4)
+        verified = int(correct is True or (type(correct) is int and correct == 1))
+        append_keyed_csv(
+            FEEDBACK_PATH, ("time", "text", "intent", "confidence", "verified"),
+            [datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             as_text(text), as_text(intent), conf, verified],
+        )
+        return True
+    except (OSError, ValueError, TypeError, csv.Error) as error:
+        # Phản hồi tự động là phụ; lỗi quyền/encoding/khóa không làm chết NLU.
+        # teach() sử dụng kết quả này, không được báo "đã ghi nhớ" khi chưa lưu.
+        _logger.warning("Không ghi được feedback.csv: %s", error)
+        return False
 
 
 # ============================================================================
@@ -557,16 +578,17 @@ class NLU:
             # không dấu" cũng là 1 tính năng được quảng cáo của chính module
             # này (xem 2 mục đầu docstring ở đầu file).
             normalized = smart_normalize(chunk)
+            entity_text = original_chunk
             if self.context:
                 normalized = self.context.resolve(normalized)
-                chunk = normalized  # "raw" hiển thị bản đã thay từ chỉ định, giữ đúng hành vi cũ
+                entity_text = self.context.resolve(original_chunk)
 
             # v6: truyền THÊM câu gốc để tầng trích xuất thực thể giữ nguyên
             # hoa/thường và các ký tự ? = & # của URL. Trước đây chỉ có bản
             # `normalized` được truyền vào, nên câu "mở youtube.com/watch?v=dQw4w9WgXcQ"
             # bị biến thành "youtube.com/watch v dqw4w9wgxcq" -> mở sai/hỏng liên kết.
-            result = predict_intent(normalized, self.model, raw_text=original_chunk)
-            result["raw"] = chunk
+            result = predict_intent(normalized, self.model, raw_text=entity_text)
+            result["raw"] = original_chunk
             result["normalized"] = normalized
             result["status"] = self._judge(result)
 
@@ -593,7 +615,9 @@ class NLU:
         thành 0.0, tức "không hiểu" chứ không phải "làm luôn".
         """
         conf = _as_confidence(result.get("confidence"))
-        if conf < CONFIDENCE_ASK:
+        # 0 còn là kết quả của hàng rào phủ định/dữ liệu hỏng: config 0
+        # không được vô hiệu hóa từ chối an toàn rồi cho --yes chạy lệnh.
+        if conf <= 0.0 or conf < CONFIDENCE_ASK:
             return "unknown"
         # CHỈ coi là hành động nguy hiểm khi intent thật sự là system_control
         # - target của các intent KHÁC mang ý nghĩa hoàn toàn khác (tên bài
@@ -642,19 +666,24 @@ class NLU:
         """
         # Ep kieu TRUOC khi strip: tu REPL thi la chuoi, ma goi truc tiep (script,
         # `--json`) co the tra so/None - va `(123 or "")` thi khong co `.strip()`.
-        text = as_text(text)
+        text = as_text(text).strip()
+        if not text:
+            return "Câu dạy không được rỗng."
         intent = as_text(intent).strip()
         try:
             from dataset import INTENT_DATA
             valid_intents = sorted(INTENT_DATA.keys())
-        except Exception:
-            valid_intents = []
-        if valid_intents and intent not in valid_intents:
+        except Exception as error:
+            _logger.warning("Không đọc được danh sách intent khi dạy: %s", error)
+            return "Không đọc được danh sách intent hợp lệ; chưa ghi nhớ câu dạy."
+        if intent not in valid_intents:
             return (f"Tên intent \u201c{intent}\u201d không hợp lệ. "
                     f"Các intent hiện có: {', '.join(valid_intents)}.\n"
                     f"   Ví dụ đúng:  day mở chrome = open_app")
-        log_feedback(text, intent, 1.0, correct=True)
-        return f"Đã ghi nhớ: \u201c{text}\u201d = {intent}. Chạy `python train_nlu.py` để học lại."
+        if not log_feedback(text, intent, 1.0, correct=True):
+            return "Không lưu được vào feedback.csv; chưa ghi nhớ câu dạy. Kiểm tra quyền ghi/đĩa."
+        return (f"Đã ghi nhớ: \u201c{text}\u201d = {intent}. "
+                "Chạy `python -m vi_voice_assistant.train_nlu --fast` để học lại.")
 
 
 # ============================================================================

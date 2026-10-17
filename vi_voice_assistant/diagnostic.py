@@ -28,6 +28,7 @@ v7.4 nâng cấp:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import logging
@@ -53,9 +54,12 @@ INFO = "[i]  "
 FULL_INSTALL = 'pip install "vi-voice-assistant[full]"'
 TTS_INSTALL = 'pip install "vi-voice-assistant[tts]"'
 STT_INSTALL = 'pip install "vi-voice-assistant[stt]"'
-AI_VOICE_INSTALL = 'pip install "vi-voice-assistant[ai-voice]" && python giong_noi_ai.py tai'
-LITE_RETRAIN = 'python -c "from lite_model import train_lite_model as t; t()"'
-CONFIG_WRITE = 'python -c "import config; config.save_config(config.DEFAULT_CONFIG)"'
+AI_VOICE_INSTALL = ('pip install "vi-voice-assistant[ai-voice]" '
+                    '&& python -m vi_voice_assistant.giong_noi_ai tai')
+LITE_RETRAIN = ('python -c "from vi_voice_assistant.lite_model import get_lite_model as t; '
+                't(force_retrain=True)"')
+CONFIG_WRITE = ('python -c "from vi_voice_assistant import config; '
+                'config.save_config(config.DEFAULT_CONFIG)"')
 
 OPTIONAL_LIBS = {
     # ten goi: (mo ngan, lenh cai)
@@ -72,7 +76,8 @@ OPTIONAL_LIBS = {
 def _module_available(name: str) -> bool:
     """Có module mà KHÔNG import nó (import pyttsx3/torch là mất vài giây)."""
     try:
-        return importlib.util.find_spec(name) is not None
+        module = "speech_recognition" if name == "SpeechRecognition" else name
+        return importlib.util.find_spec(module) is not None
     except (ImportError, ValueError):
         return False
 
@@ -161,15 +166,9 @@ def check_config() -> tuple[list[tuple[str, str]], list[str]]:
         fixes.append(f"mở {path} bằng trình soạn thảo, sửa JSON cho đúng cú pháp")
         return rows, fixes
 
-    # app_map RỖNG trong config không có nghĩa là "mở app không được": executor
-    # chọn đúng map theo nền tảng đang chạy, nên phải đếm bằng chính hàm đó
-    # thay vì đoán số khoá trong config.
-    try:
-        import executor
-
-        n_apps = len(executor._app_map_for_platform())
-    except Exception:
-        n_apps = len(cfg.get("app_map") or {})
+    key = {"Windows": "app_map_windows", "Darwin": "app_map_macos"}.get(
+        platform.system(), "app_map_linux")
+    n_apps = len(cfg.get(key) or {})
     counts = {
         "ứng dụng (nền tảng này)": n_apps,
         "website (website_map)": len(cfg.get("website_map") or {}),
@@ -369,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_console()
     as_json = "--json" in (argv if argv is not None else sys.argv[1:])
     try:
-        report = run_checks()
+        with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
+            report = run_checks()
     except Exception as e:          # CLI khong duoc nem traceback ra nguoi dung
         logger.warning("Bộ chẩn đoán lỗi: %s", e, exc_info=True)
         report = {
