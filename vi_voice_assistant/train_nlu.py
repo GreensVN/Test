@@ -80,7 +80,7 @@ from platform_utils import safe_print, setup_console
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = str(data_path("intent_model.pkl"))
 REPORT_PATH = str(data_path("nlu_report.txt"))
-EXTRA_CSV = os.path.join(BASE_DIR, "my_dataset.csv")
+EXTRA_CSV = str(data_path("my_dataset.csv"))
 FEEDBACK_CSV = str(data_path("feedback.csv"))
 
 random.seed(42)

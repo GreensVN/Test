@@ -57,6 +57,13 @@ stt = [
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
 ]
+phobert = [
+    "transformers>=4.37.0",
+    "torch>=2.0.0",
+    "accelerate>=1.0.0",
+    "scikit-learn>=1.5.0",
+    "numpy>=1.24.0",
+]
 stt-offline = [
     "transformers>=4.37.0",
     "torch>=2.0.0",

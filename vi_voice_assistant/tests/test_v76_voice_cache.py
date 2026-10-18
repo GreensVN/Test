@@ -211,7 +211,7 @@ def test_prewarm_that_bai_khong_im_lang_cung_ly_do(tts_mod, monkeypatch, tmp_pat
         raise tts_mod.TTSWriteError("chưa cài gTTS (pip install gTTS)")
 
     monkeypatch.setattr(tts_mod, "_WRITERS", (("gtts", ".mp3", broken, lambda: True),))
-    result = tts_mod.prewarm("một câu", out_dir=tmp_path)
+    result = tts_mod.prewarm("một câu", out_dir=tmp_path, engine="gtts")
     assert result["failed"] == 1 and result["written"] == 0
     assert "chưa cài gTTS" in result["detail"][0]["reason"], result["detail"]
 

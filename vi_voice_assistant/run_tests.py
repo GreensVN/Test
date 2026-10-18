@@ -585,9 +585,9 @@ def _resolve(name, fixtures, mp, capsys, tmp_path, finalizers=None, depth=0, cap
         for pname, param in inspect.signature(fn).parameters.items():
             value = _resolve(pname, fixtures, mp, capsys, tmp_path, finalizers,
                              depth + 1, caplog)
-            if value is None and param.default is inspect.Parameter.empty:
+            if value is _MISSING and param.default is inspect.Parameter.empty:
                 raise RuntimeError(f"fixture '{name}' can '{pname}' - khong tim thay")
-            if value is not None:
+            if value is not _MISSING:
                 kwargs[pname] = value
         v = fn(**kwargs)
         if inspect.isgenerator(v):
@@ -602,7 +602,7 @@ def _resolve(name, fixtures, mp, capsys, tmp_path, finalizers=None, depth=0, cap
         if scope == "module":
             _MOD_CACHE[name] = v
         return v
-    return None
+    return _MISSING
 
 def _count_test_files(test_dir) -> int:
     """Bao nhieu file test trong thu muc (khong nem loi neu thu muc khong ton tai)."""
@@ -714,16 +714,17 @@ def run(keyword=None, verbose=False, quiet=False):
                     kwargs = dict(extra_kw)
                     # fixture autouse: giai (de setup + dang ky teardown) nhung
                     # KHONG truyen vao kwargs - test khong khai bao tham so.
-                    for auto_name in autouse_names:
-                        _resolve(auto_name, fixtures, mp, capsys, tmp_path,
-                                 finalizers, 0, caplog)
-                    for pname in sig.parameters:
-                        if pname not in kwargs:
-                            v = _resolve(pname, fixtures, mp, capsys, tmp_path,
-                                         finalizers, 0, caplog)
-                            if v is not None: kwargs[pname] = v
                     outcome, detail = "pass", None
                     try:
+                        for auto_name in autouse_names:
+                            _resolve(auto_name, fixtures, mp, capsys, tmp_path,
+                                     finalizers, 0, caplog)
+                        for pname in sig.parameters:
+                            if pname not in kwargs:
+                                value = _resolve(pname, fixtures, mp, capsys, tmp_path,
+                                                 finalizers, 0, caplog)
+                                if value is not _MISSING:
+                                    kwargs[pname] = value
                         test_fn(**kwargs)
                     except _Skip as e:
                         outcome, detail = "skip", str(e)

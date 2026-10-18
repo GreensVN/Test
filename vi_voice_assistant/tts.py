@@ -1,5 +1,5 @@
 """
-tts.py - Text-To-Speech, tự động chọn engine khả dụng
+tts.py v7.11.0 - local-first Text-To-Speech, cloud opt-in
 
 v7.0 nâng cấp:
 - Type hints, pathlib, thread-safe engine cache
@@ -57,6 +57,7 @@ SYSTEM = platform.system()
 
 ENABLED: bool = True
 ENGINE: str = "auto"
+ALLOW_CLOUD = False
 
 _engine_cache: Any | None = None
 _resolved_engine: Callable[[str], bool] | None = None
@@ -69,6 +70,39 @@ _speak_lock = threading.Lock()
 # ĐỌC tiếp để ai đã có sẵn voice_cache/ từ bản 6.x không mất gì.
 VOICE_CACHE_DIR = data_path("voice_cache")
 VOICE_CACHE_DIR_LEGACY = Path(__file__).resolve().parent / "voice_cache"
+
+
+def configure(engine: str = "auto", *, allow_cloud: bool = False) -> None:
+    """Auto uses local backends; gtts selection is explicit text-upload consent."""
+    global ENGINE, ALLOW_CLOUD, _resolved_engine
+    if not isinstance(engine, str) or engine not in (
+        "auto", "piper", "vieneu", "nc", "pyttsx3", "sapi", "gtts", "print"
+    ):
+        raise ValueError("TTS engine không hợp lệ.")
+    if type(allow_cloud) is not bool:
+        raise TypeError("allow_cloud phải là bool.")
+    cloud = engine == "gtts" or allow_cloud
+    with _engine_lock:
+        if (ENGINE, ALLOW_CLOUD) != (engine, cloud):
+            _resolved_engine = None
+        ENGINE, ALLOW_CLOUD = engine, cloud
+
+
+def _vieneu_ready() -> bool:
+    """Only reuse an already initialized local instance in automatic mode."""
+    try:
+        import giong_noi_ai
+
+        return getattr(giong_noi_ai, "_vieneu_cache", None) is not None
+    except Exception:
+        return False
+
+
+def _local_engines() -> list:
+    engines = [_speak_piper, _speak_pyttsx3, _speak_sapi, _speak_macos]
+    if _vieneu_ready():
+        engines.insert(0, _speak_vieneu)
+    return engines
 
 
 def _cache_dirs() -> list[Path]:
@@ -187,8 +221,8 @@ def _speak_cache(text: str) -> bool:
     return _play_audio(path) if path else False
 
 
-def _speak_piper(text: str) -> bool:
-    """Dùng VieNeu-TTS (giữ tên hàm cũ để tương thích)."""
+def _speak_vieneu(text: str) -> bool:
+    """VieNeu is explicitly selected or an already initialized local instance."""
     try:
         import giong_noi_ai
     except Exception as e:
@@ -200,6 +234,18 @@ def _speak_piper(text: str) -> bool:
         return bool(giong_noi_ai.speak(text))
     except Exception as e:
         logger.debug("giong_noi_ai.speak lỗi: %s", e)
+        return False
+
+
+
+def _speak_piper(text: str) -> bool:
+    """The Piper engine really invokes Piper with an existing local model."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="vi-piper-") as directory:
+            out = Path(directory) / "speech.wav"
+            return bool(_write_piper(text, out)) and _play_audio(out)
+    except Exception as error:
+        logger.debug("Piper không đọc được: %s", error)
         return False
 
 
@@ -281,6 +327,8 @@ def _speak_macos(text: str) -> bool:
 
 
 def _speak_gtts(text: str) -> bool:
+    if ENGINE != "gtts" and not ALLOW_CLOUD:
+        return False
     try:
         from gtts import gTTS
 
@@ -309,8 +357,10 @@ def _engine_order() -> list:
     tuple cố định ở đầu file) - nhờ vậy test có thể monkeypatch từng engine,
     và người dùng chèn thêm engine mới mà không phải sửa speak().
     """
+    global _resolved_engine
     explicit = {
         "piper": [_speak_piper],
+        "vieneu": [_speak_vieneu],
         "nc": [_speak_nc],
         "pyttsx3": [_speak_pyttsx3],
         "sapi": [_speak_sapi],
@@ -331,9 +381,14 @@ def _engine_order() -> list:
             ", ".join(sorted([*explicit, "auto"])),
         )
 
+    eligible = _local_engines() + ([_speak_gtts] if ALLOW_CLOUD else [])
     if _resolved_engine is not None:
-        return [_resolved_engine]
-    return [_speak_piper, _speak_pyttsx3, _speak_sapi, _speak_macos, _speak_gtts]
+        blocked = ((_resolved_engine is _speak_gtts and not ALLOW_CLOUD)
+                   or (_resolved_engine is _speak_vieneu and not _vieneu_ready()))
+        if not blocked:
+            return [_resolved_engine]
+        _resolved_engine = None
+    return eligible
 
 
 def _try_engine(fn, text: str) -> bool:
@@ -462,11 +517,21 @@ def _write_pyttsx3(text: str, out: Path) -> bool:
     return True
 
 
+def _piper_model_path() -> Path:
+    configured = os.environ.get("PIPER_MODEL", "").strip()
+    return (Path(configured).expanduser() if configured else
+            VOICE_CACHE_DIR.parent / "giong_ai" / "vi_VN-vais1000-medium.onnx")
+
+
 def _write_piper(text: str, out: Path) -> bool:
-    """piper - nhanh, offline, nhưng cần model đã tải (`giong_noi_ai.py tai`)."""
+    """Real Piper binary with an explicitly installed local ONNX model."""
     if not _binary_present("piper"):
-        raise TTSWriteError("không có piper trên PATH (model: python giong_noi_ai.py tai)")
-    if not _run_hidden(["piper", "--output_file", str(out)], stdin_bytes=text.encode("utf-8")):
+        raise TTSWriteError("không có Piper binary trên PATH; cần binary và PIPER_MODEL local")
+    model = _piper_model_path()
+    if not model.is_file():
+        raise TTSWriteError("Piper cần model local; đặt PIPER_MODEL tới file .onnx đã tải.")
+    if not _run_hidden(["piper", "--model", str(model), "--output_file", str(out)],
+                       stdin_bytes=text.encode("utf-8")):
         raise TTSWriteError("piper chạy lỗi - thường là chưa tải model giọng tiếng Việt")
     if not _file_written(out):
         raise TTSWriteError("piper trả về file rỗng")
@@ -668,17 +733,27 @@ def _pick_writers(engine: str | None, only_available: bool) -> list[WriterSpec]:
     Tách khỏi `prewarm()` vì hàm đó đã chạm ngưỡng độ phức tạp C901=10, và vì
     đoạn "khoá engine / tự dò" là phần dễ đọc sai nhất trong cả luồng.
     """
-    if engine:
+    if engine and engine != "auto":
         entry = writer_for(engine)
         if entry is None:
             raise ValueError(f"Không có writer {_speech_text(engine)!r}. "
                              f"Các writer: {', '.join(_WRITER_NAMES)}.")
         return [entry]
-    picked = [w for w in _WRITERS if not only_available or _writer_check(w[3])]
+    eligible = [w for w in _WRITERS if w[0] != "gtts" or ALLOW_CLOUD]
+    picked = [w for w in eligible if not only_available or _writer_check(w[3])]
     # Máy không có gì vẫn trả về danh sách đầy đủ: mỗi câu sẽ fail KÈM LÝ DO trong
     # detail, tử tế hơn là "0 mục" im lìm (người dùng phân biệt được "chưa cài gì"
     # và "không có câu nào").
-    return picked or list(_WRITERS)
+    return picked or eligible
+
+
+def _empty_prewarm(summary: dict, keys: list[str]) -> dict:
+    if keys:
+        summary["failed"] = len(keys)
+        summary["detail"] = [{"text": key, "status": "fail", "file": None, "writer": None,
+                              "reason": "Không có writer local; chọn engine gtts tường minh "
+                              "nếu đồng ý gửi text lên cloud."} for key in keys]
+    return summary
 
 
 def prewarm(texts: object, *, out_dir: str | Path | None = None, engine: str | None = None,
@@ -724,8 +799,8 @@ def prewarm(texts: object, *, out_dir: str | Path | None = None, engine: str | N
         "writers": [name for name, _e, _f, _c in writers],
         "detail": [],
     }
-    if not keys:
-        return summary
+    if not keys or not writers:
+        return _empty_prewarm(summary, keys)
 
     cached: dict[str, str] = {}
     for row_key, row_file in _read_cache_index(directory):
@@ -790,7 +865,7 @@ def speak(text: str, show: bool = True) -> None:
     if show:
         safe_print(f"[TRỢ LÝ] {text}")
 
-    if not ENABLED:
+    if not ENABLED or ENGINE == "print":
         return
 
     if _speak_cache(text):
@@ -821,13 +896,7 @@ def _retry_other_engines(text: str) -> bool:
     if ENGINE != "auto" or _resolved_engine is None:
         return False
     broken = _resolved_engine
-    for fn in (
-        _speak_piper,
-        _speak_pyttsx3,
-        _speak_sapi,
-        _speak_macos,
-        _speak_gtts,
-    ):
+    for fn in _local_engines() + ([_speak_gtts] if ALLOW_CLOUD else []):
         if fn is broken:
             continue
         if _try_engine(fn, text):
@@ -843,72 +912,51 @@ def set_enabled(value: bool) -> None:
 
 
 def available_engines() -> list[str]:
-    found: list[str] = []
-    try:
-        import giong_noi_ai
-
-        if giong_noi_ai.is_available():
-            found.append("giọng AI VieNeu-TTS v3-Turbo (offline, Apache 2.0)")
-    except Exception:
-        logger.debug("Không nạp được giong_noi_ai khi liệt kê engine", exc_info=True)
-
-    try:
-        import pyttsx3  # noqa: F401
-
-        found.append("pyttsx3 (offline)")
-    except ImportError:
-        pass
-
-    if SYSTEM == "Windows":
-        found.append("Windows SAPI (có sẵn)")
-    elif SYSTEM == "Linux" and is_wsl():
-        found.append("Windows SAPI của host (qua WSL interop)")
-
+    """Installed capabilities, not a promise of cached models or working hardware."""
+    found = []
+    if _module_present("vieneu"):
+        found.append("VieNeu (chọn --engine vieneu; có thể tải model lần đầu)")
+    if _binary_present("piper") and _piper_model_path().is_file():
+        found.append("Piper (model local)")
+    if _module_present("pyttsx3"):
+        found.append("pyttsx3 (local)")
+    if SYSTEM == "Windows" or (SYSTEM == "Linux" and is_wsl()):
+        found.append("Windows SAPI")
     if SYSTEM == "Darwin":
-        found.append("macOS say (có sẵn)")
-
-    try:
-        import gtts  # noqa: F401
-
-        found.append("gTTS (cần internet)")
-    except ImportError:
-        pass
-
+        found.append("macOS say")
+    if _module_present("gtts"):
+        found.append("gTTS (cloud: chọn tường minh hoặc allow-cloud-tts)")
     cache = _load_voice_cache()
     if cache:
         found.insert(0, f"kho giọng sẵn ({len(cache)} câu)")
-
     return found or ["không có engine nào - sẽ chỉ in chữ"]
 
 
 def is_available() -> bool:
+    """Availability for the selected engine/policy, not proof of an audio device."""
+    if ENGINE == "print":
+        return False
     if _load_voice_cache():
         return True
-    try:
-        import pyttsx3  # noqa: F401
+    if ENGINE == "vieneu":
+        try:
+            import giong_noi_ai
 
-        return True
-    except ImportError:
-        pass
-    if SYSTEM in ("Windows", "Darwin"):
-        return True
-    if SYSTEM == "Linux" and is_wsl():
-        return True
-    try:
-        import gtts  # noqa: F401
-
-        return True
-    except ImportError:
-        pass
-    # Kiểm tra cả VieNeu
-    try:
-        import giong_noi_ai
-
-        if giong_noi_ai.is_available():
-            return True
-    except Exception as e:
-        logger.debug("Không kiểm tra được VieNeu: %s", e)
-    return False
+            return bool(giong_noi_ai.is_available())
+        except Exception:
+            return False
+    checks = {
+        "piper": lambda: _binary_present("piper") and _piper_model_path().is_file(),
+        "pyttsx3": lambda: _module_present("pyttsx3"),
+        "sapi": lambda: SYSTEM == "Windows" or (SYSTEM == "Linux" and is_wsl()),
+        "gtts": lambda: _module_present("gtts"),
+        "nc": lambda: _module_present("transformers") and _module_present("torch"),
+    }
+    if ENGINE in checks:
+        return bool(checks[ENGINE]())
+    return (checks["piper"]() or checks["pyttsx3"]() or checks["sapi"]()
+            or SYSTEM == "Darwin" or _vieneu_ready()
+            or (ALLOW_CLOUD and checks["gtts"]()))
 
 
 if __name__ == "__main__":
@@ -931,11 +979,19 @@ if __name__ == "__main__":
                         help="file văn bản, MỖI DÒNG MỘT CÂU")
     parser.add_argument("--out", metavar="THƯ_MỤC",
                         help="thư mục cache (mặc định: thư mục dữ liệu của người dùng)")
-    parser.add_argument("--engine", choices=list(_WRITER_NAMES), metavar="WRITER",
-                        help="khoá writer, mặc định thử lần lượt")
+    speak_engines = ("auto", "piper", "vieneu", "nc", "pyttsx3", "sapi", "gtts", "print")
+    parser.add_argument("--engine", choices=sorted(set(speak_engines) | set(_WRITER_NAMES)),
+                        metavar="ENGINE", help="engine/writer; chọn gtts là cloud opt-in")
+    parser.add_argument("--allow-cloud-tts", action="store_true", help="cho phép auto dùng gTTS")
     parser.add_argument("--force", action="store_true", help="tạo lại câu đã có trong cache")
     parser.add_argument("--dry-run", action="store_true", help="chỉ in kế hoạch, không ghi file")
     args = parser.parse_args()
+    if args.speak and args.engine and args.engine not in speak_engines:
+        parser.error("engine này chỉ ghi cache, không có speech adapter.")
+    if args.cache and args.engine and args.engine != "auto" and args.engine not in _WRITER_NAMES:
+        parser.error("engine này không có cache writer.")
+    configure(args.engine if args.engine in speak_engines else "auto",
+              allow_cloud=args.allow_cloud_tts)
     setup_console()
 
     if args.list:
@@ -957,8 +1013,6 @@ if __name__ == "__main__":
         if not writers:
             safe_print("  -> cần một trong: pip install gTTS  |  apt install espeak-ng  |  "
                        "pip install pyttsx3")
-        if not args.engines and not (args.speak or args.cache):
-            speak("Xin chào, tôi là trợ lý ảo tiếng Việt của bạn")
         raise SystemExit(0)
 
     if args.speak:

@@ -1,5 +1,5 @@
 """
-Trợ lý ảo tiếng Việt - gói Python (v7.10.6)
+Trợ lý ảo tiếng Việt - gói Python (v7.11.0)
 -----------------------------------------
 
 Toàn bộ mã nguồn trong thư mục này từ trước tới nay dùng LỆNH IMPORT PHẲNG
@@ -20,6 +20,8 @@ v7.10.6: bốn module có state (paths/config/executor/nlu_advanced) có lazy
 package alias về module phẳng, không chạy hai bản riêng. Version import chỉ
 đăng ký bridge, không nạp core. Không alias toàn bộ cây module hay sửa một
 process đang hot-upgrade với các module trùng đã tồn tại; cần restart.
+
+v7.11: bridge còn gồm stt/tts để cloud consent/cache không bị tách state.
 
     python -m vi_voice_assistant              # REPL
     python -m vi_voice_assistant --once "mở youtube"

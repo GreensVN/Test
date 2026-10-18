@@ -258,6 +258,9 @@ jobs:
         import vi_voice_assistant.main as cli
         import vi_voice_assistant.nlu_advanced as nlu
         import vi_voice_assistant.paths as storage
+        import vi_voice_assistant.phobert_model as phobert
+        import vi_voice_assistant.stt as stt
+        import vi_voice_assistant.tts as tts
         from vi_voice_assistant.csv_utils import read_keyed_csv
 
         memory = nlu.ContextMemory(0)
@@ -413,7 +416,7 @@ jobs:
                     cancelled = True
             assert cancelled and target.read_bytes() == b"old"
             assert [item.name for item in target.parent.iterdir()] == ["existing.txt"]
-        for name in ("paths", "config", "executor", "nlu_advanced"):
+        for name in ("paths", "config", "executor", "nlu_advanced", "stt", "tts"):
             assert importlib.import_module(name) is importlib.import_module("vi_voice_assistant." + name)
         assert cli.executor is executor and cli.NLU is nlu.NLU
         with tempfile.TemporaryDirectory() as directory:
@@ -436,6 +439,33 @@ jobs:
             executor.set_speech_enabled(True)
             cli._warn_missing_optional_features(SimpleNamespace(voice=False, speak=False))
             assert executor.SPEAK_ENABLED is False
+        assert pathlib.Path(phobert.MODEL_DIR) == storage.data_path("phobert_model")
+        stt.configure("google")
+        assert stt.ALLOW_CLOUD is True
+        stt.configure("auto")
+        assert stt.ALLOW_CLOUD is False and stt.ALLOW_DOWNLOAD is False
+        tts.configure("gtts")
+        tts.configure("auto")
+        assert tts.ALLOW_CLOUD is False
+        speech_calls = []
+
+        class Local:
+            def listen(self, **kwargs):
+                return "local result"
+
+        with mock.patch.object(stt, "_offline_available", lambda: True), \
+                mock.patch.object(stt, "_default_stt", lambda: Local()):
+            assert stt.listen_once() == "local result"
+        tts.configure("print")
+        with mock.patch.object(tts, "_speak_cache", lambda text: speech_calls.append(text) or True):
+            tts.speak("must not play", show=False)
+        assert speech_calls == []
+        tts.configure("auto")
+        with mock.patch.object(tts, "_local_engines", lambda: []), \
+                mock.patch.object(tts, "_speak_cache", lambda text: False), \
+                mock.patch.object(tts, "_speak_gtts", lambda text: speech_calls.append(text) or True):
+            tts.speak("must not upload", show=False)
+        assert speech_calls == []
         print("installed assistant safety and persistence passed")
         PY
     - name: User data must NOT be written into site-packages

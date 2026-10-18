@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.6
+main.py - Trợ lý ảo tiếng Việt v7.11.0
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -125,6 +125,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Chỉ phân tích, không thực thi")
     parser.add_argument("--voice", action="store_true", help="Nhận lệnh qua micro")
     parser.add_argument("--speak", action="store_true", help="Đọc phản hồi bằng giọng nói")
+    parser.add_argument("--stt-engine", choices=["auto", "offline", "google"], default="auto",
+                        help="STT local-first; chọn google là đồng ý gửi audio tới Google")
+    parser.add_argument("--allow-cloud-stt", action="store_true",
+                        help="cho phép auto STT fallback Google (gửi audio)")
+    parser.add_argument("--stt-download", action="store_true",
+                        help="cho phép tải model STT chưa có trong cache")
+    parser.add_argument("--allow-cloud-tts", action="store_true",
+                        help="cho phép auto TTS/cache fallback gTTS (gửi văn bản)")
     parser.add_argument(
         "--once", metavar="CÂU_LỆNH", help='Chạy 1 lệnh rồi thoát (vd: --once "mở youtube")'
     )
@@ -150,7 +158,7 @@ def parse_args() -> argparse.Namespace:
         "--engine",
         # v7.2: thêm "nc" (nhân bản giọng) - tts.py hỗ trợ engine này từ lâu
         # nhưng CLI không cho chọn, nên muốn dùng phải sửa mã nguồn.
-        choices=["auto", "piper", "nc", "pyttsx3", "sapi", "gtts", "print"],
+        choices=["auto", "piper", "vieneu", "nc", "pyttsx3", "sapi", "gtts", "print"],
         help="Chọn engine TTS",
     )
     parser.add_argument("--history", action="store_true", help="In lịch sử lệnh rồi thoát")
@@ -163,6 +171,8 @@ def parse_args() -> argparse.Namespace:
         help="Chẩn đoán cài đặt: thư viện, model, config, quyền ghi, giọng nói + in lệnh khắc phục",
     )
     args = parser.parse_args()
+    if args.stt_engine == "offline" and args.allow_cloud_stt:
+        parser.error("--stt-engine offline không dùng cùng --allow-cloud-stt.")
     if args.json and args.once is None and args.text is None and not args.doctor:
         parser.error("--json cần một câu lệnh (--once hoặc CÂU_LỆNH), hoặc --doctor.")
     return args
@@ -233,7 +243,8 @@ def get_input(use_voice: bool) -> str:
                     return str(text)
                 safe_print("(Không nhận diện được giọng nói, bạn có thể gõ tay bên dưới)")
             else:
-                safe_print("[CẢNH BÁO] Chưa cài SpeechRecognition, chuyển sang gõ phím.")
+                safe_print("[STT] Backend theo policy chưa sẵn sàng -> dùng gõ phím. "
+                           "Chọn --stt-engine google nếu đồng ý gửi audio, hoặc cài STT local.")
         except Exception as e:
             logger.debug("STT lỗi: %s", e)
             safe_print(f"[LỖI STT] {e} -> chuyển sang gõ phím")
@@ -397,10 +408,37 @@ def _print_version() -> None:
     safe_print(f"Python: {sys.version.split()[0]} | Platform: {sys.platform}")
 
 
+def _reset_speech_policy() -> None:
+    """Revoke prior consent on already-loaded controllers without eager imports."""
+    for name in ("stt", "tts"):
+        module = sys.modules.get(name)
+        configure = getattr(module, "configure", None)
+        if callable(configure):
+            configure("auto")
+    executor.set_speech_enabled(False)
+
+
+def _apply_speech_policy(args: argparse.Namespace) -> None:
+    if (getattr(args, "voice", False) or "stt" in sys.modules
+            or getattr(args, "stt_engine", "auto") != "auto"
+            or getattr(args, "allow_cloud_stt", False) or getattr(args, "stt_download", False)):
+        import stt
+
+        stt.configure(getattr(args, "stt_engine", "auto"),
+                      allow_cloud=getattr(args, "allow_cloud_stt", False),
+                      allow_download=getattr(args, "stt_download", False))
+    if (getattr(args, "speak", False) or args.engine or "tts" in sys.modules
+            or getattr(args, "allow_cloud_tts", False)):
+        import tts
+
+        tts.configure(args.engine or "auto", allow_cloud=getattr(args, "allow_cloud_tts", False))
+
+
 def _apply_cli_options(args: argparse.Namespace) -> int | None:
     """Áp --yes / --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
     # Never retain consent from a previous main() call or a failed config load.
     executor.set_auto_confirm(False)
+    _reset_speech_policy()
     if args.config:
         try:
             executor.reload_config(args.config)
@@ -409,14 +447,12 @@ def _apply_cli_options(args: argparse.Namespace) -> int | None:
             safe_print(f"[LỖI] Không nạp được config {args.config}: {e}")
             return 1
 
-    if args.engine:
-        try:
-            import tts
-
-            tts.ENGINE = args.engine
-            safe_print(f"[TTS] Engine: {args.engine}")
-        except Exception as e:
-            safe_print(f"[LỖI] Không đặt được engine TTS: {e}")
+    try:
+        _apply_speech_policy(args)
+    except Exception as error:
+        _reset_speech_policy()
+        safe_print(f"[LỖI] Không áp dụng được speech policy: {error_text(error)}")
+        return 1
     executor.set_auto_confirm(bool(args.yes))
     if args.yes:
         safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")

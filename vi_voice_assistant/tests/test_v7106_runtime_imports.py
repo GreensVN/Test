@@ -127,7 +127,7 @@ def test_version_only_import_stays_lazy_and_bridge_registration_is_idempotent(tm
         import vi_voice_assistant as package
         assert package.__version__
         assert not Path(os.environ["VI_ASSISTANT_HOME"]).exists()
-        names = ("paths", "config", "executor", "nlu_advanced")
+        names = ("paths", "config", "executor", "nlu_advanced", "stt", "tts")
         assert not any(name in sys.modules for name in names)
         count = len(sys.meta_path)
         importlib.reload(package)

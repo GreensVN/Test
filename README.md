@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.10.6
+# Trợ lý ảo tiếng Việt v7.11.0
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1876 pass](https://img.shields.io/badge/tests-1876%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1971 pass](https://img.shields.io/badge/tests-1971%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,50 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.11.0 (2026-10-18)**: speech local-first với cloud/tải model có lựa chọn rõ ràng.
+- STT không ưu tiên Google chỉ vì cài SpeechRecognition; `auto` dùng local cache,
+  không upload audio hay tải weights ngầm. Google/gTTS phải được chọn tường minh
+  hoặc cho phép fallback. Tải model STT là quyền riêng qua `--stt-download`.
+- Tách engine thật: `piper` gọi Piper + model `PIPER_MODEL`; `vieneu` gọi VieNeu.
+  Helper tên cũ `_speak_piper` trước đây thực tế đã gọi VieNeu — không phải thiếu
+  tích hợp. Auto chỉ reuse VieNeu đã khởi tạo, không cold-download. `print` không phát cache.
+- PhoBERT model/checkpoints/my_dataset.csv dùng data home. Đọc labels BOM, kiểm
+  schema/weights/count/id2label, chỉ load local và không remote code; không publish
+  instance state dở khi load lỗi. CSV training phối hợp qua reader có OS lock.
+- **1971 ca kiểm thử**, thêm **95** ca; core vẫn stdlib-only.
+
+### Chuyển đổi speech và model (v7.11)
+
+```bash
+# STT cục bộ, lần đầu cho phép tải model nếu chưa cache
+pip install -e ".[stt-offline]"
+python -m vi_voice_assistant --voice --stt-engine offline --stt-download
+
+# Những lần sau chỉ dùng cache local, không cho tải hay gửi audio
+python -m vi_voice_assistant --voice --stt-engine offline
+
+# Chọn Google là đồng ý gửi audio; hoặc auto + --allow-cloud-stt để cho fallback
+pip install -e ".[stt]"
+python -m vi_voice_assistant --voice --stt-engine google
+
+# TTS cloud chỉ khi chọn gtts hoặc bật --allow-cloud-tts cho auto
+python -m vi_voice_assistant --speak --engine gtts
+python -m vi_voice_assistant --speak --engine vieneu
+
+# PhoBERT training là tùy chọn, không kéo torch vào core
+pip install -e ".[phobert]"
+python -m vi_voice_assistant.train_phobert --local-files-only
+```
+
+`offline` ở đây nói về STT local; nếu bật `--stt-download` thì vẫn có mạng để tải
+weights, không phải gửi audio. VieNeu được chọn tường minh có thể tải model lần
+đầu. Custom TTS resolver là code plugin đáng tin, không phải network sandbox.
+
+Model PhoBERT đã đặt trong thư mục package cũ không bị xoá/copy ngầm: chuyển
+bundle tin cậy vào `DATA_DIR/phobert_model`, hoặc truyền `model_dir` cũ tường minh.
+Piper cần binary và model ONNX local qua `PIPER_MODEL`; lệnh tải VieNeu không tải Piper.
+Micro/loa/GPU và inference trọng số thật vẫn cần kiểm tra trên thiết bị.
 
 **v7.10.6 (2026-10-18)** giữ một runtime, một data root và đúng config đang chọn:
 - Bốn module `paths/config/executor/nlu_advanced` dùng chung state giữa import
@@ -174,7 +218,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1876 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1971 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -235,17 +279,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1876 test)
-    └── tests/             # 1876 test (v7.2 - v7.10.6 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1971 test)
+    └── tests/             # 1971 test (v7.2 - v7.11.0 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1876 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1971 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1876 pass, 0 fail, 0 skip
+# Ket qua: 1971 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

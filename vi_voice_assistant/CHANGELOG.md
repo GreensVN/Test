@@ -1,5 +1,68 @@
 # CHANGELOG
 
+## v7.11.0 (2026-10-18) - speech opt-in, đúng engine, optional model assets ở data home
+
+### Thay đổi hành vi và lỗi sửa
+
+- **Audio upload ngầm:** listen_once từng luôn chọn Google khi có SpeechRecognition,
+  khác lớp STT offline-first. Thống nhất auto local-first; cloud chỉ khi chọn
+  google tường minh hoặc allow-cloud-stt. Offline cấm cloud fallback. Flags bool
+  được kiểm kiểu, policy reset ở invocation kế tiếp/config lỗi, không giữ consent cũ.
+- **Model download:** STT mặc định chỉ cache local. Processor/model from_pretrained
+  có local_files_only và trust_remote_code=False; pipeline nhận object đã load,
+  không model ID string. Chỉ --stt-download cho phép tải. Chuẩn bị backend trước
+  mở mic; kiểm timeout, kết quả decoder; file API từ chối URL/file không tồn tại.
+  Array API vẫn nhận PCM int16 như đường record, không phải API cho mọi audio format.
+- **TTS network/cache:** auto không fallback gTTS trừ khi allow-cloud-tts; chọn
+  gtts tường minh là consent. Auto prewarm cũng không dùng gTTS ngầm, nhưng writer
+  gtts tường minh vẫn hoạt động. Print engine không phát cached audio; cached cloud
+  resolver không vượt qua revocation. Giữ custom resolver local đang khoẻ, không
+  ép thử lại các backend khác; plugin Python không phải sandbox mạng.
+- **Piper/VieNeu:** helper _speak_piper cũ thực tế gọi VieNeu, nên nhận xét trước
+  rằng VieNeu chưa tích hợp là không chính xác. Nay có engine vieneu rõ ràng;
+  piper thực sự gọi binary với --model local và cleanup WAV tạm. Auto chỉ reuse
+  VieNeu đã initialize, không kéo model cold-start. Standalone STT chỉ inspect
+  nếu chưa --listen; standalone TTS không tự phát lời chào khi không có action,
+  --engine được áp dụng cả cho --speak và validate theo writer/speaker.
+- **Alias chạy -m:** thêm state alias STT/TTS. Alias loader hỗ trợ get_code qua
+  loader nguồn, giữ các lệnh python -m ...stt/tts --help và original module spec.
+- **PhoBERT/data:** model, checkpoints và extra CSV dùng data_path, không ghi vào
+  installed package. Bundle cần labels list[str] duy nhất, config object và
+  weight file; BOM hỗ trợ. Inference local_files_only, trust_remote_code=False,
+  validate label count/id2label/capacity trước publish instance. Không tự nhận
+  model package cũ; explicit model_dir vẫn hỗ trợ. Metadata presence không chứng
+  minh weights tốt: loader/inference thật vẫn cần kiểm.
+- **Training:** feedback dùng shared schema-aware CSV reader, chấp nhận headerless
+  verified row và phối hợp khóa writer. Lưu labels atomic, gắn id2label/label2id
+  vào config trước save. Chọn TrainingArguments keyword qua signature thay retry
+  TypeError; kiểm hyperparameters trước import AI. Có extra [phobert] và tùy chọn
+  --local-files-only. Lệnh train tường minh có thể tải checkpoint nếu không bật cờ này.
+- **Runner:** None fixture không còn bị coi là unknown; dependencies/default/module
+  scope nhận None đúng. Lỗi setup nằm trong failure/finalizer handling, không làm
+  mất summary hay crash cả runner. Giữ old assertions, cấp cloud consent rõ trong
+  các test chủ đích Google/gTTS và tạo file local trong fake inference tests.
+- Sửa cách diễn đạt LICENSE/NOTICE gây hiểu nhầm; không cấp quyền mới, không xem
+  metadata repo là bằng chứng quyền thương mại của model bên ngoài.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **95 ca** trong 3 file test_v711_*.py, tổng **1971**. Nhóm 78 ca đầu có
+  **66 fail / 12 pass** trước sửa; bổ sung direct model/training/Piper, 2 module
+  CLI và 5 None/setup-fixture regressions. Không loại test cũ để đạt số xanh.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1971 passed**; runner nhúng:
+  **1971 pass, 0 fail, 0 skip**. Ruff/mypy sạch, build wheel/sdist và cả 5 Python
+  installed CI scripts trên bản cài no-optional từ ngoài repo pass local.
+- Test ASR/TTS/transformers dùng mocks, không thu mic/phát loa/tải weights. Chưa
+  chứng minh chất lượng giọng, tốc độ GPU/CPU, HF/provider API mọi phiên bản,
+  native Windows/macOS/WSL hay license upstream. Chưa có Actions run remote;
+  integration dispatch trước đó HTTP 403. Không khẳng định mọi lỗi đã hết.
+- Policy áp cho lần gọi kế tiếp, không thu hồi request đang chạy. Flags vẫn module
+  global, không hỗ trợ concurrent CLI sessions. Cloud/binary/Python plugin do
+  caller chọn không phải sandbox; chỉ load model tin cậy. File export model đa
+  file không phải transaction toàn bundle; metadata atomic/mapping kiểm giảm
+  mismatch nhưng không rollback một training/save đã dở.
+- Core timer cần tiến trình còn chạy; history/reminders chưa có inter-process lock.
+
 ## v7.10.6 (2026-10-18) - core import cùng state, data root ổn định, reload đúng profile
 
 ### Lỗi tái hiện và sửa

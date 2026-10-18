@@ -1,8 +1,17 @@
-# Trợ lý ảo tiếng Việt v7.10.6
+# Trợ lý ảo tiếng Việt v7.11.0
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (khuyến nghị Windows 10/11), macOS, Linux và WSL.
 
+> **v7.11.0 (2026-10-18)** - STT `auto` chỉ thử local, không auto cloud
+> hay tải weights. Chọn `--stt-engine google` là đồng ý gửi audio; auto fallback
+> cần `--allow-cloud-stt`. `--stt-download` chỉ cho phép tải model STT. TTS auto
+> không gTTS nếu chưa `--allow-cloud-tts`; chọn gtts tường minh cũng là opt-in.
+> Piper/VieNeu được tách đúng engine; auto không cold-start VieNeu, print không
+> phát cached audio. PhoBERT assets/checkpoints ở data home, local-only load,
+> validate bundle trước dùng. Bridge state còn gồm STT/TTS, giữ cách chạy `-m`.
+> **1971 ca kiểm thử**, thêm 95 ca so với 7.10.6. Xem hướng dẫn chuyển đổi ở root README.
+>
 > **v7.10.6 (2026-10-18)** - lazy alias bốn core module dùng chung state
 > giữa package/flat import; version-only không nạp core hay tạo data. Data root
 > native, tuyệt đối, init/reset cache thread-safe. No-path reload giữ profile
@@ -176,7 +185,7 @@ python main.py --version                    # phiên bản + model
 python main.py --debug                      # log chi tiết
 python main.py --no-banner                  # không banner
 python main.py --config my_config.json      # config riêng
-python main.py --engine auto                # Tự chọn TTS engine
+python main.py --engine auto                # Tự chọn TTS local; cloud cần opt-in
 python main.py --history                    # In lịch sử lệnh rồi thoát
 python main.py --dry-run                    # chỉ phân tích
 python main.py --sysinfo                    # thông tin hệ thống
@@ -239,16 +248,16 @@ quả được deepcopy để caller sửa dict không đổi lại lịch sử 
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 1876 ca kiểm thử | Thêm 3 file `test_v7106_*.py` cho data directory, reload/consent và core import identity; giữ coverage trước |
+| `tests/` | 1971 ca kiểm thử | Thêm 3 file `test_v711_*.py` cho speech policy, optional model storage và CLI/runner; giữ coverage cũ với consent tường minh |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py -q     # 1876 pass, 0 fail - không cần cài gì
+python run_tests.py -q     # 1971 pass, 0 fail - không cần cài gì
 # Ép runner nhúng ngay cả khi đã cài pytest:
 # Linux/macOS: VI_TESTS_FORCE_EMBEDDED=1 python run_tests.py -q
 # PowerShell: $env:VI_TESTS_FORCE_EMBEDDED="1"; python run_tests.py -q
-python -m pytest tests/ -q # 1876 passed
+python -m pytest tests/ -q # 1971 passed
 # Từ thư mục GỐC repo, sau khi cài ".[dev]":
 python -m ruff check .
 python -m mypy

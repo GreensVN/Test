@@ -1,4 +1,4 @@
-"""Lazy aliases for the four stateful core modules used by legacy scripts.
+"""Lazy aliases for the stateful runtime modules used by legacy scripts.
 
 Only canonical names below this package are intercepted. Other short-name
 modules are never replaced, and original flat specs are restored for reload().
@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from importlib.machinery import ModuleSpec
-    from types import ModuleType
+    from types import CodeType, ModuleType
 
-_CORE_MODULES = ("paths", "config", "executor", "nlu_advanced")
+_CORE_MODULES = ("paths", "config", "executor", "nlu_advanced", "stt", "tts")
 
 
 class _CoreAliasLoader(importlib.abc.Loader):
@@ -51,6 +51,16 @@ class _CoreAliasLoader(importlib.abc.Loader):
         self._check_origin(getattr(module, "__file__", None))
         self.original_spec = module.__spec__
         return module
+
+    def get_code(self, fullname: str) -> CodeType | None:
+        """Delegate runpy/-m to source instead of treating an alias as source code."""
+        found = importlib.util.find_spec(self.short_name)
+        self._check_origin(found.origin if found is not None else None)
+        getter = getattr(found.loader if found is not None else None, "get_code", None)
+        if not callable(getter):
+            raise ImportError(f"No source loader for {fullname}")
+        code: CodeType | None = getter(self.short_name)
+        return code
 
     def exec_module(self, module: ModuleType) -> None:
         # module_from_spec temporarily installs the alias spec. Keeping it
