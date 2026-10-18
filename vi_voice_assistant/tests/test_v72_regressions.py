@@ -263,8 +263,9 @@ def test_screenshot_path_is_timestamped(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "HOME", str(tmp_path))
     first = executor._screenshot_path()
     assert first.parent == tmp_path / "Pictures"
-    assert re.fullmatch(r"screenshot_\d{8}_\d{6}\.png", first.name)
+    assert re.fullmatch(r"screenshot_\d{8}_\d{6}_[0-9a-f]{32}\.png", first.name)
     assert first.parent.is_dir()
+    assert first != executor._screenshot_path()
 
 
 def test_osascript_escape_orders_backslash_first():

@@ -14,6 +14,7 @@ Test cho các nâng cấp HỖ TRỢ HỆ ĐIỀU HÀNH của bản v6.3:
   7. Cờ --sysinfo của main.py.
 """
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -120,12 +121,13 @@ def test_linux_volume_tries_wpctl_first(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
 
-    def fake_popen(cmd, *a, **k):
+    def fake_run(cmd, *a, **k):
         calls.append(cmd)
         if cmd[0] == "wpctl":
             raise FileNotFoundError("wpctl")  # giả lập máy chưa có PipeWire
+        return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.action_system_control("volume_up") is True
     assert calls[0][0] == "wpctl"
     assert calls[1][0] == "pactl"
@@ -136,11 +138,11 @@ def test_linux_lock_includes_qdbus(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
 
-    def fake_popen(cmd, *a, **k):
+    def fake_run(cmd, *a, **k):
         calls.append(cmd)
         raise FileNotFoundError(cmd[0])  # giả lập máy không có lệnh nào
 
-    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.action_system_control("lock") is False
     tools = [c[0] for c in calls]
     assert tools[0] == "loginctl"
@@ -153,12 +155,13 @@ def test_linux_screenshot_fallback_chain(monkeypatch, tmp_path):
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
     monkeypatch.setattr(executor, "HOME", str(tmp_path))
 
-    def fake_popen(cmd, *a, **k):
+    def fake_run(cmd, *a, **k):
         calls.append(cmd)
         if cmd[0] != "grim":
             raise FileNotFoundError(cmd[0])
+        return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.action_system_control("screenshot") is True
     tools = [c[0] for c in calls]
     assert tools == ["gnome-screenshot", "spectacle", "scrot", "grim"]
@@ -171,8 +174,11 @@ def test_wsl_lock_routes_to_windows_host(monkeypatch):
     calls = []
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     monkeypatch.setattr(executor, "is_wsl", lambda: True)
-    monkeypatch.setattr(executor.subprocess, "Popen",
-                        lambda cmd, *a, **k: calls.append(cmd))
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.action_system_control("lock") is True
     assert calls and calls[0][0] == "rundll32.exe"
 
@@ -182,8 +188,11 @@ def test_wsl_shutdown_uses_windows_exe(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     monkeypatch.setattr(executor, "is_wsl", lambda: True)
     monkeypatch.setattr(executor, "DANGEROUS_ACTIONS", set())  # bỏ hỏi xác nhận trong test
-    monkeypatch.setattr(executor.subprocess, "Popen",
-                        lambda cmd, *a, **k: calls.append(cmd))
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.action_system_control("shutdown") is True
     assert calls[0][0] == "shutdown.exe"
     assert "/s" in calls[0]

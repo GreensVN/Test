@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.2
+main.py - Trợ lý ảo tiếng Việt v7.10.3
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -38,7 +38,6 @@ import argparse
 import contextlib
 import json
 import logging
-import math
 import signal
 import sys
 from dataclasses import dataclass
@@ -238,13 +237,9 @@ def _confidence_percent(result: dict) -> float:
     JSON của mình, model trả `None`) - xảy ra đúng ở dòng in sau câu hỏi
     xác nhận nên người dùng thấy lỗi thay vì câu hỏi. Giá trị hỏng hiện 0%.
     """
-    try:
-        value = float(result.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(value):
-        return 0.0
-    return min(1.0, max(0.0, value))
+    value: float = executor._read_confidence(result.get("confidence", 0.0))
+    return max(0.0, value)
+
 
 
 def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:

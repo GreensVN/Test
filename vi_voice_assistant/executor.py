@@ -1,5 +1,5 @@
 """
-executor.py v7.10.2
+executor.py v7.10.3
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -321,7 +321,7 @@ def _open_url(url: str) -> bool:
         safe_print("[TỪ CHỐI] Chỉ mở URL HTTP(S) có tên máy chủ hợp lệ.")
         return False
     if SYSTEM == "Linux" and is_wsl():
-        if _run_first_available([["wslview", url], ["explorer.exe", url]]):
+        if _launch_first_available([["wslview", url], ["explorer.exe", url]]):
             return True
         logger.warning("WSL: không tìm thấy wslview/explorer.exe để mở URL %s", url)
         return False
@@ -357,7 +357,7 @@ def _open_path(path: str) -> bool:
         elif SYSTEM == "Darwin":
             _popen(["open", str(p)])
         elif is_wsl():
-            if not _run_first_available([["wslview", str(p)]]):
+            if not _launch_first_available([["wslview", str(p)]]):
                 safe_print("[LỖI] Trên WSL cần cài wslu: sudo apt install wslu")
                 return False
         else:
@@ -503,26 +503,67 @@ def action_open_app(target: str) -> bool:
         return False
 
 
-def _popen(cmd: list[str]) -> None:
-    """Popen wrapper that tolerates simple mocks (lambda cmd: ...) used in tests."""
-    try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except TypeError:
-        # Mock không nhận kwargs stdout/stderr (test cũ)
-        subprocess.Popen(cmd)
-    # FileNotFoundError sẽ được caller xử lý
+# One overall budget for a utility fallback chain, not 15 seconds per tool.
+_COMMAND_TIMEOUT = 15.0
 
-def _run_first_available(candidates: list[list[str]]) -> bool:
+
+def _popen(cmd: list[str]) -> None:
+    """Launch a GUI request without waiting for the application to close.
+
+    Never retry TypeError: a failed wrapper cannot prove no process started.
+    """
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _launch_first_available(candidates: list[list[str]]) -> bool:
+    """Browser/file launchers acknowledge creation, not application completion."""
     for cmd in candidates:
         try:
             _popen(cmd)
-            logger.info("Lệnh hệ thống chạy thành công: %s", cmd)
+            logger.info("Đã gửi yêu cầu mở bằng: %s", cmd)
             return True
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            logger.debug("Lệnh %s lỗi: %s", cmd, e)
-            continue
+        except OSError as error:
+            logger.debug("Không mở được bằng %s: %s", cmd, error)
+        except Exception as error:
+            logger.warning("Không xác định được trạng thái mở bằng %s: %s", cmd, error)
+            return False
+    return False
+
+
+def _run_command(cmd: list[str], *, timeout: float | None = None) -> bool:
+    """Check a short utility's exit status, without a shell or inherited output."""
+    result = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=_COMMAND_TIMEOUT if timeout is None else timeout,
+    )
+    code = result.returncode
+    if isinstance(code, bool) or not isinstance(code, int):
+        raise ValueError("Không đọc được mã thoát của công cụ hệ thống.")
+    if code != 0:
+        logger.warning("Công cụ %s kết thúc với mã lỗi %s", cmd, code)
+    return code == 0
+
+
+def _run_first_available(candidates: list[list[str]]) -> bool:
+    """Try known failures only; an ambiguous timeout must not repeat an action."""
+    deadline = time.monotonic() + _COMMAND_TIMEOUT
+    for cmd in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("Hết thời gian thử công cụ hệ thống.")
+            return False
+        try:
+            if _run_command(cmd, timeout=remaining):
+                logger.info("Công cụ hoàn tất thành công: %s", cmd)
+                return True
+        except OSError as error:
+            logger.debug("Không chạy được %s: %s", cmd, error)
+        except subprocess.TimeoutExpired:
+            logger.warning("Công cụ %s hết thời gian; không chạy lệnh dự phòng.", cmd)
+            return False
+        except Exception as error:
+            logger.warning("Không xác định được kết quả %s: %s", cmd, error)
+            return False
     return False
 
 
@@ -575,7 +616,8 @@ def _system_control_wsl(target: str) -> bool:
     }
     if target in commands:
         try:
-            _popen(commands[target])
+            if not _run_command(commands[target]):
+                return False
             safe_print(f"[THỰC THI] Lệnh hệ thống (WSL -> Windows host): {target}")
             logger.info("Lệnh hệ thống qua Windows host (WSL): %s", target)
             return True
@@ -594,7 +636,8 @@ def _system_control_wsl(target: str) -> bool:
             f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
         )
         try:
-            _popen(["powershell.exe", "-NoProfile", "-Command", ps])
+            if not _run_command(["powershell.exe", "-NoProfile", "-Command", ps]):
+                return False
             safe_print(f"[THỰC THI] Điều chỉnh âm thanh (WSL -> Windows host): {target}")
             return True
         except FileNotFoundError:
@@ -609,7 +652,9 @@ def _system_control_wsl(target: str) -> bool:
             "$g = [System.Drawing.Graphics]::FromImage($bmp); "
             "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
             "$dir = [Environment]::GetFolderPath('MyPictures'); "
-            "$path = Join-Path $dir ('screenshot_{0:yyyyMMdd_HHmmss}.png' -f (Get-Date)); "
+            "$name = 'screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + "
+            "[Guid]::NewGuid().ToString('N') + '.png'; "
+            "$path = Join-Path $dir $name; "
             "$bmp.Save($path); Write-Output $path"
         )
         try:
@@ -715,17 +760,18 @@ SCREENSHOT_LINUX_TOOLS = ["gnome-screenshot", "spectacle", "scrot", "grim", "imp
 
 
 def _screenshot_path() -> Path:
-    """Đường dẫn file ảnh chụp màn hình: ~/Pictures/screenshot_<thoi-gian>.png
+    """Đường dẫn ảnh: ~/Pictures/screenshot_<thoi-gian>_<uuid>.png
 
-    Đặt tên file theo timestamp để KHÔNG ghi đè ảnh cũ - người dùng chụp liên
-    tục khi lập trình báo cáo lỗi rất dễ có nhiều tấm trong cùng phút.
+    Timestamp kèm UUID: nhiều ảnh trong cùng một tick đồng hồ không dùng
+    lại tên cũ, kể cả khi đồng hồ được chỉnh lùi.
     """
     pictures_dir = Path(HOME) / "Pictures"
     pictures_dir.mkdir(parents=True, exist_ok=True)
-    return pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+    name = f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex}.png"
+    return pictures_dir / name
 
 
-def _send_virtual_key(target: str) -> None:
+def _send_virtual_key(target: str) -> bool:
     """Bấm phím âm lượng ảo qua PowerShell (dùng cho Windows và WSL)."""
     key = VOLUME_KEYS_WINDOWS[target]
     repeat = 5 if target in ("volume_up", "volume_down") else 1
@@ -733,7 +779,7 @@ def _send_virtual_key(target: str) -> None:
         "$w = New-Object -ComObject WScript.Shell; "
         f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
     )
-    _popen(["powershell", "-NoProfile", "-Command", ps])
+    return _run_command(["powershell", "-NoProfile", "-Command", ps])
 
 
 def _windows_screenshot() -> bool:
@@ -747,7 +793,8 @@ def _windows_screenshot() -> bool:
         "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
         f"$bmp.Save('{safe_path}')"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=15)
+    if not _run_command(["powershell", "-NoProfile", "-Command", ps]):
+        return False
     safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
     logger.info("Đã chụp màn hình: %s", path)
     return True
@@ -758,8 +805,7 @@ def _system_control_windows(target: str) -> bool | None:
     if target in COMMANDS_WINDOWS:
         safe_print(f"[THỰC THI] {' '.join(COMMANDS_WINDOWS[target])}")
         logger.info("Lệnh hệ thống (Windows): %s", target)
-        _popen(COMMANDS_WINDOWS[target])
-        return True
+        return _run_command(COMMANDS_WINDOWS[target])
 
     if target in VOLUME_KEYS_WINDOWS:
         if _volume_via_pycaw(target):
@@ -767,7 +813,8 @@ def _system_control_windows(target: str) -> bool | None:
             logger.info("Điều chỉnh âm thanh qua pycaw: %s", target)
             return True
 
-        _send_virtual_key(target)
+        if not _send_virtual_key(target):
+            return False
         safe_print(f"[THỰC THI] Điều chỉnh âm thanh (phím ảo): {target}")
         if target == "unmute":
             safe_print(
@@ -786,18 +833,17 @@ def _system_control_macos(target: str) -> bool | None:
     if target in COMMANDS_MACOS:
         safe_print(f"[THỰC THI] Lệnh hệ thống (macOS): {target}")
         logger.info("Lệnh hệ thống (macOS): %s", target)
-        _popen(COMMANDS_MACOS[target])
-        return True
+        return _run_command(COMMANDS_MACOS[target])
 
     if target in VOLUME_MACOS:
         safe_print(f"[THỰC THI] Điều chỉnh âm thanh (macOS): {target}")
         logger.info("Điều chỉnh âm thanh (macOS): %s", target)
-        _popen(VOLUME_MACOS[target])
-        return True
+        return _run_command(VOLUME_MACOS[target])
 
     if target == "screenshot":
         path = _screenshot_path()
-        _popen(["screencapture", str(path)])
+        if not _run_command(["screencapture", str(path)]):
+            return False
         safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
         return True
     return None
@@ -819,7 +865,7 @@ def _linux_screenshot() -> bool:
         safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
         return True
     safe_print(
-        "[LỖI] Không tìm thấy công cụ chụp màn hình (đã thử "
+        "[LỖI] Không tìm thấy hoặc không chạy được công cụ chụp màn hình (đã thử "
         f"{', '.join(SCREENSHOT_LINUX_TOOLS)})."
     )
     return False
@@ -834,7 +880,7 @@ def _system_control_linux(target: str) -> bool | None:
             safe_print(f"[THỰC THI] Lệnh hệ thống (Linux): {target}")
             return True
         safe_print(
-            f"[LỖI] Không tìm thấy công cụ phù hợp cho '{target}' trên Linux "
+            f"[LỖI] Không tìm thấy hoặc công cụ không chạy được lệnh '{target}' trên Linux "
             f"(đã thử systemctl/shutdown/loginctl...)."
         )
         logger.warning("Không tìm thấy lệnh Linux khả dụng cho: %s", target)
@@ -845,7 +891,8 @@ def _system_control_linux(target: str) -> bool | None:
             safe_print(f"[THỰC THI] Điều chỉnh âm thanh (Linux): {target}")
             return True
         safe_print(
-            "[LỖI] Không tìm thấy công cụ chỉnh âm lượng (đã thử wpctl, pactl, amixer) "
+            "[LỖI] Không tìm thấy hoặc không chạy được công cụ chỉnh âm lượng "
+            "(đã thử wpctl, pactl, amixer) "
             "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc "
             "ALSA utils (amixer - gói alsa-utils, có ở gần mọi bản Linux để bàn)."
         )
@@ -1689,7 +1736,7 @@ def _read_confidence(raw: object) -> float:
         return -1.0
     try:
         value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return -1.0
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         return -1.0

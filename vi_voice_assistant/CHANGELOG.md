@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## v7.10.3 (2026-10-18) - kết quả công cụ thật và confidence không tự nâng lên 100%
+
+### Lỗi tái hiện và sửa
+
+- **Thành công giả:** `_run_first_available` từng trả True ngay sau `Popen`,
+  kể cả một Python child thoát 7; không chạy công cụ dự phòng dù công cụ đầu
+  đã lỗi. Công cụ hệ thống/âm lượng/chụp ảnh nay chờ và kiểm mã thoát, không
+  chỉ kiểm xem binary có được khởi chạy hay không. Không dùng shell; chặn
+  stdout/stderr child để không làm bẩn JSON stdout.
+- **Timeout:** chuỗi dự phòng dùng một deadline monotonic 15 giây. Binary
+  thiếu/không có quyền hoặc trả mã lỗi có thể thử công cụ sau; timeout hoặc
+  mã thoát sai kiểu/kết quả không xác định dừng ngay, không tự lặp hành động
+  có thể đã diễn ra. Timeout không phải xác nhận thao tác chưa thực hiện và
+  không cung cấp rollback.
+- **GUI:** tách helper gửi yêu cầu mở app/browser/file, không chờ người dùng
+  đóng GUI. Wrapper `Popen` không tự gọi lại sau `TypeError`; cập nhật mock cũ
+  theo đúng API mới, giữ các kiểm chứng argv/whitelist/chuỗi dự phòng.
+- **Confidence:** NLU từng clamp 1.5 thành 1.0, đánh dấu `need_confirm`/`ok`
+  dù doc nói ngoài [0,1] phải bị từ chối. Nay NLU/executor cùng từ chối giá trị
+  ngoài khoảng, bool, NaN/inf và integer không chuyển được sang float. Phần
+  hiển thị và feedback dùng 0 thay vì 100%; đọc threshold lỗi dùng mặc định
+  an toàn, không ném `OverflowError`.
+- **Tên ảnh:** timestamp tới giây từng làm nhiều ảnh trong cùng tick ghi đè
+  nhau. Thêm UUID ở path local và PowerShell WSL; test regex vẫn kiểm timestamp
+  và UUID, đồng thời kiểm nhiều path khác nhau khi đồng hồ bị đóng băng.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **103 ca** trong 2 file `test_v7103_*.py`; **63/93 ca đầu thất bại trước
+  bản sửa**, 30 ca là đối chứng. Tổng **1585**, không bỏ test cũ. Mock ở các test
+  platform cũ trả `CompletedProcess` cho lệnh đồng bộ; mock GUI vẫn dùng Popen.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1585 passed**; runner nhúng:
+  **1585 pass, 0 fail, 0 skip**. Có chạy child Python thật cho exit 0/nonzero,
+  fallback ghi marker và timeout; lệnh shutdown/lock/âm lượng/chụp ảnh chỉ mock.
+- Ruff/mypy sạch, build wheel/sdist; kiểm bản cài không optional deps từ ngoài
+  repo, phiên bản/JSON/privacy và toàn bộ 5 Python script của install job.
+- Xác minh Linux/Python 3.11, không xác minh thiết bị Windows/macOS/WSL, micro,
+  âm thanh hay hành động OS thật. Exit 0 chỉ xác nhận công cụ báo thành công,
+  không chứng minh màn hình đã khoá/ảnh đã hiển thị/thiết bị đổi trạng thái.
+  GUI helper chỉ xác nhận process creation, không biết app có mở hoàn tất.
+- GitHub Actions vẫn chưa có run cho branch ở lần kiểm tra này; lần dispatch
+  trước bị HTTP 403 (quyền Actions của integration). Kiểm chứng local không
+  thay thế matrix đa OS/Python chạy thật trên GitHub.
+- Lịch tạm dừng vẫn cần restart hoặc `restore_reminders()` để thử lại, chưa có
+  vòng retry tự động. History/reminders chưa có khoá liên process; CSV chỉ có
+  advisory lock, không phải transaction chống mất điện.
+
 ## v7.10.2 (2026-10-18) - phục hồi timer không mất lịch, callback có thế hệ
 
 ### Lỗi tái hiện và sửa

@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.10.1
+nlu_advanced.py v7.10.3
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -102,7 +102,7 @@ def _read_thresholds(cfg: dict | None):
             return fallback
         try:
             value = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _logger.warning(
                 "Giá trị %r trong config.json không phải số (%r) - dùng mặc định %s.",
                 key, raw, fallback,
@@ -498,11 +498,11 @@ def _as_confidence(value: object) -> float:
         return 0.0
     try:
         number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    if not math.isfinite(number):
+    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
         return 0.0
-    return min(1.0, max(0.0, number))
+    return number
 
 
 def log_feedback(text: str, intent: str, confidence: float, correct: bool = False) -> bool:

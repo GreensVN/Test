@@ -1,8 +1,15 @@
-# Trợ lý ảo tiếng Việt v7.10.2
+# Trợ lý ảo tiếng Việt v7.10.3
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (khuyến nghị Windows 10/11), macOS, Linux và WSL.
 
+> **v7.10.3 (2026-10-18)** - công cụ hệ thống trả mã lỗi không còn báo
+> thành công chỉ vì tạo được process. Chuỗi dự phòng có tổng timeout 15 giây;
+> timeout/kết quả mơ hồ dừng chuỗi, không tự lặp hành động. Mở GUI vẫn bất đồng
+> bộ. Confidence ngoài [0,1]/integer quá lớn/bool bị từ chối, không gây crash hay
+> hiện 100%; tên ảnh có UUID và child output không lẫn stdout JSON.
+> **1585 ca kiểm thử**, thêm 103 ca so với 7.10.2.
+>
 > **v7.10.2 (2026-10-18)** - callback timer kiểm tra thế hệ, không chỉ ID;
 > callback cũ/đúp không chạm vào lịch được phục hồi. Khi tạo timer lỗi, lịch đã
 > lưu/lịch lặp còn lại dưới trạng thái **tạm dừng**, có nhãn trong danh sách,
@@ -208,16 +215,16 @@ quả được deepcopy để caller sửa dict không đổi lại lịch sử 
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 1482 ca kiểm thử | Thêm 2 file `test_v7102_*.py` cho phục hồi timer và biên thời gian; giữ toàn bộ test cũ |
+| `tests/` | 1585 ca kiểm thử | Thêm 2 file `test_v7103_*.py` cho mã thoát công cụ và biên confidence; giữ các test trước, cập nhật mock đúng API chờ process |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py -q     # 1482 pass, 0 fail - không cần cài gì
+python run_tests.py -q     # 1585 pass, 0 fail - không cần cài gì
 # Ép runner nhúng ngay cả khi đã cài pytest:
 # Linux/macOS: VI_TESTS_FORCE_EMBEDDED=1 python run_tests.py -q
 # PowerShell: $env:VI_TESTS_FORCE_EMBEDDED="1"; python run_tests.py -q
-python -m pytest tests/ -q # 1482 passed
+python -m pytest tests/ -q # 1585 passed
 # Từ thư mục GỐC repo, sau khi cài ".[dev]":
 python -m ruff check .
 python -m mypy

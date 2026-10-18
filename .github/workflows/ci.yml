@@ -238,7 +238,7 @@ jobs:
                         assert len(body) == 1 and body[0]["status"] == "unknown", body
         print("installed metadata/API/CLI versions match; JSON stdout is clean")
         PY
-    - name: Installed feedback, context, confidence and reminder recovery
+    - name: Installed feedback, context, confidence, reminder and utility safety
       shell: bash
       working-directory: ${{ runner.temp }}
       run: |
@@ -247,6 +247,7 @@ jobs:
         import datetime
         import json
         import pathlib
+        import sys
         import tempfile
         from unittest import mock
         import vi_voice_assistant.executor as executor
@@ -318,7 +319,19 @@ jobs:
             assert executor.restore_reminders() == 1
             assert executor.restore_reminders() == 0
             executor.cancel_reminder()
-        print("installed feedback/context/confidence/reminder recovery passed")
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "confirmed.txt"
+            failed = [sys.executable, "-c", "raise SystemExit(7)"]
+            assert executor._run_first_available([failed]) is False
+            code = "from pathlib import Path; Path(" + repr(str(marker)) + ").write_text('ok')"
+            assert executor._run_first_available([failed, [sys.executable, "-c", code]]) is True
+            assert marker.read_text() == "ok"
+        for bad in (10 ** 1000, -10 ** 1000, 1.5, True):
+            assert executor._read_confidence(bad) == -1.0
+            assert nlu._as_confidence(bad) == 0.0
+            assert nlu.NLU._judge({"intent": "system_control", "target": "lock",
+                                   "confidence": bad}) == "unknown"
+        print("installed feedback/context/confidence/reminder/utility safety passed")
         PY
     - name: User data must NOT be written into site-packages
       shell: bash
