@@ -84,11 +84,10 @@ def test_atomic_write_text_khong_de_lai_file_tam_khi_loi(tmp_path, monkeypatch):
     target = tmp_path / "index.csv"
     paths.atomic_write_text(target, "cu\n")
 
-    def boom(fd, mode, **kwargs):
-        os.close(fd)
+    def boom(fd):
         raise OSError("đĩa hỏng")
 
-    monkeypatch.setattr(paths.os, "fdopen", boom)
+    monkeypatch.setattr(paths.os, "fsync", boom)
     with pytest.raises(OSError, match="đĩa hỏng"):
         paths.atomic_write_text(target, "mới\n")
 

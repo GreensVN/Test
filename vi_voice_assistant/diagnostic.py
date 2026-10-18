@@ -1,5 +1,5 @@
 """
-diagnostic.py - Chẩn đoán cài đặt & môi trường (v7.3 - v7.6)
+diagnostic.py - Chẩn đoán cài đặt & môi trường (v7.10.5)
 -----------------------------------------------------------
 
 Vì sao cần: trước đây người dùng mới chỉ có ``--sysinfo`` (báo cáo khả năng
@@ -30,13 +30,13 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
-import json
 import logging
 import platform
 import sys
 import time
 from pathlib import Path
 
+from json_output import dumps_json, error_text, write_json_document
 from platform_utils import safe_print, setup_console
 
 logger = logging.getLogger(__name__)
@@ -364,23 +364,27 @@ def print_report(report: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Điểm vào CLI: ``vi-doctor`` / ``python -m vi_voice_assistant.diagnostic``."""
+    """Doctor CLI: validate before printing one portable, strict JSON value."""
     setup_console()
     as_json = "--json" in (argv if argv is not None else sys.argv[1:])
     try:
         with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
             report = run_checks()
-    except Exception as e:          # CLI khong duoc nem traceback ra nguoi dung
-        logger.warning("Bộ chẩn đoán lỗi: %s", e, exc_info=True)
+            if not isinstance(report, dict) or not isinstance(report.get("ok"), bool):
+                raise ValueError("Báo cáo chẩn đoán phải là object có trường ok kiểu bool.")
+            document = dumps_json(report)
+    except Exception as error:
+        message = error_text(error)
+        logger.warning("Bộ chẩn đoán lỗi: %s", message)
         report = {
-            "ok": False,
-            "problems": 1,
-            "warnings": 0,
-            "sections": {"Bộ chẩn đoán": [(BAD, f"không chạy được: {type(e).__name__}: {e}")]},
+            "ok": False, "problems": 1, "warnings": 0,
+            "sections": {"Bộ chẩn đoán": [(BAD, f"không chạy được: {message}")]},
             "fixes": [],
         }
+        document = dumps_json(report)
     if as_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        if not write_json_document(document):
+            return 1
     else:
         print_report(report)
     return 0 if report["ok"] else 1

@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.10.4
+# Trợ lý ảo tiếng Việt v7.10.5
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1676 pass](https://img.shields.io/badge/tests-1676%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1808 pass](https://img.shields.io/badge/tests-1808%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,18 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.10.5 (2026-10-18)** JSON sạch cả khi startup/I/O lỗi, không chạy batch hỏng:
+- Cảnh báo tạo config/log đi **stderr**, kể cả trước khi parse CLI. Log custom
+  dùng đúng thư mục được chỉ định; không tạo được file log vẫn có console fallback.
+- Kiểm cả batch và serialization trước action đầu tiên. JSON sai shape, NaN/inf,
+  circular metadata hoặc lỗi chuyển text trả lỗi có kiểm soát, không chạy một phần batch.
+- JSON máy dùng ASCII escape (giữ giá trị sau decode), kiểm short-write và flush
+  trước khi dispatch. Lỗi output trả nonzero, không thực thi lệnh từ batch đó.
+- Ghi file atomic dùng staged-file owner chung; `KeyboardInterrupt`/`SystemExit`
+  trước publish dọn temp và giữ file cũ, không nuốt tín hiệu huỷ. Kiểm encoding/
+  prefix trước I/O; prefix không được là path. Không rollback sau publish/SIGKILL.
+- **1808 ca kiểm thử**, thêm **132** ca; core vẫn stdlib-only.
 
 **v7.10.4 (2026-10-18)** giữ dữ liệu cũ khi đọc/khởi tạo gặp lỗi hoặc chạy đua:
 - History đọc UTF-8 BOM; lỗi đọc/JSON hỏng không bị hiểu thành lịch sử trống
@@ -145,7 +157,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1676 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1808 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -206,17 +218,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1676 test)
-    └── tests/             # 1676 test (v7.2 - v7.10.4 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1808 test)
+    └── tests/             # 1808 test (v7.2 - v7.10.5 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1676 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1808 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1676 pass, 0 fail, 0 skip
+# Ket qua: 1808 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

@@ -1,5 +1,5 @@
 """
-logging_setup.py
+logging_setup.py v7.10.5
 -----------------
 Thiết lập logging tập trung.
 
@@ -24,14 +24,16 @@ v7.2 nâng cấp & fix lỗi:
 
 from __future__ import annotations
 
-import json
 import logging
 import logging.handlers
 import os
+import sys
 import threading
 from pathlib import Path
 
+from json_output import dumps_json, error_text
 from paths import data_path
+from platform_utils import safe_print
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = data_path("logs")   # v7.3: xem paths.py
@@ -63,7 +65,8 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        rendered: str = dumps_json(payload, indent=None)
+        return rendered
 
 
 def setup_logging(
@@ -87,7 +90,7 @@ def setup_logging(
             # Logging là tính năng PHỤ: không được phép làm chết trợ lý chỉ vì
             # không ghi được file log (đĩa đầy, thiếu quyền, đường dẫn quá dài
             # trên Windows...). Chỉ in 1 dòng cảnh báo rồi chạy tiếp.
-            print(f"[WARN] Không cấu hình được logging: {e}")
+            safe_print(f"[WARN] Không cấu hình được logging: {error_text(e)}", file=sys.stderr)
 
 
 def _resolve_level(level: int) -> int:
@@ -116,8 +119,7 @@ def _configure_locked(
 
     level = _resolve_level(level)
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    target_log = Path(log_file) if log_file else LOG_FILE
+    target_log = Path(log_file) if log_file is not None else Path(LOG_FILE)
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -135,8 +137,10 @@ def _configure_locked(
 
     # File handler - rotating
     try:
+        target_log.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(
-            str(target_log), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+            str(target_log), maxBytes=max_bytes, backupCount=backup_count,
+            encoding="utf-8", errors="backslashreplace"
         )
         file_handler.setLevel(level)
         file_handler.setFormatter(file_formatter)
@@ -144,7 +148,7 @@ def _configure_locked(
         root.addHandler(file_handler)
     except OSError as e:
         # Không tạo được file log -> vẫn chạy tiếp, chỉ log ra console
-        print(f"[WARN] Không tạo được file log {target_log}: {e}")
+        safe_print(f"[WARN] Không tạo được file log {target_log}: {error_text(e)}", file=sys.stderr)
 
     # Console handler - chỉ warning/error để không spam REPL
     console_handler = logging.StreamHandler()

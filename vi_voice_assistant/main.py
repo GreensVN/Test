@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.4
+main.py - Trợ lý ảo tiếng Việt v7.10.5
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import TextIO
 
 from _version import __version__
+from json_output import dumps_json, error_text, write_json_document
 from paths import atomic_write_json, data_path
 from platform_utils import safe_print, setup_console
 
@@ -328,31 +329,41 @@ def _execute_once(result: dict, dry_run: bool) -> int:
         return 1
 
 
+def _prepare_once(text: str, nlu: NLU) -> tuple[list[dict], str, list[str]]:
+    commands = nlu.understand(text)
+    if not isinstance(commands, list) or any(not isinstance(item, dict) for item in commands):
+        raise ValueError("NLU phải trả về danh sách các object lệnh.")
+    results: list[dict] = commands
+    document = dumps_json(results)
+    # Prepare every display/serialization before the first command can act.
+    summaries = ["-> {} | {} | {:.0%} | {}".format(
+        str(item.get("intent")), str(item.get("target")),
+        _confidence_percent(item), str(item.get("status"))) for item in results]
+    return results, document, summaries
+
+
 def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False,
              *, json_output: TextIO | None = None) -> int:
     output = json_output if json_output is not None else sys.stdout
-    # Cả model lẫn executor có thể in thông báo. stdout ở chế độ --json chỉ
-    # chứa đúng MỘT giá trị JSON; thông báo và lỗi đi về stderr.
     with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
         try:
-            commands = nlu.understand(text)
-        except Exception as e:
-            logger.exception("Lỗi khi phân tích câu: %r", text)
+            commands, document, summaries = _prepare_once(text, nlu)
+        except Exception as error:
+            message = error_text(error)
+            logger.warning("Không phân tích/biểu diễn được lệnh: %s", message)
             if as_json:
-                print(json.dumps({"ok": False, "error": str(e), "raw": text},
-                                 ensure_ascii=False), file=output)
+                raw = text if isinstance(text, str) else error_text(text)
+                write_json_document(dumps_json({"ok": False, "error": message, "raw": raw}),
+                                    output=output)
             else:
-                safe_print(f"[LỖI] Không phân tích được: {e}")
+                safe_print(f"[LỖI] Không phân tích được: {message}")
             return 2
-        if as_json:
-            print(json.dumps(commands, ensure_ascii=False, indent=2, default=str,
-                             allow_nan=False), file=output)
+        if as_json and not write_json_document(document, output=output):
+            return 1
         exit_code = 0
-        for result in commands:
+        for result, summary in zip(commands, summaries):
             if not as_json:
-                safe_print("-> {} | {} | {:.0%} | {}".format(
-                    result.get("intent"), result.get("target"),
-                    _confidence_percent(result), result.get("status")))
+                safe_print(summary)
             exit_code = max(exit_code, _execute_once(result, dry_run))
         return exit_code
 
@@ -876,12 +887,12 @@ def _one_shot_text(args: argparse.Namespace) -> tuple[str | None, bool]:
 
 def _json_error(message: str, output: TextIO | None) -> None:
     if output is not None:
-        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False), file=output)
+        write_json_document(dumps_json({"ok": False, "error": message}), output=output)
 
 
 def _blank_once(args: argparse.Namespace, output: TextIO | None) -> int:
-    if args.json:
-        print("[]", file=output)
+    if args.json and not write_json_document("[]", output=output):
+        return 1
     safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
     safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
     return 0
@@ -920,9 +931,9 @@ def _main(args: argparse.Namespace, json_output: TextIO | None = None) -> int:
         nlu = NLU()
     except Exception as e:
         logger.exception("Không nạp được model NLU")
-        safe_print(f"[LỖI NGHIÊM TRỌNG] Không nạp được mô hình hiểu ý: {e}")
+        safe_print(f"[LỖI NGHIÊM TRỌNG] Không nạp được mô hình hiểu ý: {error_text(e)}")
         safe_print("   Thử chạy: python -m vi_voice_assistant.train_nlu --fast")
-        _json_error(str(e), json_output)
+        _json_error(error_text(e), json_output)
         return 1
 
     logger.info("Đã nạp model, bắt đầu phiên làm việc mới.")

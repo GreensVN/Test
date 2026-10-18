@@ -1,5 +1,5 @@
 """
-paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.4)
+paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.5)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -50,6 +50,7 @@ v7.4 nâng cấp:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -57,7 +58,10 @@ import stat
 import sys
 import tempfile
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 __all__ = [
     "PACKAGE_DIR",
@@ -239,41 +243,46 @@ def _fsync_directory(parent: Path) -> None:
         os.close(fd)
 
 
-def _create_bytes_if_absent(path: str | Path, payload: bytes) -> bool:
-    """Publish complete bytes atomically, never replacing an existing pathname.
-
-    NT rename refuses an existing destination; POSIX hard-link publication is
-    exclusive. There is intentionally no overwriting fallback if unsupported.
-    Parent-directory replacement by a hostile writer is outside this contract.
-    """
-    target = Path(path)
-    if os.path.lexists(target):
-        return False
+@contextlib.contextmanager
+def _staged_bytes(target: Path, payload: bytes, *, prefix: str) -> Iterator[str]:
+    """Own the temporary handle/path through failures and normal cancellation."""
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=str(target.parent),
-                                         prefix=".adopt_tmp_", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=str(target.parent), prefix=prefix,
+                                         suffix=target.suffix, delete=False) as stream:
             temporary = stream.name
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        try:
-            if os.name == "nt":
-                os.rename(temporary, target)
-                temporary = None
-            else:
-                os.link(temporary, target)
-        except FileExistsError:
-            return False  # Only a publication conflict means another writer won.
+        yield temporary
     finally:
         if temporary is not None:
             try:
                 os.unlink(temporary)
             except FileNotFoundError:
-                pass
+                pass  # A successful rename/replace consumed the staged path.
             except OSError as error:
                 logging.getLogger(__name__).warning("Không dọn được %s: %s", temporary, error)
+
+
+def _create_bytes_if_absent(path: str | Path, payload: bytes) -> bool:
+    """Publish complete bytes, without replacing a concurrent winner.
+
+    Unsupported primitives fail closed. Hostile parent-directory replacement
+    is outside this contract, and directory fsync remains best effort.
+    """
+    target = Path(path)
+    if os.path.lexists(target):
+        return False
+    with _staged_bytes(target, payload, prefix=".adopt_tmp_") as temporary:
+        try:
+            if os.name == "nt":
+                os.rename(temporary, target)
+            else:
+                os.link(temporary, target)
+        except FileExistsError:
+            return False
     _fsync_directory(target.parent)
     return True
 
@@ -309,40 +318,39 @@ def _writable(directory: Path) -> bool:
 
 
 
+def _temp_prefix(prefix: str | None, target: Path) -> str:
+    if prefix is None or prefix == "":
+        return f".{target.stem}_tmp_"
+    if not isinstance(prefix, str):
+        raise TypeError("prefix phải là chuỗi hoặc None.")
+    if any(char in prefix for char in ("/", "\\", "\x00", ":")):
+        raise ValueError("prefix chỉ được là tiền tố tên file, không phải đường dẫn.")
+    return prefix
+
+
 def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = None,
                       encoding: str = "utf-8") -> None:
-    """Ghi một file VĂN BẢN theo cùng kiểu an toàn như ``atomic_write_json``.
+    """Stage encoded bytes in the target directory, then replace atomically.
 
-    Tồn tại vì ``voice_cache/index.csv`` (mới v7.6) là file mà người dùng và
-    chương trình CÙNG sửa: mở ``"w"`` trực tiếp sẽ cắt mất chỉ mục cũ, và một lần
-    ghi hỏng giữa chừng biến cả kho giọng thành "không tìm thấy file nào" - mất
-    công tạo lại mà không ai giải thích được vì sao.
+    Validate/encode before creating directories. Temporary ownership unwinds
+    on ordinary errors, KeyboardInterrupt and SystemExit; cancellation before
+    publication leaves the old destination unchanged. No rollback after commit.
     """
+    if not isinstance(content, str):
+        raise TypeError("content phải là chuỗi.")
     target = Path(str(path))
-    parent = target.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_name = prefix or f".{target.stem}_tmp_"
-    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=tmp_name, suffix=target.suffix)
-    try:
-        with os.fdopen(fd, "w", encoding=encoding, newline="") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
+    temporary_prefix = _temp_prefix(prefix, target)
+    payload = content.encode(encoding)
+    with _staged_bytes(target, payload, prefix=temporary_prefix) as temporary:
         if os.name != "nt":
             try:
                 mode = stat.S_IMODE(target.stat().st_mode)
             except FileNotFoundError:
                 pass
             else:
-                os.chmod(tmp_path, mode)
-        os.replace(tmp_path, target)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError as cleanup_error:
-            logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
-        raise
-    _fsync_directory(parent)
+                os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    _fsync_directory(target.parent)
 
 
 def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = None,

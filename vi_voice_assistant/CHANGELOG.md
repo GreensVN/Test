@@ -1,5 +1,63 @@
 # CHANGELOG
 
+## v7.10.5 (2026-10-18) - startup/JSON lỗi vẫn có kiểm soát, atomic cleanup khi huỷ
+
+### Lỗi tái hiện và sửa
+
+- **Startup làm bẩn stdout:** lỗi tạo config khi import từng in warning lên
+  stdout trước parse_args/redirect. Cảnh báo config/log nay in trực tiếp stderr;
+  `safe_print(file=...)` giữ cả fallback trên đúng stream, không rơi sang stdout.
+- **Log custom không tạo được:** setup từng mkdir LOG_DIR mặc định kể cả khi
+  caller chọn log_file khác; không tạo parent của file custom. Nay chỉ tạo parent
+  thực tế, lỗi file vẫn cấu hình console handler thay vì thất bại toàn bộ.
+- **Analysis hỏng gây traceback/chạy một phần:** run_once từng serialize/iterate
+  ngoài try; một record hợp lệ đứng trước record lỗi có thể chạy trước khi crash.
+  Nay kiểm list[dict], serialization và summary cho cả batch trước command đầu.
+  Batch/metadata không serialize được trả lỗi phân tích 2 ở cả JSON/human mode,
+  không dispatch; giữ dry-run unknown=0 khi batch hợp lệ.
+- **JSON encoding/output:** thêm `json_output.py` cho machine JSON (CLI/doctor/
+  JSON logs): ASCII escape, không NaN/inf; lỗi cả exception.__str__ vẫn báo được.
+  Hoàn tất short-write, từ chối count sai/0 và flush trước command. Output không
+  xác nhận ghi thành công trả 1 và không dispatch; không cố ghép JSON thứ hai vào
+  stream hỏng. Doctor kiểm shape/serialization trước in, lỗi trả báo cáo JSON 1.
+  Config/history trên đĩa vẫn UTF-8 dễ đọc. Escape không sửa lone surrogate từ
+  provider; round-trip với Python JSON, client kiểm Unicode scalar nghiêm ngặt
+  vẫn có thể từ chối dữ liệu Unicode không hợp lệ từ upstream.
+- **Huỷ ghi file để lại temp:** except Exception không bắt KeyboardInterrupt/
+  SystemExit. Dùng chung context manager staged bytes cho overwrite/no-replace;
+  đóng handle và cleanup qua finally khi Python unwind, rồi truyền tiếp huỷ.
+  Trước publish file cũ không đổi; sau publish không có rollback.
+- **Encoding/prefix:** encode và kiểm prefix trước tạo directory/temp. Từ chối
+  prefix chứa separator, drive/ADS separator hoặc NUL. Text writer không cần
+  tự sở hữu raw fd qua fdopen; giữ codec/newline và quyền file cũ. Test I/O lỗi
+  cũ inject fsync thay fdopen, giữ nguyên assertion bảo toàn file/dọn temp.
+- **Runner capture:** kiểm tra output chặt hơn đã phát hiện tee nhúng trả None
+  thay vì count, làm 6 ca JSON cũ fail ở embedded (pytest/ML vẫn pass). Tee nay
+  trả tiến độ thực, chỉ mirror phần đã nhận, giữ tương thích None-returning real
+  stream như ResilientStream; không nới lỏng output guard production. Thêm 7 ca
+  tái hiện lỗi count/short-write của tee.
+- **Audit artifact:** chọn wheel/sdist theo phiên bản chung, không chọn glob đầu
+  có thể là build cũ; yêu cầu có module JSON mới trong wheel.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **132 ca** trong 3 file `test_v7105_*.py`; **95/119 ca đầu thất bại trước
+  sửa**, 24 ca đối chứng. Thêm 6 ca short-write/count cũng thất bại trước guard.
+  Thêm 7 ca tee cũng thất bại trước sửa runner. Tổng **1808**, không bỏ test cũ.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1808 passed**; runner nhúng:
+  **1808 pass, 0 fail, 0 skip**. Có subprocess thật cho module/script/canonical
+  startup với config lỗi, log parent lỗi, narrow output, I/O/flush lỗi và inject
+  KeyboardInterrupt/SystemExit ở fsync/publish; không chạy OS action nguy hiểm.
+- Ruff/mypy sạch; build wheel/sdist, clean no-optional install ngoài repo; phiên
+  bản/JSON/privacy và toàn bộ 5 Python script của install job pass local.
+- Cleanup chỉ khi Python unwind: không cam kết dọn sau SIGKILL/mất điện; cleanup
+  và directory fsync vẫn best effort. Output I/O lỗi có thể đã ghi một phần;
+  batch execution không phải transaction, không rollback action đã thực hiện.
+- Kiểm Linux/Python 3.11; native Windows/macOS/WSL/audio/OS action chưa xác minh.
+  GitHub Actions chưa có run ở lần kiểm tra, dispatch integration trước đó bị
+  HTTP 403; local không thay matrix remote. History/reminders vẫn chưa có khoá
+  liên process, nhắc nhở vẫn cần tiến trình chạy; paused lịch chưa có retry nền.
+
 ## v7.10.4 (2026-10-18) - giữ history cũ, migration containment và khởi tạo không ghi đè
 
 ### Lỗi tái hiện và sửa

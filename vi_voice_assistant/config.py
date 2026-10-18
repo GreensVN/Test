@@ -1,5 +1,5 @@
 """
-config.py v7.10.4
+config.py v7.10.5
 ---------
 Nạp cấu hình từ config.json.
 
@@ -48,6 +48,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -421,8 +422,8 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
             if create_json_if_absent(path, initial):
                 return initial
         except OSError as e:
-            safe_print(f"[CẢNH BÁO] Không tạo được file cấu hình '{path}': {e}")
-            safe_print("   Chạy tiếp với cấu hình mặc định (chưa lưu).")
+            safe_print(f"[CẢNH BÁO] Không tạo được file cấu hình '{path}': {e}", file=sys.stderr)
+            safe_print("   Chạy tiếp với cấu hình mặc định (chưa lưu).", file=sys.stderr)
             return initial
         # A concurrent creator won: read/validate its bytes below, not our
         # defaults. Never replace or silently ignore that writer's config.

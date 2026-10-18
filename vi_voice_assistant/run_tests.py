@@ -241,7 +241,17 @@ class _Capsys:
 
 class _Tee:
     def __init__(self, real, buf): self._r, self._b = real, buf
-    def write(self, s): self._r.write(s); self._b.write(s)
+    def write(self, s: str) -> int:
+        written = self._r.write(s)
+        # Match _ResilientStream's compatibility with legacy None-returning
+        # real streams, while presenting TextIO's count contract to callers.
+        if written is None:
+            written = len(s)
+        if (isinstance(written, bool) or not isinstance(written, int)
+                or not 0 <= written <= len(s)):
+            raise OSError("Capture stream received an invalid write count")
+        self._b.write(s[:written])
+        return written
     def flush(self): self._r.flush()
     def fileno(self): return self._r.fileno()
     @property
