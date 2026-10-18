@@ -1,5 +1,5 @@
 """
-Trợ lý ảo tiếng Việt - gói Python (v7.10.3)
+Trợ lý ảo tiếng Việt - gói Python (v7.10.4)
 -----------------------------------------
 
 Toàn bộ mã nguồn trong thư mục này từ trước tới nay dùng LỆNH IMPORT PHẲNG

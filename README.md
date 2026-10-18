@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.10.3
+# Trợ lý ảo tiếng Việt v7.10.4
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1585 pass](https://img.shields.io/badge/tests-1585%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1676 pass](https://img.shields.io/badge/tests-1676%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,20 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.10.4 (2026-10-18)** giữ dữ liệu cũ khi đọc/khởi tạo gặp lỗi hoặc chạy đua:
+- History đọc UTF-8 BOM; lỗi đọc/JSON hỏng không bị hiểu thành lịch sử trống
+  rồi ghi đè. Cần sao lưu/sửa hoặc di chuyển `.history.json` hỏng để ghi tiếp.
+- Các thao tác history cùng module được khoá trong một process, không mất entry
+  khi nhiều thread append. Giữ giới hạn 200, bỏ trùng liên tiếp và bỏ input sai kiểu.
+- Migration kiểm containment cả nguồn/đích; từ chối traversal, Windows-rooted
+  path và symlink thoát vùng. File mới được xuất bản đầy đủ, **không thay thế**
+  đích có sẵn; config đầu tiên đọc lại file của bên tạo thắng cuộc.
+- Khởi tạo dùng rename no-replace trên Windows, hardlink trên POSIX. Nếu filesystem
+  không hỗ trợ thì cảnh báo, bỏ migration/dùng config RAM, không fallback ghi đè.
+- JSON vượt giới hạn decoder và target/nhãn không chuyển được sang text bị từ
+  chối thay vì traceback hay gọi action mặc định.
+- **1676 ca kiểm thử**, thêm **91** ca; core vẫn chỉ cần stdlib.
 
 **v7.10.3 (2026-10-18)** không coi "tạo được process" là lệnh hệ thống đã thành công:
 - Công cụ hệ thống/âm lượng/chụp màn hình kiểm mã thoát. Chuỗi dự phòng dùng
@@ -131,7 +145,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1585 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1676 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -192,17 +206,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1585 test)
-    └── tests/             # 1585 test (v7.2 - v7.10.3 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1676 test)
+    └── tests/             # 1676 test (v7.2 - v7.10.4 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1585 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1676 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1585 pass, 0 fail, 0 skip
+# Ket qua: 1676 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.3
+main.py - Trợ lý ảo tiếng Việt v7.10.4
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -40,7 +40,9 @@ import json
 import logging
 import signal
 import sys
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TextIO
 
 from _version import __version__
@@ -94,6 +96,7 @@ YES_WORDS = {"có", "co", "ừ", "u", "ủ", "đúng", "dung", "ok", "y", "yes",
 
 HISTORY_PATH = data_path(".history.json")   # v7.3: thu muc du lieu - xem paths.py
 MAX_HISTORY = 200
+_HISTORY_LOCK = threading.RLock()
 
 
 @dataclass
@@ -165,34 +168,46 @@ def parse_args() -> argparse.Namespace:
 
 
 # --- History ---
-def load_history() -> list[str]:
-    if not HISTORY_PATH.exists():
-        return []
+def _read_history_file() -> list[str] | None:
+    """None means unreadable/unknown format, not an empty or missing history."""
     try:
-        with HISTORY_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return [entry for entry in data if isinstance(entry, str)][-MAX_HISTORY:] \
-                if isinstance(data, list) else []
-    except Exception:
+        with Path(HISTORY_PATH).open("r", encoding="utf-8-sig") as stream:
+            data = json.load(stream)
+        if not isinstance(data, list):
+            logger.warning("History phải là danh sách; giữ nguyên file để sửa.")
+            return None
+        return [entry for entry in data if isinstance(entry, str)][-MAX_HISTORY:]
+    except FileNotFoundError:
         return []
+    except Exception as error:
+        logger.warning("Không đọc được history; giữ nguyên file: %s", error)
+        return None
+
+
+def load_history() -> list[str]:
+    with _HISTORY_LOCK:
+        return _read_history_file() or []
 
 
 def save_history_entry(text: str) -> None:
-    if not text or len(text) < 2:
+    if not isinstance(text, str) or len(text) < 2:
         return
-    try:
-        hist = load_history()
-        hist.append(text)
-        # Giữ tối đa MAX_HISTORY, bỏ trùng liên tiếp
-        if len(hist) >= 2 and hist[-1] == hist[-2]:
-            hist.pop()
-        hist = hist[-MAX_HISTORY:]
-        # v7.4: open("w") cắt file ngay lập tức - tiến trình chết giữa chừng
-        # để lại .history.json rỗng/hỏng và mất luôn lịch sử cũ. Dùng hàm ghi
-        # atomic chung của paths.py.
-        atomic_write_json(HISTORY_PATH, hist, prefix=".history_tmp_")
-    except Exception as e:
-        logger.debug("Không lưu được history: %s", e)
+    with _HISTORY_LOCK:
+        try:
+            hist = _read_history_file()
+            if hist is None:
+                logger.warning(
+                    "Không ghi đè history chưa đọc được; hãy sửa hoặc di chuyển file cũ."
+                )
+                return
+            hist.append(text)
+            if len(hist) >= 2 and hist[-1] == hist[-2]:
+                hist.pop()
+            # Keep one read/modify/atomic-write operation inside the thread lock.
+            # This is not an inter-process lock.
+            atomic_write_json(HISTORY_PATH, hist[-MAX_HISTORY:], prefix=".history_tmp_")
+        except Exception as error:
+            logger.debug("Không lưu được history: %s", error)
 
 
 def print_history() -> None:

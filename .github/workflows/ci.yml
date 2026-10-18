@@ -238,7 +238,7 @@ jobs:
                         assert len(body) == 1 and body[0]["status"] == "unknown", body
         print("installed metadata/API/CLI versions match; JSON stdout is clean")
         PY
-    - name: Installed feedback, context, confidence, reminder and utility safety
+    - name: Installed assistant safety and persistence
       shell: bash
       working-directory: ${{ runner.temp }}
       run: |
@@ -251,7 +251,9 @@ jobs:
         import tempfile
         from unittest import mock
         import vi_voice_assistant.executor as executor
+        import vi_voice_assistant.main as cli
         import vi_voice_assistant.nlu_advanced as nlu
+        import vi_voice_assistant.paths as storage
         from vi_voice_assistant.csv_utils import read_keyed_csv
 
         memory = nlu.ContextMemory(0)
@@ -331,7 +333,47 @@ jobs:
             assert nlu._as_confidence(bad) == 0.0
             assert nlu.NLU._judge({"intent": "system_control", "target": "lock",
                                    "confidence": bad}) == "unknown"
-        print("installed feedback/context/confidence/reminder/utility safety passed")
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
+            root = pathlib.Path(directory)
+            history = root / "history.json"
+            patches.enter_context(mock.patch.object(cli, "HISTORY_PATH", history))
+            history.write_text('["previous"]', encoding="utf-8-sig")
+            cli.save_history_entry("next command")
+            assert cli.load_history() == ["previous", "next command"]
+            history.write_bytes(b'{"broken"')
+            cli.save_history_entry("must not erase")
+            assert history.read_bytes() == b'{"broken"'
+            source, target = root / "legacy" / "package", root / "data"
+            source.mkdir(parents=True)
+            target.mkdir()
+            patches.enter_context(mock.patch.object(storage, "PACKAGE_DIR", source))
+            patches.enter_context(mock.patch.object(storage, "data_dir", lambda: target))
+            (source / "config.json").write_bytes(b'{"legacy":true}')
+            assert storage.migrate_from_package_dir(("config.json",)) == ["config.json"]
+            (source.parent / "private.txt").write_bytes(b"private")
+            assert storage.migrate_from_package_dir(("../private.txt",)) == []
+            assert not (root / "private.txt").exists()
+            created = target / "created.json"
+            assert storage.create_json_if_absent(created, {"first": True}) is True
+            saved = created.read_bytes()
+            assert storage.create_json_if_absent(created, {"second": True}) is False
+            assert created.read_bytes() == saved
+        ran = []
+
+        class BadText:
+            def __str__(self):
+                raise ValueError("unstringifiable target")
+
+        def action(*args):
+            ran.append(args)
+            return True
+
+        with mock.patch.dict(executor.HANDLERS, {"open_app": action}):
+            assert executor.execute_command("1" * 5000) is False
+            assert executor.execute_command({"intent": "open_app", "target": BadText(),
+                                             "confidence": 1.0}) is False
+        assert ran == []
+        print("installed assistant safety and persistence passed")
         PY
     - name: User data must NOT be written into site-packages
       shell: bash

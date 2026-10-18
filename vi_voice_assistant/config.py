@@ -1,5 +1,5 @@
 """
-config.py
+config.py v7.10.4
 ---------
 Nạp cấu hình từ config.json.
 
@@ -51,7 +51,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from paths import atomic_write_json, data_path
+from paths import atomic_write_json, create_json_if_absent, data_path
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -418,11 +418,14 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
                    and path.resolve() != shipped.resolve() and shipped.is_file()
                    else copy.deepcopy(DEFAULT_CONFIG))
         try:
-            save_config(initial, path)
+            if create_json_if_absent(path, initial):
+                return initial
         except OSError as e:
             safe_print(f"[CẢNH BÁO] Không tạo được file cấu hình '{path}': {e}")
             safe_print("   Chạy tiếp với cấu hình mặc định (chưa lưu).")
-        return initial
+            return initial
+        # A concurrent creator won: read/validate its bytes below, not our
+        # defaults. Never replace or silently ignore that writer's config.
 
     try:
         with path.open("r", encoding="utf-8-sig") as f:

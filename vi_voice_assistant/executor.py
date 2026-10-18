@@ -1,5 +1,5 @@
 """
-executor.py v7.10.3
+executor.py v7.10.4
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -1743,12 +1743,30 @@ def _read_confidence(raw: object) -> float:
     return value
 
 
+def _command_target(raw: object) -> str | None:
+    """None signals conversion failure, distinct from a valid empty target."""
+    try:
+        return "" if raw is None else str(raw).strip()
+    except Exception:
+        safe_print("[TỪ CHỐI] Trường 'target' không chuyển được thành văn bản.")
+        logger.warning("Không chuyển được target kiểu %s; không thực thi.", type(raw).__name__)
+        return None
+
+
+def _intent_label(raw: object) -> str:
+    """A malformed label must not break the message explaining its rejection."""
+    try:
+        return str(raw)
+    except Exception:
+        return f"<{type(raw).__name__}>"
+
+
 def execute_command(intent_json: dict[str, Any] | str) -> bool:
     if isinstance(intent_json, str):
         try:
             intent_json = json.loads(intent_json)
-        except json.JSONDecodeError:
-            safe_print("[LỖI] Đầu vào không phải JSON hợp lệ.")
+        except (ValueError, RecursionError):
+            safe_print("[LỖI] Đầu vào không phải JSON hợp lệ hoặc vượt giới hạn bộ đọc.")
             return False
 
     if not isinstance(intent_json, dict):
@@ -1762,14 +1780,17 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
     raw_target = intent_json.get("target")
     # Ep kieu TRUOC khi strip: `target` co the la so (model goi len hoac intent
     # khac truyen vao), ma `(2026 or "").strip()` thi nang nhu chinh no.
-    target = "" if raw_target is None else str(raw_target).strip()
+    target = _command_target(raw_target)
+    if target is None:
+        return False
     raw_confidence = intent_json.get("confidence", 1.0)
     confidence = _read_confidence(raw_confidence)
 
     handler = HANDLERS.get(intent)
     if handler is None:
-        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {raw_intent}")
-        logger.warning("Không hiểu ý định: %s", raw_intent)
+        label = _intent_label(raw_intent)
+        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {label}")
+        logger.warning("Không hiểu ý định: %s", label)
         return action_unknown(target)
 
     if confidence <= 0.0 or confidence < CONFIDENCE_THRESHOLD:

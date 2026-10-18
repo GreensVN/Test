@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## v7.10.4 (2026-10-18) - giữ history cũ, migration containment và khởi tạo không ghi đè
+
+### Lỗi tái hiện và sửa
+
+- **History mất dữ liệu:** file UTF-8 BOM từng bị xem là lỗi rồi thay bằng lịch
+  sử chỉ có câu mới. Nay đọc `utf-8-sig`; phân biệt file thiếu với file không
+  đọc được/JSON hỏng/sai root. File hỏng được giữ nguyên, append bỏ qua và cảnh
+  báo để người dùng sao lưu/sửa/di chuyển, không giả rằng dữ liệu cũ là rỗng.
+- **History chạy đua:** khoá read/modify/atomic-write giữa các thread dùng cùng
+  module; không để snapshot cũ ghi đè entry thread khác. Giữ giới hạn 200,
+  lọc entry sai kiểu, bỏ trùng liên tiếp; input không phải string không làm
+  crash hoặc chèn object vào lịch sử. Path string và Path đều được đọc đúng.
+- **Migration thoát vùng:** helper public trước đây ghép `PACKAGE_DIR / name`
+  và `data_dir / name` trần. Nay kiểm tên tương đối portable trước khi probe,
+  containment và symlink ở cả root nguồn/đích; không đọc/copy theo đường thoát.
+  Cho phép subdirectory nằm trong vùng. `data_path` cũng chặn Windows-rooted
+  path trên POSIX, không chỉ drive/UNC.
+- **File mới ghi đè file người dùng:** check `exists()` rồi copy/save có thể
+  thay thế file vừa được bên khác tạo. Thêm `create_json_if_absent()` và publisher
+  bytes: serialize/encode trước I/O, temp private cùng thư mục, write/flush/fsync,
+  đóng handle rồi rename no-replace (Windows) hoặc hardlink (POSIX). File đầy
+  đủ mới xuất hiện; file/directory/dangling symlink có sẵn không bị thay thế.
+  Không dùng fallback ghi đè; lỗi allocation không bị nhầm thành xung đột đích.
+- **Config lần đầu:** nếu bên tạo khác thắng, đọc/validate file của bên đó,
+  không trả về/ghi lên bằng defaults của mình. File thắng cuộc sai JSON cũng
+  được giữ nguyên và báo lỗi. Thiếu primitive no-replace thì cảnh báo, giữ
+  config trong RAM; migration lỗi thì bỏ qua và dọn temp best effort.
+- **Command ingress:** JSON decoder có thể ném ValueError do integer quá dài
+  hoặc RecursionError do nesting. Nay từ chối có kiểm soát. Target lỗi `str()`
+  không biến thành target rỗng rồi dispatch; nhãn intent lỗi không làm hỏng
+  chính thông báo từ chối. Giữ các quy tắc ép target hợp lệ trước đó.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **91 ca** trong 3 file `test_v7104_*.py`; **68/90 ca đầu thất bại trước
+  bản sửa**, 22 ca là đối chứng. Tổng **1676**, giữ các test trước đó.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1676 passed**; runner nhúng:
+  **1676 pass, 0 fail, 0 skip**. Test thật 2/8 thread append history, 2/6 thread
+  cùng migrate, deterministic race lúc user tạo config, static symlink escape,
+  fsync/publication/read lỗi, JSON/đối tượng sai kiểu.
+- Ruff/mypy sạch; build wheel/sdist, phiên bản/JSON/privacy và cả 5 Python script
+  của install job chạy trên bản cài không optional deps từ ngoài repo.
+- No-replace cần primitive filesystem phù hợp. POSIX không hỗ trợ hardlink sẽ
+  không adopt/khởi tạo file, không âm thầm dùng copy ghi đè. Chưa phòng attacker
+  đổi parent directory/symlink đồng thời với thao tác; metadata fsync best effort,
+  không phải transaction chống mất điện.
+- History lock chỉ phối hợp thread cùng module, không bảo vệ nhiều process hay
+  caller tự ghi file. History/reminders vẫn chưa có inter-process lock; lịch
+  tạm dừng vẫn cần restart/`restore_reminders()` để thử lại, chưa có retry nền.
+- Xác minh Linux/Python 3.11; chưa chạy native Windows/macOS/WSL, micro, audio hoặc
+  OS action thật. GitHub Actions chưa có run ở lần kiểm tra; integration trước
+  đó bị từ chối dispatch HTTP 403. Kết quả local không thay matrix remote.
+
 ## v7.10.3 (2026-10-18) - kết quả công cụ thật và confidence không tự nâng lên 100%
 
 ### Lỗi tái hiện và sửa

@@ -1,5 +1,5 @@
 """
-paths.py - Nơi lưu DỮ LIỆU NGƯỜI DÙNG + ghi file an toàn (v7.3 - v7.6)
+paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.4)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -62,6 +62,7 @@ from typing import Any
 __all__ = [
     "PACKAGE_DIR",
     "app_name",
+    "create_json_if_absent",
     "data_dir",
     "data_path",
     "describe",
@@ -150,31 +151,34 @@ def data_dir() -> Path:
     return chosen
 
 
-def data_path(filename: str | Path) -> Path:
-    """Đường dẫn một file dữ liệu (``data_path("config.json")``).
-
-    v7.8: giữ file trong thư mục dữ liệu. Trước đây là `data_dir() / filename`
-    trần, mà `Path("/a") / "/etc/hosts"` ra `/etc/hosts` (đường dẫn tuyệt đối
-    thay thế hẳn phần trước) và `../..` trèo ra ngoài - tức một tên file đi vào
-    từ dữ liệu bên ngoài có thể ghi đè bất cứ thứ gì máy này cho phép. Mọi lời
-    gọi trong dự án đều truyền hằng số, nên nay đây là hàng rào an toàn quanh
-    ranh giới dữ liệu. Cho phép thư mục con nằm trong vùng dữ liệu; từ chối
-    đường dẫn tuyệt đối, ổ đĩa Windows, NUL, `..` và symlink trỏ ra ngoài.
-    """
+def _relative_data_name(filename: str | Path) -> Path:
+    """Reject portable absolute/traversing names before any filesystem probe."""
     raw = str(filename)
-    name = Path(raw)
-    portable = PureWindowsPath(raw)
-    if (not name.parts or "\x00" in raw or name.anchor or portable.drive
+    name, portable = Path(raw), PureWindowsPath(raw)
+    if (not name.parts or "\x00" in raw or name.anchor or portable.anchor or portable.drive
             or ".." in name.parts or ".." in portable.parts):
-        raise ValueError(f"data_path() cần đường dẫn tương đối trong thư mục dữ liệu: {raw!r}")
-    base = data_dir()
+        raise ValueError(f"Cần đường dẫn tương đối trong thư mục dữ liệu: {raw!r}")
+    return name
+
+
+def _path_within(base: Path, name: Path) -> Path:
     candidate = base / name
     try:
         candidate.resolve().relative_to(base.resolve())
-    except (OSError, ValueError, RuntimeError) as e:
-        raise ValueError(f"data_path() không cho phép thoát ra ngoài {base}: {raw!r}") from e
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ValueError(f"Không cho phép thoát ra ngoài {base}: {str(name)!r}") from error
     return candidate
 
+
+def data_path(filename: str | Path) -> Path:
+    """Return a contained path; reject traversal, drives and static symlink escapes.
+
+    Validate before resolving data_dir(), so an invalid name causes no startup
+    directory creation. Both native and Windows-rooted paths are refused on
+    every platform; contained relative subdirectories remain supported.
+    """
+    name = _relative_data_name(filename)
+    return _path_within(data_dir(), name)
 
 
 def describe() -> dict[str, object]:
@@ -195,26 +199,93 @@ def reset_cache() -> None:
 
 
 def migrate_from_package_dir(names: tuple[str, ...]) -> list[str]:
-    """Sao chép dữ liệu cũ từ thư mục package sang thư mục người dùng.
+    """Adopt contained legacy files, without ever replacing a concurrent winner.
 
-    Chỉ áp dụng khi thư mục package KHÔNG phải nơi đang dùng và file đích chưa
-    tồn tại - tức một lần duy nhất, không bao giờ ghi đè dữ liệu mới. Người dùng
-    chuyển từ "chạy source" sang "pip install" sẽ không mất lời nhắc/logic đã
-    dạy, thay vì âm thầm bắt đầu lại từ đầu.
+    Source and destination symlinks must stay inside their respective roots.
+    Publication uses a complete temporary file and a no-replace primitive;
+    unsupported filesystems fail closed instead of using an overwriting copy.
     """
     target_dir = data_dir()
     moved: list[str] = []
     if target_dir == PACKAGE_DIR:
         return moved
     for name in names:
-        src, dst = PACKAGE_DIR / name, target_dir / name
         try:
-            if src.is_file() and not dst.exists():
-                dst.write_bytes(src.read_bytes())
+            relative = _relative_data_name(name)
+            source = _path_within(PACKAGE_DIR, relative)
+            target = _path_within(target_dir, relative)
+            if os.path.lexists(target):
+                continue
+            if source.is_file() and _create_bytes_if_absent(target, source.read_bytes()):
                 moved.append(name)
-        except OSError:
-            continue          # không có quyền đọc file cũ -> bỏ qua, chạy tiếp
+        except (OSError, ValueError, TypeError) as error:
+            logging.getLogger(__name__).warning("Không nhận dữ liệu cũ %r: %s", name, error)
     return moved
+
+
+def _fsync_directory(parent: Path) -> None:
+    """Best-effort metadata sync; not all filesystems support directory fsync."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _create_bytes_if_absent(path: str | Path, payload: bytes) -> bool:
+    """Publish complete bytes atomically, never replacing an existing pathname.
+
+    NT rename refuses an existing destination; POSIX hard-link publication is
+    exclusive. There is intentionally no overwriting fallback if unsupported.
+    Parent-directory replacement by a hostile writer is outside this contract.
+    """
+    target = Path(path)
+    if os.path.lexists(target):
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=str(target.parent),
+                                         prefix=".adopt_tmp_", delete=False) as stream:
+            temporary = stream.name
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            if os.name == "nt":
+                os.rename(temporary, target)
+                temporary = None
+            else:
+                os.link(temporary, target)
+        except FileExistsError:
+            return False  # Only a publication conflict means another writer won.
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.getLogger(__name__).warning("Không dọn được %s: %s", temporary, error)
+    _fsync_directory(target.parent)
+    return True
+
+
+def create_json_if_absent(path: str | Path, payload: Any) -> bool:
+    """Strict JSON first creation: True if published, False if already present.
+
+    Serialize/encode before touching disk. New files are private (0600 on
+    POSIX). Existing files, directories and dangling symlinks are not replaced.
+    """
+    text = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    return _create_bytes_if_absent(path, text.encode("utf-8"))
 
 
 def _writable(directory: Path) -> bool:
@@ -271,17 +342,7 @@ def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = No
         except OSError as cleanup_error:
             logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
         raise
-    if os.name != "nt":
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(dir_fd)
-        except OSError:
-            pass
-        finally:
-            os.close(dir_fd)
+    _fsync_directory(parent)
 
 
 def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = None,
