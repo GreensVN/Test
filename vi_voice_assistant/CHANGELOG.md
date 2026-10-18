@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## v7.10.2 (2026-10-18) - phục hồi timer không mất lịch, callback có thế hệ
+
+### Lỗi tái hiện và sửa
+
+- **Callback cũ/đúp:** ID lịch không phân biệt được các chặng timer hoặc một
+  lịch vừa huỷ rồi phục hồi cùng ID. Mỗi lần bật timer nay có token thế hệ;
+  callback sai thế hệ không tạo chặng mới, phát thông báo hoặc xoá lịch mới.
+- **Khôi phục mất dữ liệu:** thiếu tài nguyên tạo thread khi restore có thể
+  làm `reminders.json` bị ghi lại thành rỗng. Bản ghi tương lai nay còn trong
+  registry và file dưới trạng thái tạm dừng; `restore_reminders()` có thể thử
+  lại, không nhân đôi timer đang chạy. Không làm mất bản ghi khi retry tiếp tục lỗi.
+- **Chặng/lần lặp sau bị mất:** lỗi bật timer nối tiếp không còn thoát callback
+  bằng traceback rồi để handle đã chết trông như còn hoạt động. Lần lặp tiếp
+  theo vẫn được giữ nếu không bật được timer. Danh sách ghi rõ **TẠM DỪNG**;
+  khởi động lại để thử khôi phục, vẫn có thể huỷ. Chưa có vòng tự retry nền.
+- **Lỗi handle:** `cancel()` lỗi không được ngăn thông báo đến giờ hay xử lý
+  lịch lặp. Handle tạo dở được huỷ; token vô hiệu ngay khi start thất bại.
+  Yêu cầu đặt lịch mới thất bại vẫn rollback, không báo đặt thành công giả.
+- **Thời gian:** bỏ lịch một lần đã hết hạn khi retry bản ghi tạm dừng, nhưng
+  vẫn đưa lịch lặp tới mốc tương lai. Clamp integer quá lớn khi chuyển sang
+  `float()` bị tràn; giới hạn datetime trả `None` thay vì `OverflowError`. Chỉ đổi
+  `Z` ở cuối chuỗi ISO, không sửa ký tự phân cách ngày/giờ hợp lệ.
+- **CI:** bỏ giới hạn base `main` của `pull_request`, tránh bỏ qua PR xếp chồng.
+  Thêm kiểm tra callback/restore lỗi trên wheel đã cài từ ngoài repository.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **55 ca** trong 2 file `test_v7102_*.py`; **37/46 ca đầu thất bại trước
+  bản sửa**, 9 ca là đối chứng. Tổng bộ test **1482**; giữ mọi test trước đó.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1482 passed**; runner nhúng:
+  **1482 pass, 0 fail, 0 skip**. Có fault injection start/cancel/write lỗi,
+  callback cũ sau restore cùng ID và 2/8 thread cùng gọi callback một chặng.
+- Ruff/mypy sạch; build wheel/sdist, kiểm tra phiên bản/JSON và các bước safety
+  trên bản cài sạch không optional deps, từ thư mục ngoài repo.
+- Kiểm chứng tại Linux/Python 3.11, chưa xác minh thiết bị Windows/macOS, micro,
+  âm thanh hoặc hành động OS thật. Mock timer không chứng minh độ chính xác
+  thời gian thực; nhắc nhở cần tiến trình chạy, lịch tạm dừng chưa được phục vụ.
+- Không có GitHub Actions run tại thời điểm kiểm tra. Dispatch trả HTTP 403
+  `Resource not accessible by integration`; cần quyền Actions ở kết nối GitHub.
+  Trạng thái thành công của bot review không thay thế CI chạy thật.
+- History/reminders vẫn chưa có khoá liên tiến trình; không chạy nhiều phiên
+  cùng ghi một thư mục dữ liệu. Khóa CSV vẫn là advisory, không phải transaction.
+
 ## v7.10.1 (2026-10-17) - phản hồi đáng tin, ngữ cảnh không sửa dữ liệu và ngưỡng 0
 
 ### Lỗi tái hiện và sửa

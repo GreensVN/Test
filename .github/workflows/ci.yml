@@ -3,8 +3,8 @@ name: CI - Trợ lý ảo tiếng Việt
 on:
   push:
     branches: [ main, arena/* ]
+  # Stacked PRs target arena/* rather than main; do not silently skip them.
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -238,13 +238,18 @@ jobs:
                         assert len(body) == 1 and body[0]["status"] == "unknown", body
         print("installed metadata/API/CLI versions match; JSON stdout is clean")
         PY
-    - name: Installed feedback, context and zero-threshold safety
+    - name: Installed feedback, context, confidence and reminder recovery
       shell: bash
       working-directory: ${{ runner.temp }}
       run: |
         python - <<'PY'
+        import contextlib
+        import datetime
+        import json
         import pathlib
         import tempfile
+        from unittest import mock
+        import vi_voice_assistant.executor as executor
         import vi_voice_assistant.nlu_advanced as nlu
         from vi_voice_assistant.csv_utils import read_keyed_csv
 
@@ -272,7 +277,48 @@ jobs:
             nlu.FEEDBACK_PATH = str(blocked)
             message = nlu.NLU.__new__(nlu.NLU).teach("mở chrome", "open_app")
             assert "Đã ghi nhớ" not in message
-        print("installed feedback/context/zero-confidence safety passed")
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
+            path = pathlib.Path(directory) / "reminders.json"
+            timers, fail_start = [], [False]
+
+            class Timer:
+                def __init__(self, delay, callback, args=()):
+                    self.callback, self.args = callback, args
+                    self.daemon = False
+                    timers.append(self)
+
+                def start(self):
+                    if fail_start[0]:
+                        raise RuntimeError("simulated thread exhaustion")
+
+                def cancel(self):
+                    pass
+
+                def fire(self):
+                    self.callback(*self.args)
+
+            patches.enter_context(mock.patch.object(executor.threading, "Timer", Timer))
+            patches.enter_context(mock.patch.object(executor, "ACTIVE_REMINDERS", []))
+            patches.enter_context(mock.patch.object(executor, "REMINDERS_PATH", path))
+            executor._schedule_reminder("saved", datetime.datetime.now()
+                                        + datetime.timedelta(days=3))
+            timers[0].fire()
+            timers[0].fire()
+            assert len(timers) == 2 and len(executor.ACTIVE_REMINDERS) == 1
+            fail_start[0] = True
+            timers[1].fire()
+            assert executor.ACTIVE_REMINDERS[0]["timer"] is None
+            assert executor.ACTIVE_REMINDERS[0]["_timer_error"]
+            saved = path.read_bytes()
+            executor.cancel_reminder()
+            path.write_bytes(saved)
+            assert executor.restore_reminders() == 0
+            assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+            fail_start[0] = False
+            assert executor.restore_reminders() == 1
+            assert executor.restore_reminders() == 0
+            executor.cancel_reminder()
+        print("installed feedback/context/confidence/reminder recovery passed")
         PY
     - name: User data must NOT be written into site-packages
       shell: bash

@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.10.1
+# Trợ lý ảo tiếng Việt v7.10.2
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1427 pass](https://img.shields.io/badge/tests-1427%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1482 pass](https://img.shields.io/badge/tests-1482%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,17 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.10.2 (2026-10-18)** bảo vệ phần phục hồi nhắc nhở khi timer lỗi:
+- Callback gắn với từng thế hệ timer: callback cũ/đúp không bật thêm timer,
+  không đụng vào lời nhắc vừa khôi phục với cùng ID.
+- Không mất lịch tương lai/lịch lặp khi thiếu tài nguyên tạo timer. Giữ bản ghi
+  **tạm dừng**, báo rõ trong danh sách; khởi động lại để thử khôi phục. Lịch tạm
+  dừng vẫn huỷ được; không giả rằng nó đang chạy và không có vòng tự retry nền.
+- Lỗi `cancel()` không chặn thông báo đến giờ; số nguyên rất lớn và biên năm
+  9999 không làm sập handler. Chỉ chuẩn hoá `Z` cuối chuỗi ISO.
+- CI nhận cả PR xếp chồng nhắm vào nhánh khác `main`.
+- **1482 ca kiểm thử**, thêm **55** ca; giữ core stdlib-only.
 
 **v7.10.1 (2026-10-17)** tiếp tục sửa các ranh giới chưa được bảo vệ:
 - Ngưỡng cấu hình bằng 0 vẫn từ chối confidence 0/không hợp lệ; `--yes` không
@@ -108,7 +119,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1427 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1482 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -169,17 +180,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1427 test)
-    └── tests/             # 1427 test (v7.2 - v7.10.1 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1482 test)
+    └── tests/             # 1482 test (v7.2 - v7.10.2 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1427 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1482 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1427 pass, 0 fail, 0 skip
+# Ket qua: 1482 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

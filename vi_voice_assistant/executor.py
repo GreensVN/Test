@@ -1,5 +1,5 @@
 """
-executor.py v7.8
+executor.py v7.10.2
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -993,7 +993,9 @@ def _local_datetime(value: object) -> datetime.datetime | None:
     """Đổi ISO có timezone về giờ địa phương; nội bộ chỉ dùng datetime naive."""
     if isinstance(value, str):
         try:
-            value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            value = datetime.datetime.fromisoformat(
+                value[:-1] + "+00:00" if value.endswith("Z") else value
+            )
         except ValueError:
             return None
     if not isinstance(value, datetime.datetime):
@@ -1137,33 +1139,80 @@ def _save_reminders() -> bool:
         return False
 
 
-def _arm_timer(task: str, delay: float, reminder_id: str,
-               repeat: dict[str, Any] | None,
-               continuation: bool = False) -> threading.Timer:
-    """Bật một chặng đếm ngược.
-
-    `continuation=True` là CHẶNG NỐI TIẾP của một lịch dài hơn trần Timer (lặp
-    hằng tháng), KHÔNG phải lần nhắc thật: nó chỉ bật chặng kế tiếp, không báo,
-    không hẹn lại. Không phân biệt thì mỗi chặng bắn một lần nhắc và hẹn thêm
-    một lịch mới - nhắc hằng tháng thành nhắc vài lần mỗi tháng.
-    """
-    timer = threading.Timer(delay, _fire_reminder,
-                            args=[task, reminder_id, repeat, continuation])
-    timer.daemon = True
-    timer.start()
-    return timer
+def _cancel_timer(timer: object, reminder_id: object) -> None:
+    """A broken handle must not block registry cleanup or notification."""
+    cancel = getattr(timer, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception as error:
+            logger.warning("Không huỷ được timer của nhắc nhở %r: %s", reminder_id, error)
 
 
-def _start_reminder_timer(entry: dict[str, Any], delay: float) -> None:
-    """Chỉ MỘT timer đang chạy cho mỗi lời nhắc, kể cả lịch dài nhiều năm."""
-    entry["timer"] = _arm_timer(
-        entry["task"], min(delay, _MAX_TIMER_SECONDS), entry["id"],
-        entry.get("repeat"), continuation=delay > _MAX_TIMER_SECONDS,
+def _warn_paused_reminder(entry: dict[str, Any]) -> None:
+    safe_print(
+        f"[CẢNH BÁO] Nhắc nhở '{entry['task']}' tạm dừng vì không tạo được timer. "
+        "Khởi động lại trợ lý để thử khôi phục."
     )
 
 
+def _arm_timer(task: str, delay: float, reminder_id: str,
+               repeat: dict[str, Any] | None,
+               continuation: bool = False, *, timer_token: object = None) -> threading.Timer:
+    """Bật một chặng, gắn callback với đúng thế hệ timer (không chỉ ID lịch).
+
+    Chặng nối tiếp không được phát thông báo hoặc tạo lịch lặp mới. Callback
+    cũ có thể còn chạy sau cancel/restore, nên phải kiểm tra cả token thế hệ.
+    """
+    callback = functools.partial(_fire_reminder, timer_token=timer_token)
+    timer = threading.Timer(delay, callback,
+                            args=[task, reminder_id, repeat, continuation])
+    timer.daemon = True
+    try:
+        timer.start()
+    except (OSError, RuntimeError, OverflowError):
+        _cancel_timer(timer, reminder_id)
+        raise
+    return timer
+
+
+def _start_reminder_timer(entry: dict[str, Any], delay: float) -> bool:
+    """Create one generation; retain an explicitly paused record on failure."""
+    token = object()
+    entry["_timer_token"] = token
+    entry["timer"] = None
+    try:
+        entry["timer"] = _arm_timer(
+            entry["task"], min(delay, _MAX_TIMER_SECONDS), entry["id"],
+            entry.get("repeat"), continuation=delay > _MAX_TIMER_SECONDS, timer_token=token,
+        )
+    except (OSError, RuntimeError, OverflowError) as error:
+        entry.pop("_timer_token", None)
+        entry["_timer_error"] = str(error) or type(error).__name__
+        logger.warning("Không tạo được timer nhắc nhở %r: %s", entry["id"], error)
+        return False
+    entry.pop("_timer_error", None)
+    return True
+
+
+def _register_reminder(entry: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (registered, retrying) without replacing a live timer.
+
+    Caller holds ACTIVE_REMINDERS_LOCK. A paused ID remains cancellable and
+    persists just like other pending records, including after a failed retry.
+    """
+    existing = next((item for item in ACTIVE_REMINDERS if item.get("id") == entry["id"]), None)
+    if existing is not None:
+        if not existing.get("_timer_error") or existing.get("timer") is not None:
+            return False, False
+        ACTIVE_REMINDERS.remove(existing)
+    ACTIVE_REMINDERS.append(entry)
+    return True, existing is not None
+
+
 def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True,
-                       repeat: object = None, *, reminder_id: str | None = None) -> str | None:
+                       repeat: object = None, *, reminder_id: str | None = None,
+                       keep_on_failure: bool = False) -> str | None:
     at = _local_datetime(run_at)
     if at is None:
         return None
@@ -1176,19 +1225,27 @@ def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = Tru
     if clean_repeat:
         entry["repeat"] = clean_repeat
     with ACTIVE_REMINDERS_LOCK:
-        if any(item.get("id") == reminder_id for item in ACTIVE_REMINDERS):
+        registered, retrying = _register_reminder(entry)
+        if not registered:
             return None
-        # Đăng ký trước khi start; giữ lock tới khi có handle để huỷ.
-        ACTIVE_REMINDERS.append(entry)
-        try:
-            _start_reminder_timer(entry, delay)
-        except (OSError, RuntimeError, OverflowError) as e:
-            ACTIVE_REMINDERS.remove(entry)
-            logger.warning("Không tạo được timer nhắc nhở: %s", e)
-            return None
+        started = _start_reminder_timer(entry, delay)
+        if not started:
+            if not (keep_on_failure or retrying):
+                ACTIVE_REMINDERS.remove(entry)
+                return None
+            _warn_paused_reminder(entry)
         if persist and not _save_reminders():
             safe_print("[CẢNH BÁO] Lời nhắc chỉ còn trong phiên này vì không lưu được xuống đĩa.")
-    return reminder_id
+    return reminder_id if started else None
+
+
+def _discard_paused_reminder(reminder_id: str | None) -> None:
+    """An expired paused one-shot must not be saved again by a later retry."""
+    with ACTIVE_REMINDERS_LOCK:
+        for entry in list(ACTIVE_REMINDERS):
+            if (entry.get("id") == reminder_id and entry.get("_timer_error")
+                    and entry.get("timer") is None):
+                ACTIVE_REMINDERS.remove(entry)
 
 
 def _restore_reminder(item: object) -> bool:
@@ -1199,16 +1256,18 @@ def _restore_reminder(item: object) -> bool:
     if run_at is None:
         logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
         return False
+    rid = item.get("id")
+    rid = rid if isinstance(rid, str) and rid else None
     repeat = _coerce_repeat(item.get("repeat"))
     now = datetime.datetime.now()
     if repeat and run_at <= now:
         run_at = _next_future_occurrence(run_at, repeat, now)
-    if run_at is None:
+    if run_at is None or run_at <= now:
+        _discard_paused_reminder(rid)
         return False
-    rid = item.get("id")
-    rid = rid if isinstance(rid, str) and rid else None
     return _schedule_reminder(as_text(item.get("task")) or "báo thức", run_at,
-                              persist=False, repeat=repeat, reminder_id=rid) is not None
+                              persist=False, repeat=repeat, reminder_id=rid,
+                              keep_on_failure=True) is not None
 
 
 def restore_reminders() -> int:
@@ -1246,13 +1305,7 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
             task = str(item.get("task") or "")
             if key and key not in strip_diacritics(task.lower()) and key != item.get("id"):
                 continue
-            timer = item.get("timer")
-            cancel = getattr(timer, "cancel", None)
-            if callable(cancel):
-                try:
-                    cancel()
-                except Exception as e:  # pragma: no cover - timer lạ không được làm hỏng lệnh huỷ
-                    logger.warning("Không huỷ được timer của nhắc nhở %r: %s", item.get("id"), e)
+            _cancel_timer(item.get("timer"), item.get("id"))
             try:
                 ACTIVE_REMINDERS.remove(item)
             except ValueError:  # pragma: no cover - đã bị gỡ ở nơi khác
@@ -1263,28 +1316,32 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
     return removed
 
 
-def _continue_reminder(reminder_id: str | None) -> None:
+def _continue_reminder(reminder_id: str | None, *, timer_token: object = None) -> None:
     """Hết một chặng: tra lại deadline, không tạo timer mồ côi sau khi huỷ."""
     with ACTIVE_REMINDERS_LOCK:
         entry = next((item for item in ACTIVE_REMINDERS
                       if item.get("id") == reminder_id), None)
-        if entry is None:
+        if entry is None or (timer_token is not None
+                             and entry.get("_timer_token") is not timer_token):
             return
         at = _reminder_at(entry)
         if at is None:
             return
         delay = (at - datetime.datetime.now()).total_seconds()
         if delay > 0:
-            _start_reminder_timer(entry, delay)
+            if not _start_reminder_timer(entry, delay):
+                _save_reminders()
+                _warn_paused_reminder(entry)
             return
     # Máy ngủ/đồng hồ nhảy qua deadline: bắn đúng một lần, không chờ thêm 24h.
-    _fire_reminder(entry["task"], reminder_id, entry.get("repeat"))
+    _fire_reminder(entry["task"], reminder_id, entry.get("repeat"), timer_token=timer_token)
 
 
 def _fire_reminder(task: str, reminder_id: str | None = None,
-                   repeat: object = None, continuation: bool = False) -> None:
+                   repeat: object = None, continuation: bool = False,
+                   *, timer_token: object = None) -> None:
     if continuation:
-        _continue_reminder(reminder_id)
+        _continue_reminder(reminder_id, timer_token=timer_token)
         return
     clean_repeat = _coerce_repeat(repeat)
     if reminder_id is not None:
@@ -1293,18 +1350,18 @@ def _fire_reminder(task: str, reminder_id: str | None = None,
                          if item.get("id") == reminder_id), None)
             # Timer.cancel() không thể dừng callback đã bắt đầu. Kiểm tra id
             # là hàng rào cuối: lịch đã huỷ/đã bắn không được báo thêm lần nữa.
-            if item is None:
+            if item is None or (timer_token is not None
+                                and item.get("_timer_token") is not timer_token):
                 return
             fired_at = _reminder_at(item)
-            timer = item.get("timer")
-            if timer is not None:
-                timer.cancel()
+            _cancel_timer(item.get("timer"), reminder_id)
             ACTIVE_REMINDERS.remove(item)
             clean_repeat = _coerce_repeat(item.get("repeat")) or clean_repeat
             nxt = (_next_future_occurrence(fired_at, clean_repeat, datetime.datetime.now())
                    if fired_at is not None and clean_repeat else None)
             if nxt is not None:
-                _schedule_reminder(task, nxt, persist=False, repeat=clean_repeat)
+                _schedule_reminder(task, nxt, persist=False, repeat=clean_repeat,
+                                   keep_on_failure=True)
             _save_reminders()
     respond(f"Đến giờ rồi. Nhắc bạn: {task}")
     try:
@@ -1344,6 +1401,8 @@ def _to_number(value: object, default: float, low: float, high: float) -> float:
     """
     try:
         number = float(value)  # type: ignore[arg-type]
+    except OverflowError:
+        return (high if value > 0 else low) if isinstance(value, int) else default
     except (TypeError, ValueError):
         return default
     if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
@@ -1384,20 +1443,23 @@ def _coerce_time_info(raw: object) -> dict[str, Any]:
 
 
 def _reminder_when(time_info: dict[str, Any], now: datetime.datetime) -> datetime.datetime | None:
-    """Tính thời điểm chạy từ `time_info`; None nếu chưa đủ thông tin để nhắc."""
+    """Tính deadline hữu hạn; lịch vượt phạm vi datetime không làm sập handler."""
     kind = time_info.get("type")
-    if kind == "delay":
-        minutes = _to_number(time_info.get("minutes"), 5.0, 0.0, 366 * 24 * 60)
-        return now + datetime.timedelta(minutes=minutes)
-    if kind == "clock":
-        hour = int(_to_number(time_info.get("hour"), 7.0, 0.0, 23.0))
-        minute = int(_to_number(time_info.get("minute"), 0.0, 0.0, 59.0))
-        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        day_offset = int(_to_number(time_info.get("day_offset"), 0.0, 0.0, 3660.0))
-        run_at += datetime.timedelta(days=day_offset)
-        if run_at <= now:
-            run_at += datetime.timedelta(days=1)
-        return run_at
+    try:
+        if kind == "delay":
+            minutes = _to_number(time_info.get("minutes"), 5.0, 0.0, 366 * 24 * 60)
+            return now + datetime.timedelta(minutes=minutes)
+        if kind == "clock":
+            hour = int(_to_number(time_info.get("hour"), 7.0, 0.0, 23.0))
+            minute = int(_to_number(time_info.get("minute"), 0.0, 0.0, 59.0))
+            run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            day_offset = int(_to_number(time_info.get("day_offset"), 0.0, 0.0, 3660.0))
+            run_at += datetime.timedelta(days=day_offset)
+            if run_at <= now:
+                run_at += datetime.timedelta(days=1)
+            return run_at
+    except (ValueError, OverflowError):
+        logger.warning("Thời điểm nhắc vượt phạm vi datetime: %r", time_info)
     return None
 
 

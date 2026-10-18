@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.1
+main.py - Trợ lý ảo tiếng Việt v7.10.2
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -482,9 +482,10 @@ def _format_reminder(item: dict) -> str:
     """Một dòng liệt kê nhắc nhở, chịu được dữ liệu thiếu/hỏng (v7.2)."""
     task = item.get("task", "?") or "?"
     at = executor._reminder_at(item)
-    if at is None:
-        return f"{task} - ??:??"
-    return f"{task} - {at:%H:%M %d/%m}"
+    when = "??:??" if at is None else f"{at:%H:%M %d/%m}"
+    status = (" [TẠM DỪNG: không tạo được timer; khởi động lại để thử khôi phục]"
+              if item.get("_timer_error") else "")
+    return f"{task} - {when}{status}"
 
 
 @_control("help", "giup", "giúp", "?")
