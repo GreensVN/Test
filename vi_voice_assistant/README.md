@@ -1,8 +1,16 @@
-# Trợ lý ảo tiếng Việt v7.10.5
+# Trợ lý ảo tiếng Việt v7.10.6
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (khuyến nghị Windows 10/11), macOS, Linux và WSL.
 
+> **v7.10.6 (2026-10-18)** - lazy alias bốn core module dùng chung state
+> giữa package/flat import; version-only không nạp core hay tạo data. Data root
+> native, tuyệt đối, init/reset cache thread-safe. No-path reload giữ profile
+> custom; refresh lỗi không thành công giả; policy rỗng có chủ ý được đồng bộ.
+> CLI options mới reset consent/speech cũ. Flags vẫn global, chưa hỗ trợ session
+> CLI đồng thời. Nâng cấp cần restart; không hot-repair các module đã bị trùng.
+> **1876 ca kiểm thử**, thêm 68 ca so với 7.10.5.
+>
 > **v7.10.5 (2026-10-18)** - startup warning luôn ở stderr; custom log
 > dùng đúng parent và fallback console khi file lỗi. Kiểm toàn batch/serialization
 > trước dispatch; JSON lỗi không làm chạy trước một phần batch. JSON máy dùng
@@ -231,16 +239,16 @@ quả được deepcopy để caller sửa dict không đổi lại lịch sử 
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 1808 ca kiểm thử | Thêm 3 file `test_v7105_*.py` cho startup JSON, output/dispatch và cleanup khi huỷ; giữ test cũ |
+| `tests/` | 1876 ca kiểm thử | Thêm 3 file `test_v7106_*.py` cho data directory, reload/consent và core import identity; giữ coverage trước |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py -q     # 1808 pass, 0 fail - không cần cài gì
+python run_tests.py -q     # 1876 pass, 0 fail - không cần cài gì
 # Ép runner nhúng ngay cả khi đã cài pytest:
 # Linux/macOS: VI_TESTS_FORCE_EMBEDDED=1 python run_tests.py -q
 # PowerShell: $env:VI_TESTS_FORCE_EMBEDDED="1"; python run_tests.py -q
-python -m pytest tests/ -q # 1808 passed
+python -m pytest tests/ -q # 1876 passed
 # Từ thư mục GỐC repo, sau khi cài ".[dev]":
 python -m ruff check .
 python -m mypy

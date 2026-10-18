@@ -1,5 +1,5 @@
 """
-Trợ lý ảo tiếng Việt - gói Python (v7.10.5)
+Trợ lý ảo tiếng Việt - gói Python (v7.10.6)
 -----------------------------------------
 
 Toàn bộ mã nguồn trong thư mục này từ trước tới nay dùng LỆNH IMPORT PHẲNG
@@ -15,6 +15,11 @@ KHÔNG THỂ DÙNG - chạy ``vi-assistant`` chết ngay với
 ``__main__.py``/``__init__.py`` này sửa đúng chỗ đó mà KHÔNG đụng 20 file import:
 thêm thư mục gói vào ``sys.path`` một lần lúc nạp gói, nên tên phẳng nào cũng
 giải được như khi chạy từ source.
+
+v7.10.6: bốn module có state (paths/config/executor/nlu_advanced) có lazy
+package alias về module phẳng, không chạy hai bản riêng. Version import chỉ
+đăng ký bridge, không nạp core. Không alias toàn bộ cây module hay sửa một
+process đang hot-upgrade với các module trùng đã tồn tại; cần restart.
 
     python -m vi_voice_assistant              # REPL
     python -m vi_voice_assistant --once "mở youtube"
@@ -32,6 +37,12 @@ if _HERE not in _sys.path:
     # ung dung; moi module trong goi deu dung ten phang nen chi can thu muc nay
     # CO MAT trong path.
     _sys.path.append(_HERE)
+
+# Keep four stateful core modules singleton across package/flat imports.
+# Registration is lazy: importing the package version does not load the core.
+from _vi_runtime_aliases import install_runtime_aliases as _install_runtime_aliases  # noqa: E402
+
+_install_runtime_aliases(__name__, _HERE)
 
 # Chỉ nạp sau khi thêm thư mục gói: giữ cách import phẳng từ source và wheel.
 from _version import __version__  # noqa: E402

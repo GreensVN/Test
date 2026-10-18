@@ -339,14 +339,16 @@ class _Monkeypatch:
         del os.environ[name]
         self._patches.append((os.environ, name, old, False, "item"))
     def chdir(self, path) -> None:
-        self._cwd = os.getcwd()
+        if self._cwd is _MISSING:
+            self._cwd = os.getcwd()
         os.chdir(str(path))
 
     def syspath_prepend(self, path) -> None:
         path = str(path)
-        self._syspath = list(sys.path)
-        if path not in sys.path:
-            sys.path.insert(0, path)
+        if self._syspath is None:
+            self._syspath = list(sys.path)
+        sys.path.insert(0, path)
+        importlib.invalidate_caches()
 
     def undo(self):
         if self._syspath is not None:

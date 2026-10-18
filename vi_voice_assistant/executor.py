@@ -1,5 +1,5 @@
 """
-executor.py v7.10.4
+executor.py v7.10.6
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -57,7 +57,8 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable
 
-from config import load_config, load_config_safe
+from config import CONFIG_LOCK, load_config, load_config_safe
+from config import CONFIG_PATH as _DEFAULT_CONFIG_PATH
 from paths import atomic_write_json, data_path
 from platform_utils import (
     is_windows7_or_older,
@@ -100,29 +101,47 @@ DANGEROUS_ACTIONS: set[str] = {str(a) for a in CONFIG.get("dangerous_actions", [
 SPEAK_ENABLED: bool = False
 
 
+_ACTIVE_CONFIG_PATH: Path | None = None
+
+
+def current_config_path() -> Path:
+    """The source a no-argument reload will read, pinned independently of cwd."""
+    with CONFIG_LOCK:
+        return (_ACTIVE_CONFIG_PATH if _ACTIVE_CONFIG_PATH is not None
+                else Path(_DEFAULT_CONFIG_PATH).expanduser().absolute())
+
+
 def reload_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Nạp lại config.json khi đang chạy, cập nhật tại chỗ."""
-    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS, CONFIG_ERROR
-    fresh = load_config(path) if path else load_config()
-    CONFIG.clear()
-    CONFIG.update(fresh)
-    CONFIG_ERROR = None
-    CONFIDENCE_THRESHOLD = float(CONFIG.get("confidence_threshold", 0.35))
-    DANGEROUS_ACTIONS = {str(a) for a in CONFIG.get("dangerous_actions", [])}
-    # v7.2: đồng bộ cả ngưỡng của tầng NLU. Trước đây "nap lai"/--config chỉ
-    # cập nhật executor nên người dùng đổi confidence_accept trong config.json
-    # rồi nạp lại vẫn thấy trợ lý hỏi y như cũ (ngưỡng NLU đóng băng lúc import).
-    try:
+    """Reload the selected profile in place, committing only after NLU refresh.
+
+    Cooperating policy readers use CONFIG_LOCK; this is not an inter-process
+    transaction or a guarantee about callers mutating public globals directly.
+    """
+    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS, CONFIG_ERROR, _ACTIVE_CONFIG_PATH
+    with CONFIG_LOCK:
+        target = (_ACTIVE_CONFIG_PATH if path is None
+                  else Path(path).expanduser().absolute())
+        fresh = load_config(target) if target is not None else load_config()
+        threshold = float(fresh.get("confidence_threshold", 0.35))
+        dangerous = set(fresh.get("dangerous_actions", ("shutdown", "restart", "logout", "sleep")))
         import nlu_advanced
 
-        nlu_advanced.refresh_thresholds(CONFIG)
-    except Exception as e:  # pragma: no cover - NLU không bắt buộc phải có
-        logger.debug("Không cập nhật được ngưỡng của tầng NLU: %s", e)
-    logger.info(
-        "Đã nạp lại cấu hình: %d web, %d file",
-        len(CONFIG.get("website_map", {})),
-        len(CONFIG.get("file_map", {})),
-    )
+        old_policy = (nlu_advanced.CONFIDENCE_ACCEPT, nlu_advanced.CONFIDENCE_ASK,
+                      set(nlu_advanced.DANGEROUS_TARGETS))
+        try:
+            nlu_advanced.refresh_thresholds(fresh)
+        except BaseException:
+            (nlu_advanced.CONFIDENCE_ACCEPT, nlu_advanced.CONFIDENCE_ASK,
+             nlu_advanced.DANGEROUS_TARGETS) = old_policy
+            raise
+        obsolete = set(CONFIG) - set(fresh)
+        CONFIG.update(fresh)
+        for key in obsolete:
+            del CONFIG[key]
+        CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS = threshold, dangerous
+        CONFIG_ERROR = None
+        _ACTIVE_CONFIG_PATH = target
+        logger.info("Đã nạp lại cấu hình từ %s", current_config_path())
     return CONFIG
 
 
@@ -417,11 +436,9 @@ def _as_map(value: Any) -> dict[str, str]:
 
 
 def _app_map_for_platform() -> dict[str, str]:
-    if SYSTEM == "Darwin":
-        return _as_map(CONFIG.get("app_map_macos", {}))
-    if SYSTEM == "Windows":
-        return _as_map(CONFIG.get("app_map_windows", {}))
-    return _as_map(CONFIG.get("app_map_linux", {}))
+    key = {"Darwin": "app_map_macos", "Windows": "app_map_windows"}.get(SYSTEM, "app_map_linux")
+    with CONFIG_LOCK:
+        return _as_map(CONFIG.get(key, {}))
 
 
 # ============================================================================
@@ -431,14 +448,16 @@ def action_open_website(target: str) -> bool:
     if not target or target == "unknown":
         respond("Bạn muốn mở trang web nào ạ?")
         return False
-    url, matched_key = _best_match(target, CONFIG.get("website_map", {}), fuzzy=False)
+    with CONFIG_LOCK:
+        mapping = CONFIG.get("website_map", {})
+    url, matched_key = _best_match(target, mapping, fuzzy=False)
     if url is None:
         if _URL_SCHEME_RE.match(target):
             url = target
         elif _BARE_DOMAIN_RE.match(target):
             url = "https://" + target
         else:
-            url, matched_key = _best_match(target, CONFIG.get("website_map", {}))
+            url, matched_key = _best_match(target, mapping)
             if url is None:
                 url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(target)
 
@@ -581,7 +600,9 @@ def _is_executable_path(path: str) -> bool:
 
 
 def action_open_file(target: str) -> bool:
-    path, matched_key = _best_match(target, CONFIG.get("file_map", {}))
+    with CONFIG_LOCK:
+        mapping = CONFIG.get("file_map", {})
+    path, matched_key = _best_match(target, mapping)
     if path is None:
         if target and _SAFE_PATH_RE.match(target) and ".." not in target:
             path = target
@@ -928,7 +949,9 @@ def action_system_control(target: str) -> bool:
                 "hình, tăng âm lượng, chụp màn hình.")
         return False
 
-    if target in DANGEROUS_ACTIONS:
+    with CONFIG_LOCK:
+        needs_confirmation = target in DANGEROUS_ACTIONS
+    if needs_confirmation:
         if not _confirm(f"Bạn chắc chắn muốn '{target}'?"):
             safe_print("Đã huỷ lệnh.")
             logger.info("Người dùng huỷ lệnh nguy hiểm: %s", target)
@@ -1793,7 +1816,9 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
         logger.warning("Không hiểu ý định: %s", label)
         return action_unknown(target)
 
-    if confidence <= 0.0 or confidence < CONFIDENCE_THRESHOLD:
+    with CONFIG_LOCK:
+        threshold = CONFIDENCE_THRESHOLD
+    if confidence <= 0.0 or confidence < threshold:
         if confidence < 0:
             # Giá trị -1 = "độ tự tin không đọc được" (sai kiểu/NaN/vô hạn), khác
             # hẳn "thấp thật". In "-1.00" như thể là đo được sẽ khiến người dùng
@@ -1809,7 +1834,7 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
                 f"Bạn nói rõ hơn giúp tôi nhé."
             )
             logger.info("Từ chối vì độ tự tin thấp/không có bằng chứng: %.2f (ngưỡng %.2f)",
-                        confidence, CONFIDENCE_THRESHOLD)
+                        confidence, threshold)
         return False
 
     if _handler_wants_data(handler):

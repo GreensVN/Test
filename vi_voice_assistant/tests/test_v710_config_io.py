@@ -107,6 +107,7 @@ def test_reload_clears_previous_config_error(tmp_path, monkeypatch):
     target = tmp_path / "config.json"
     config.save_config(config.DEFAULT_CONFIG, target)
     monkeypatch.setattr(executor, "CONFIG_ERROR", "lỗi cũ")
+    monkeypatch.setattr(executor, "_ACTIVE_CONFIG_PATH", None)
     saved = dict(executor.CONFIG)
     try:
         executor.reload_config(target)

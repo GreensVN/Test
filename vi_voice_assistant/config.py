@@ -1,5 +1,5 @@
 """
-config.py v7.10.5
+config.py v7.10.6
 ---------
 Nạp cấu hình từ config.json.
 
@@ -49,11 +49,14 @@ import copy
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 from paths import atomic_write_json, create_json_if_absent, data_path
 from platform_utils import safe_print, setup_console
+
+CONFIG_LOCK = threading.RLock()
 
 BASE_DIR = Path(__file__).resolve().parent
 # v7.3: config được lưu ở THƯ MỤC DỮ LIỆU của người dùng (xem paths.py) thay vì

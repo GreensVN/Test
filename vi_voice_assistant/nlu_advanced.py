@@ -1,5 +1,5 @@
 """
-nlu_advanced.py v7.10.3
+nlu_advanced.py v7.10.6
 --------------------
 TẦNG HIỂU Ý THÔNG MINH (Natural Language Understanding nâng cao) - TUỲ CHỌN.
 
@@ -62,6 +62,7 @@ import os
 import re
 from datetime import datetime
 
+from config import CONFIG_LOCK
 from csv_utils import append_keyed_csv
 from paths import data_path
 from platform_utils import safe_print, setup_console
@@ -136,7 +137,18 @@ def _load_cfg_quietly() -> dict:
 
 
 _CFG = _load_cfg_quietly()
-_DANGEROUS_TARGETS_CONFIG = {str(a) for a in _CFG.get("dangerous_actions", []) if a}
+_DEFAULT_DANGEROUS = frozenset({"shutdown", "restart", "logout", "sleep"})
+
+
+def _dangerous_policy(cfg: dict) -> set[str]:
+    if "dangerous_actions" not in cfg:
+        return set(_DEFAULT_DANGEROUS)
+    raw = cfg["dangerous_actions"]
+    if (not isinstance(raw, list)
+            or any(not isinstance(item, str) or not item.strip() for item in raw)):
+        raise ValueError("dangerous_actions phải là list[str] hợp lệ.")
+    return set(raw)  # An explicitly empty valid policy is not a missing policy.
+
 
 # Ngưỡng tự tin: dưới mức này trợ lý sẽ HỎI LẠI thay vì làm bừa. Đây là 2
 # ngưỡng RIÊNG của tầng NLU (tinh tế hơn CONFIDENCE_THRESHOLD đơn giản trong
@@ -154,18 +166,22 @@ def refresh_thresholds(cfg: dict | None = None) -> tuple[float, float]:
     lại y hệt. Hàm này đồng bộ lại cả hai phía.
     """
     global CONFIDENCE_ACCEPT, CONFIDENCE_ASK, DANGEROUS_TARGETS
-    cfg = _load_cfg_quietly() if cfg is None else cfg
-    CONFIDENCE_ACCEPT, CONFIDENCE_ASK = _read_thresholds(cfg)
-    dangerous = {str(a) for a in (cfg or {}).get("dangerous_actions", []) if a}
-    DANGEROUS_TARGETS = dangerous or {"shutdown", "restart", "logout", "sleep"}
-    return CONFIDENCE_ACCEPT, CONFIDENCE_ASK
+    values = _load_cfg_quietly() if cfg is None else cfg
+    if not isinstance(values, dict):
+        raise TypeError("cfg phải là dict hoặc None.")
+    dangerous = _dangerous_policy(values)
+    accept, ask = _read_thresholds(values)
+    with CONFIG_LOCK:
+        CONFIDENCE_ACCEPT, CONFIDENCE_ASK = accept, ask
+        DANGEROUS_TARGETS = dangerous
+    return accept, ask
 
 
 # Những hành động gây hậu quả nặng -> luôn hỏi xác nhận. Lấy từ
 # config.json["dangerous_actions"] để đồng bộ với executor.py; nếu vì lý do
 # gì đó không đọc được config (vd file hỏng), dùng lại danh sách mặc định an
 # toàn bên dưới để tính năng xác nhận không bao giờ bị vô hiệu hoá âm thầm.
-DANGEROUS_TARGETS = _DANGEROUS_TARGETS_CONFIG or {"shutdown", "restart", "logout", "sleep"}
+DANGEROUS_TARGETS = _dangerous_policy(_CFG)
 
 
 # ============================================================================
@@ -614,10 +630,13 @@ class NLU:
         ``ok`` - tức được THỰC THI. Nay giá trị hỏng/NaN/vô hạn/ngoài [0,1] đều
         thành 0.0, tức "không hiểu" chứ không phải "làm luôn".
         """
+        with CONFIG_LOCK:
+            accept, ask = CONFIDENCE_ACCEPT, CONFIDENCE_ASK
+            dangerous = frozenset(DANGEROUS_TARGETS)
         conf = _as_confidence(result.get("confidence"))
         # 0 còn là kết quả của hàng rào phủ định/dữ liệu hỏng: config 0
         # không được vô hiệu hóa từ chối an toàn rồi cho --yes chạy lệnh.
-        if conf <= 0.0 or conf < CONFIDENCE_ASK:
+        if conf <= 0.0 or conf < ask:
             return "unknown"
         # CHỈ coi là hành động nguy hiểm khi intent thật sự là system_control
         # - target của các intent KHÁC mang ý nghĩa hoàn toàn khác (tên bài
@@ -626,9 +645,9 @@ class NLU:
         # nhạc/chitchat với nội dung đúng là "sleep") mà không hề liên quan
         # gì tới việc điều khiển hệ thống - không kiểm tra intent sẽ hỏi xác
         # nhận nhầm cho 1 lệnh hoàn toàn vô hại.
-        if result.get("intent") == "system_control" and result.get("target") in DANGEROUS_TARGETS:
+        if result.get("intent") == "system_control" and result.get("target") in dangerous:
             return "need_confirm"
-        if conf < CONFIDENCE_ACCEPT:
+        if conf < accept:
             return "low_confidence"
         return "ok"
 

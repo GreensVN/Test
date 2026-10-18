@@ -1,5 +1,5 @@
 """
-paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.5)
+paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.6)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -57,6 +57,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +84,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 # Bật/tắt in ấn khi resolve thư mục (main.py bật sau khi đọc cờ --debug).
 _verbose: list[str] = []
 _cached: Path | None = None
+_directory_lock = threading.RLock()
 
 
 def app_name() -> str:
@@ -98,38 +100,33 @@ def is_source_checkout(directory: Path | None = None) -> bool:
     và mọi bản đã cài sẽ bị nhận nhầm là "source" - tức lại ghi dữ liệu vào
     site-packages, đúng cái bug mà bản này sinh ra để sửa.)
     """
+    # The test tree is absent from wheels; a foreign pyproject beside
+    # site-packages must not turn an installation into writable source storage.
     here = PACKAGE_DIR if directory is None else Path(directory)
-    return (here.parent / "pyproject.toml").is_file()
+    return (here.parent / "pyproject.toml").is_file() and (here / "tests").is_dir()
 
 
 def _user_data_dir() -> Path:
-    """Thư mục dữ liệu chuẩn theo nền tảng (không cần quyền quản trị)."""
-    env_override = os.environ.get("XDG_DATA_HOME", "").strip()
-    if env_override:
-        return Path(env_override) / _DIR_NAME
-    home = Path(str(os.path.expanduser("~")))     # str() cho phép HOME bị patch bằng chuỗi
+    """Use native platform roots; relative environment values are not data roots."""
+    home = Path(str(os.path.expanduser("~")))
     if sys.platform.startswith("win"):
-        base = os.environ.get("LOCALAPPDATA", "").strip()
-        # FALLBACK quan trọng: LOCALAPPDATA vắng mặt khi chạy service/CI tren
-        # Windows -> neu tin tuyet doi vao no thi chu "." se ghi du lieu vao
-        # thu muc lam viec cua tien trinh (rat kho tim khi can xoa).
-        return (Path(base) if base else home / "AppData" / "Local") / _DIR_NAME
+        raw = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(raw) if raw else None
+        if base is None or not base.is_absolute():
+            base = home / "AppData" / "Local"
+        return base / _DIR_NAME
     if sys.platform == "darwin":
         return home / "Library" / "Application Support" / _DIR_NAME
+    raw = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(raw) if raw else None
+    if base is not None and base.is_absolute():
+        return base / _DIR_NAME
     return home / ".local" / "share" / _DIR_NAME
 
 
-def data_dir() -> Path:
-    """Thư mục chứa dữ liệu người dùng; tự tạo nếu chưa có (im lặng khi lỗi)."""
-    global _cached
-    if _cached is not None:
-        return _cached
-
+def _resolve_data_dir() -> Path:
     override = os.environ.get(_ENV_HOME, "").strip()
     if override:
-        # expanduser + abspath: mot duong dan TUONG DOI ma de nguyen thi khi
-        # tro ly doi cwd giua chung (lenh mo file/anh co the lam vay) la toan bo
-        # du lieu "nhảy" theo thu muc moi - tim khong ra nua.
         chosen = Path(os.path.abspath(os.path.expanduser(override)))
         source = f"${_ENV_HOME}"
     elif is_source_checkout() and _writable(PACKAGE_DIR):
@@ -138,21 +135,30 @@ def data_dir() -> Path:
     else:
         chosen = _user_data_dir()
         source = "thu muc du lieu nguoi dung"
-
     try:
+        chosen = chosen.absolute()
         chosen.mkdir(parents=True, exist_ok=True)
-    except OSError as e:                       # đĩa đầy / thiếu quyền / đường dẫn lạ
-        # KHÔNG ném lỗi ở đây: trợ lý vẫn phải chạy được (lời nhắc + log khi đó
-        # chỉ nằm trong RAM). Rơi về temp dir - luôn ghi được trên mọi nền tảng.
-        # /tmp chỉ là FALLBACK, tên thư mục mang PID riêng nên không ghi đè ai.
-        chosen = Path(tempfile.mkdtemp(prefix=f"{_DIR_NAME}-{os.getpid()}-"))
-        _verbose.append(f"không tạo được {source} ({e}) -> dùng {chosen}")
-    _cached = chosen
-    if _verbose:
-        for line in _verbose:
-            print(f"[PATHS] {line}", file=sys.stderr)
-        _verbose.clear()
+    except (OSError, ValueError) as error:
+        chosen = Path(tempfile.mkdtemp(prefix=f"{_DIR_NAME}-{os.getpid()}-")).absolute()
+        _verbose.append(f"không tạo được {source} ({error}) -> dùng {chosen}")
+    for line in _verbose:
+        print(f"[PATHS] {line}", file=sys.stderr)
+    _verbose.clear()
     return chosen
+
+
+def data_dir() -> Path:
+    """Pin one absolute root for cooperating calls in this module instance.
+
+    Initialization and reset share a lock; failed initialization is not cached.
+    This does not rebind already-imported consumers' CONFIG_PATH/etc. Changing
+    a live application's home requires restarting those consumers.
+    """
+    global _cached
+    with _directory_lock:
+        if _cached is None:
+            _cached = _resolve_data_dir()
+        return _cached
 
 
 def _relative_data_name(filename: str | Path) -> Path:
@@ -199,7 +205,8 @@ def describe() -> dict[str, object]:
 def reset_cache() -> None:
     """Quên kết quả đã cache - dùng trong test và sau khi đổi biến môi trường."""
     global _cached
-    _cached = None
+    with _directory_lock:
+        _cached = None
 
 
 def migrate_from_package_dir(names: tuple[str, ...]) -> list[str]:

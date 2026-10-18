@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.10.5
+# Trợ lý ảo tiếng Việt v7.10.6
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1808 pass](https://img.shields.io/badge/tests-1808%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 1876 pass](https://img.shields.io/badge/tests-1876%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,23 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.10.6 (2026-10-18)** giữ một runtime, một data root và đúng config đang chọn:
+- Bốn module `paths/config/executor/nlu_advanced` dùng chung state giữa import
+  package và import phẳng. Bridge lazy, không nạp core khi chỉ đọc version;
+  không thay module tên ngắn của app khác, cần restart sau nâng cấp.
+- Chọn data root theo nền tảng; bỏ qua XDG/LOCALAPPDATA tương đối, không theo cwd.
+  Init/reset cache có lock, fallback cũng là path tuyệt đối và chỉ tạo một lần
+  giữa các thread. Wheel không thành source chỉ vì có pyproject của app khác.
+- `reload` không có path giữ profile custom lần thành công gần nhất. NLU refresh
+  lỗi thì không báo thành công/đổi config executor; kiểm policy trước cập nhật.
+  `dangerous_actions: []` hợp lệ được cả hai tầng tôn trọng: **chủ động tắt danh
+  sách xác nhận**, chỉ dùng nếu thật sự muốn; thiếu/sai policy không đồng nghĩa rỗng.
+- Lần áp CLI options mới không giữ `--yes`/speech từ lần gọi trước; config lỗi
+  không để auto-confirm còn bật. Flags vẫn global, không hỗ trợ nhiều CLI session đồng thời.
+- Nếu trước đây dùng XDG tương đối hoặc XDG trên Windows/macOS, dữ liệu cũ không
+  bị xoá: đặt `VI_ASSISTANT_HOME` tới đường dẫn **tuyệt đối** cũ nếu muốn giữ nơi lưu.
+- **1876 ca kiểm thử**, thêm **68** ca; core vẫn stdlib-only.
 
 **v7.10.5 (2026-10-18)** JSON sạch cả khi startup/I/O lỗi, không chạy batch hỏng:
 - Cảnh báo tạo config/log đi **stderr**, kể cả trước khi parse CLI. Log custom
@@ -157,7 +174,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1808 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 1876 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -218,17 +235,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1808 test)
-    └── tests/             # 1808 test (v7.2 - v7.10.5 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (1876 test)
+    └── tests/             # 1876 test (v7.2 - v7.10.6 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1808 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 1876 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1808 pass, 0 fail, 0 skip
+# Ket qua: 1876 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

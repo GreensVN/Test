@@ -246,11 +246,14 @@ jobs:
         import contextlib
         import datetime
         import io
+        import importlib
         import json
         import pathlib
         import sys
         import tempfile
+        from types import SimpleNamespace
         from unittest import mock
+        import vi_voice_assistant.config as config
         import vi_voice_assistant.executor as executor
         import vi_voice_assistant.main as cli
         import vi_voice_assistant.nlu_advanced as nlu
@@ -410,6 +413,29 @@ jobs:
                     cancelled = True
             assert cancelled and target.read_bytes() == b"old"
             assert [item.name for item in target.parent.iterdir()] == ["existing.txt"]
+        for name in ("paths", "config", "executor", "nlu_advanced"):
+            assert importlib.import_module(name) is importlib.import_module("vi_voice_assistant." + name)
+        assert cli.executor is executor and cli.NLU is nlu.NLU
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory) / "profile.json"
+            cfg = dict(config.DEFAULT_CONFIG, confidence_threshold=0.8,
+                       confidence_accept=0.9, confidence_ask=0.7, dangerous_actions=[])
+            storage.atomic_write_json(profile, cfg)
+            executor.reload_config(profile)
+            assert executor.CONFIG is executor.reload_config()
+            assert executor.current_config_path() == profile.absolute()
+            assert executor.CONFIDENCE_THRESHOLD == 0.8 and nlu.CONFIDENCE_ASK == 0.7
+            assert executor.DANGEROUS_ACTIONS == nlu.DANGEROUS_TARGETS == set()
+            cfg["confidence_ask"] = 0.75
+            storage.atomic_write_json(profile, cfg)
+            executor.reload_config()
+            assert nlu.CONFIDENCE_ASK == 0.75
+            executor.set_auto_confirm(True)
+            assert cli._apply_cli_options(SimpleNamespace(yes=False, config=None, engine=None)) is None
+            assert executor.AUTO_CONFIRM is False
+            executor.set_speech_enabled(True)
+            cli._warn_missing_optional_features(SimpleNamespace(voice=False, speak=False))
+            assert executor.SPEAK_ENABLED is False
         print("installed assistant safety and persistence passed")
         PY
     - name: User data must NOT be written into site-packages
@@ -491,7 +517,8 @@ jobs:
         assert not bad, f"wheel rò rỉ file runtime/tests: {bad}"
         need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
                 "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py",
-                "vi_voice_assistant/_version.py", "vi_voice_assistant/json_output.py"}
+                "vi_voice_assistant/_version.py", "vi_voice_assistant/json_output.py",
+                "vi_voice_assistant/_vi_runtime_aliases.py"}
         missing = need - set(names)
         assert not missing, f"wheel thiếu: {missing}"
         print("wheel ok:", len(names), "files")

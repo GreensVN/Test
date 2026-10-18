@@ -285,6 +285,9 @@ def test_danh_sach_thu_vien_tuy_chon_khong_lech_requirements():
 _SIDE_EFFECT_ALLOWLIST = {
     # (ten file, ten ham duoc goi o cap module) - da xem ky, vo hai:
     "main.py": {"setup_console"},   # chi doi ma trang/encoding console
+    # Lazy registration only: no core imports/I/O/processes. The subprocess
+    # regression in test_v7106_runtime_imports enforces those boundaries.
+    "__init__.py": {"_install_runtime_aliases"},
     "train_nlu.py": {"seed"},       # random.seed de ket qua huan luyen on dinh
 }
 

@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.10.5
+main.py - Trợ lý ảo tiếng Việt v7.10.6
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -399,11 +399,8 @@ def _print_version() -> None:
 
 def _apply_cli_options(args: argparse.Namespace) -> int | None:
     """Áp --yes / --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
-    if args.yes:
-        # executor._confirm() trả về True mà không hỏi - chủ ý cho script/CI.
-        # Chỉ cắt BƯỚC XÁC NHẬN, không cắt bước CHẶN lệnh ngoài whitelist.
-        executor.set_auto_confirm(True)
-        safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")
+    # Never retain consent from a previous main() call or a failed config load.
+    executor.set_auto_confirm(False)
     if args.config:
         try:
             executor.reload_config(args.config)
@@ -420,11 +417,15 @@ def _apply_cli_options(args: argparse.Namespace) -> int | None:
             safe_print(f"[TTS] Engine: {args.engine}")
         except Exception as e:
             safe_print(f"[LỖI] Không đặt được engine TTS: {e}")
+    executor.set_auto_confirm(bool(args.yes))
+    if args.yes:
+        safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")
     return None
 
 
 def _warn_missing_optional_features(args: argparse.Namespace) -> None:
     """Báo (không chết) nếu người dùng bật --voice/--speak mà máy thiếu thư viện."""
+    executor.set_speech_enabled(False)
     if args.voice:
         try:
             import stt
@@ -584,7 +585,7 @@ def _cmd_reload_config(ctx: ReplContext) -> None:
     try:
         cfg = executor.reload_config()
         safe_print(
-            f"[CẤU HÌNH] Đã nạp lại config.json "
+            f"[CẤU HÌNH] Đã nạp lại {executor.current_config_path()} "
             f"({len(cfg['website_map'])} web, {len(cfg['file_map'])} file)."
         )
         # v7.2: in ra ngưỡng đang dùng để người dùng THẤY được config có thực sự

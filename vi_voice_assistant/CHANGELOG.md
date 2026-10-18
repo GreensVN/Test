@@ -1,5 +1,72 @@
 # CHANGELOG
 
+## v7.10.6 (2026-10-18) - core import cùng state, data root ổn định, reload đúng profile
+
+### Lỗi tái hiện và sửa
+
+- **Hai runtime trong một process:** canonical import của paths/config/executor/
+  nlu_advanced từng tạo module riêng so với import phẳng. Đổi config trên package
+  executor không đổi executor/NLU mà CLI thực sự dùng; fallback paths có thể
+  trỏ hai temp directory. Lazy alias loader nay import đúng module phẳng qua
+  import lock chuẩn, kiểm origin, giữ original spec cho importlib.reload.
+  Chỉ intercept bốn tên canonical của package, không thay module tên ngắn của
+  app khác. __init__ chỉ đăng ký bridge; version import không nạp core/tạo data/
+  launch process, đăng ký lại idempotent. Không alias main và các module khác.
+- **Data root đi theo cwd:** XDG tương đối từng được cache nguyên dạng; XDG còn
+  lấn native root trên macOS/Windows. Chỉ nhận XDG tuyệt đối ở Unix; Windows
+  dùng LOCALAPPDATA tuyệt đối hoặc home/AppData/Local, macOS dùng native root.
+  VI_ASSISTANT_HOME vẫn ưu tiên, cho relative và pin tuyệt đối khi chọn lần đầu.
+  Cả temp factory trả relative cũng được pin. Cache init/reset cùng RLock tránh
+  nhiều fallback và tránh initializer cũ ghi đè một reset vừa hoàn tất.
+- **Nhầm installed thành source:** cần cả parent pyproject và test tree của
+  package (không có trong wheel), không tin một pyproject lạ cạnh site-packages.
+  Checkout đã bỏ tests sẽ dùng user data root; VI_ASSISTANT_HOME vẫn override.
+- **Reload bỏ profile/đổi dở state:** no-argument reload giữ path custom đã thành
+  công, absolute/pin với cwd lúc chọn. Tính/validate trước commit, giữ CONFIG
+  identity và không clear sang dict rỗng tạm. NLU import/refresh lỗi được báo
+  thay vì swallow; rollback các policy field NLU đã biết nếu hook ném lỗi.
+  Source chỉ cập nhật khi thành công. Lock chung cho reload và các policy/map
+  snapshot phối hợp; không phải transaction chống mọi caller tự sửa globals.
+- **Policy không đồng bộ:** NLU từng biến [] thành default trong khi executor
+  nhận set rỗng. [] hợp lệ nay được giữ ở cả hai; nghĩa là caller chủ động bỏ
+  danh sách xác nhận, chỉ dùng khi có ý định. Missing key vẫn default an toàn;
+  policy sai kiểu bị từ chối trước sửa thresholds. Confidence 0 vẫn luôn bị chặn.
+- **Consent/speech tồn dư:** apply CLI options reset auto-confirm trước load;
+  chỉ bật --yes sau config thành công. Apply không --yes không giữ cờ cũ;
+  kiểm optional features reset speech trước khi bật theo yêu cầu/khả dụng.
+- **Runner cleanup:** full embedded phát hiện helper chdir lưu cwd trung gian
+  ở lần gọi thứ hai, sau teardown nó trỏ vào directory đã xoá. Giữ snapshot
+  ban đầu cho nhiều chdir/syspath_prepend; prepend path có sẵn vẫn đưa lên đầu,
+  invalidate import caches như pytest. Thêm 4 ca direct/end-to-end thất bại
+  trước sửa; không nới assert ổn định cwd của tests production.
+- Test compatibility chỉ thêm đúng tên registration vào allowlist import;
+  regression subprocess mạnh hơn cấm process, kiểm core chưa import và chưa có
+  data directory. Test reload cũ cô lập thêm selected-path state; không bỏ test.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **68 ca** trong 3 file `test_v7106_*.py`; nhóm đầu ghi nhận **51 fail /
+  13 pass** trước sửa. Case ValueError của path được kiểm lại bằng mapping env
+  fault injection (OS không cho đặt NUL trong environment thật), không xem đó
+  là env hợp lệ ở kernel. Có race 2/8 thread init fallback, reset giữa init,
+  policy reader khi reload và concurrent core import hai thứ tự.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1876 passed**; runner nhúng:
+  **1876 pass, 0 fail, 0 skip**. Ruff/mypy sạch, build wheel/sdist và 5 installed
+  CI script local từ ngoài repo; version/JSON/privacy và import identity đúng.
+- Native directory rules Windows/macOS được mock tại Linux/Python 3.11; chưa
+  chạy thiết bị Windows/macOS/WSL/audio/OS action thật. Actions chưa có run lúc
+  kiểm tra, dispatch integration trước đó HTTP 403; local không thay remote CI.
+- Thay directory policy không xoá/di chuyển dữ liệu cũ: nếu cần vị trí cũ hãy
+  trỏ VI_ASSISTANT_HOME tuyệt đối vào đó. reset_cache chỉ reset resolver, không
+  rebind CONFIG_PATH/HISTORY_PATH/etc đã import; đổi home live cần restart.
+- Bridge chỉ bốn module core, không hot-upgrade hay hợp nhất các instance trùng
+  đang tồn tại trước nâng cấp. Foreign short-name collision bị từ chối, không
+  giành namespace của host. Arbitrary importlib.reload khi app đang chạy, sửa
+  trực tiếp globals và nhiều CLI session đồng thời không có transaction guard.
+- Cache/policy lock là in-process; history/reminders vẫn không có inter-process
+  lock, no-replace cần filesystem support, directory fsync/cleanup best effort.
+  Paused reminders vẫn cần restart/restore, không có background retry service.
+
 ## v7.10.5 (2026-10-18) - startup/JSON lỗi vẫn có kiểm soát, atomic cleanup khi huỷ
 
 ### Lỗi tái hiện và sửa
