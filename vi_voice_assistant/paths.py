@@ -1,5 +1,5 @@
 """
-paths.py - Nơi lưu DỮ LIỆU NGƯỜI DÙNG + ghi file an toàn (v7.3 - v7.6)
+paths.py - Dữ liệu người dùng và xuất bản file an toàn (v7.10.6)
 -------------------------------------------------------------
 
 VẤN ĐỀ BẢN CŨ
@@ -50,17 +50,24 @@ v7.4 nâng cấp:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import stat
 import sys
 import tempfile
-from pathlib import Path
-from typing import Any
+import threading
+from pathlib import Path, PureWindowsPath
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 __all__ = [
     "PACKAGE_DIR",
     "app_name",
+    "create_json_if_absent",
     "data_dir",
     "data_path",
     "describe",
@@ -77,6 +84,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 # Bật/tắt in ấn khi resolve thư mục (main.py bật sau khi đọc cờ --debug).
 _verbose: list[str] = []
 _cached: Path | None = None
+_directory_lock = threading.RLock()
 
 
 def app_name() -> str:
@@ -92,38 +100,33 @@ def is_source_checkout(directory: Path | None = None) -> bool:
     và mọi bản đã cài sẽ bị nhận nhầm là "source" - tức lại ghi dữ liệu vào
     site-packages, đúng cái bug mà bản này sinh ra để sửa.)
     """
+    # The test tree is absent from wheels; a foreign pyproject beside
+    # site-packages must not turn an installation into writable source storage.
     here = PACKAGE_DIR if directory is None else Path(directory)
-    return (here.parent / "pyproject.toml").is_file()
+    return (here.parent / "pyproject.toml").is_file() and (here / "tests").is_dir()
 
 
 def _user_data_dir() -> Path:
-    """Thư mục dữ liệu chuẩn theo nền tảng (không cần quyền quản trị)."""
-    env_override = os.environ.get("XDG_DATA_HOME", "").strip()
-    if env_override:
-        return Path(env_override) / _DIR_NAME
-    home = Path(str(os.path.expanduser("~")))     # str() cho phép HOME bị patch bằng chuỗi
+    """Use native platform roots; relative environment values are not data roots."""
+    home = Path(str(os.path.expanduser("~")))
     if sys.platform.startswith("win"):
-        base = os.environ.get("LOCALAPPDATA", "").strip()
-        # FALLBACK quan trọng: LOCALAPPDATA vắng mặt khi chạy service/CI tren
-        # Windows -> neu tin tuyet doi vao no thi chu "." se ghi du lieu vao
-        # thu muc lam viec cua tien trinh (rat kho tim khi can xoa).
-        return (Path(base) if base else home / "AppData" / "Local") / _DIR_NAME
+        raw = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(raw) if raw else None
+        if base is None or not base.is_absolute():
+            base = home / "AppData" / "Local"
+        return base / _DIR_NAME
     if sys.platform == "darwin":
         return home / "Library" / "Application Support" / _DIR_NAME
+    raw = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(raw) if raw else None
+    if base is not None and base.is_absolute():
+        return base / _DIR_NAME
     return home / ".local" / "share" / _DIR_NAME
 
 
-def data_dir() -> Path:
-    """Thư mục chứa dữ liệu người dùng; tự tạo nếu chưa có (im lặng khi lỗi)."""
-    global _cached
-    if _cached is not None:
-        return _cached
-
+def _resolve_data_dir() -> Path:
     override = os.environ.get(_ENV_HOME, "").strip()
     if override:
-        # expanduser + abspath: mot duong dan TUONG DOI ma de nguyen thi khi
-        # tro ly doi cwd giua chung (lenh mo file/anh co the lam vay) la toan bo
-        # du lieu "nhảy" theo thu muc moi - tim khong ra nua.
         chosen = Path(os.path.abspath(os.path.expanduser(override)))
         source = f"${_ENV_HOME}"
     elif is_source_checkout() and _writable(PACKAGE_DIR):
@@ -132,46 +135,60 @@ def data_dir() -> Path:
     else:
         chosen = _user_data_dir()
         source = "thu muc du lieu nguoi dung"
-
     try:
+        chosen = chosen.absolute()
         chosen.mkdir(parents=True, exist_ok=True)
-    except OSError as e:                       # đĩa đầy / thiếu quyền / đường dẫn lạ
-        # KHÔNG ném lỗi ở đây: trợ lý vẫn phải chạy được (lời nhắc + log khi đó
-        # chỉ nằm trong RAM). Rơi về temp dir - luôn ghi được trên mọi nền tảng.
-        # /tmp chỉ là FALLBACK, tên thư mục mang PID riêng nên không ghi đè ai.
-        tmp_root = os.environ.get("TEMP", "/tmp")       # noqa: S108 - fallback, co PID rieng
-        chosen = Path(os.path.join(tmp_root, f"{_DIR_NAME}-{os.getpid()}"))
-        try:
-            chosen.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        _verbose.append(f"không tạo được {source} ({e}) -> dùng {chosen}")
-    _cached = chosen
-    if _verbose:
-        for line in _verbose:
-            print(f"[PATHS] {line}")
-        _verbose.clear()
+    except (OSError, ValueError) as error:
+        chosen = Path(tempfile.mkdtemp(prefix=f"{_DIR_NAME}-{os.getpid()}-")).absolute()
+        _verbose.append(f"không tạo được {source} ({error}) -> dùng {chosen}")
+    for line in _verbose:
+        print(f"[PATHS] {line}", file=sys.stderr)
+    _verbose.clear()
     return chosen
 
 
-def data_path(filename: str | Path) -> Path:
-    """Đường dẫn một file dữ liệu (``data_path("config.json")``).
+def data_dir() -> Path:
+    """Pin one absolute root for cooperating calls in this module instance.
 
-    v7.8: giữ file trong thư mục dữ liệu. Trước đây là `data_dir() / filename`
-    trần, mà `Path("/a") / "/etc/hosts"` ra `/etc/hosts` (đường dẫn tuyệt đối
-    thay thế hẳn phần trước) và `../..` trèo ra ngoài - tức một tên file đi vào
-    từ dữ liệu bên ngoài có thể ghi đè bất cứ thứ gì máy này cho phép. Mọi lời
-    gọi trong dự án đều truyền hằng số, nên nay đây là hàng rào an toàn quanh
-    ranh giới dữ liệu, không phải đổi hành vi. Tên chứa ký tự phân tách đường
-    dẫn bị từ chối thay vì bị cắt bớt, để lỗi lộ ra đúng chỗ gọi.
+    Initialization and reset share a lock; failed initialization is not cached.
+    This does not rebind already-imported consumers' CONFIG_PATH/etc. Changing
+    a live application's home requires restarting those consumers.
     """
-    name = Path(str(filename))
-    if name.is_absolute() or ".." in name.parts:
-        raise ValueError(
-            f"data_path() nhận tên file trong thư mục dữ liệu, nhận được {str(filename)!r} "
-            f"(đường dẫn tuyệt đối hoặc chứa '..' sẽ thoát ra ngoài {data_dir()})."
-        )
-    return data_dir() / name
+    global _cached
+    with _directory_lock:
+        if _cached is None:
+            _cached = _resolve_data_dir()
+        return _cached
+
+
+def _relative_data_name(filename: str | Path) -> Path:
+    """Reject portable absolute/traversing names before any filesystem probe."""
+    raw = str(filename)
+    name, portable = Path(raw), PureWindowsPath(raw)
+    if (not name.parts or "\x00" in raw or name.anchor or portable.anchor or portable.drive
+            or ".." in name.parts or ".." in portable.parts):
+        raise ValueError(f"Cần đường dẫn tương đối trong thư mục dữ liệu: {raw!r}")
+    return name
+
+
+def _path_within(base: Path, name: Path) -> Path:
+    candidate = base / name
+    try:
+        candidate.resolve().relative_to(base.resolve())
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ValueError(f"Không cho phép thoát ra ngoài {base}: {str(name)!r}") from error
+    return candidate
+
+
+def data_path(filename: str | Path) -> Path:
+    """Return a contained path; reject traversal, drives and static symlink escapes.
+
+    Validate before resolving data_dir(), so an invalid name causes no startup
+    directory creation. Both native and Windows-rooted paths are refused on
+    every platform; contained relative subdirectories remain supported.
+    """
+    name = _relative_data_name(filename)
+    return _path_within(data_dir(), name)
 
 
 def describe() -> dict[str, object]:
@@ -188,30 +205,103 @@ def describe() -> dict[str, object]:
 def reset_cache() -> None:
     """Quên kết quả đã cache - dùng trong test và sau khi đổi biến môi trường."""
     global _cached
-    _cached = None
+    with _directory_lock:
+        _cached = None
 
 
 def migrate_from_package_dir(names: tuple[str, ...]) -> list[str]:
-    """Sao chép dữ liệu cũ từ thư mục package sang thư mục người dùng.
+    """Adopt contained legacy files, without ever replacing a concurrent winner.
 
-    Chỉ áp dụng khi thư mục package KHÔNG phải nơi đang dùng và file đích chưa
-    tồn tại - tức một lần duy nhất, không bao giờ ghi đè dữ liệu mới. Người dùng
-    chuyển từ "chạy source" sang "pip install" sẽ không mất lời nhắc/logic đã
-    dạy, thay vì âm thầm bắt đầu lại từ đầu.
+    Source and destination symlinks must stay inside their respective roots.
+    Publication uses a complete temporary file and a no-replace primitive;
+    unsupported filesystems fail closed instead of using an overwriting copy.
     """
     target_dir = data_dir()
     moved: list[str] = []
     if target_dir == PACKAGE_DIR:
         return moved
     for name in names:
-        src, dst = PACKAGE_DIR / name, target_dir / name
         try:
-            if src.is_file() and not dst.exists():
-                dst.write_bytes(src.read_bytes())
+            relative = _relative_data_name(name)
+            source = _path_within(PACKAGE_DIR, relative)
+            target = _path_within(target_dir, relative)
+            if os.path.lexists(target):
+                continue
+            if source.is_file() and _create_bytes_if_absent(target, source.read_bytes()):
                 moved.append(name)
-        except OSError:
-            continue          # không có quyền đọc file cũ -> bỏ qua, chạy tiếp
+        except (OSError, ValueError, TypeError) as error:
+            logging.getLogger(__name__).warning("Không nhận dữ liệu cũ %r: %s", name, error)
     return moved
+
+
+def _fsync_directory(parent: Path) -> None:
+    """Best-effort metadata sync; not all filesystems support directory fsync."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def _staged_bytes(target: Path, payload: bytes, *, prefix: str) -> Iterator[str]:
+    """Own the temporary handle/path through failures and normal cancellation."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=str(target.parent), prefix=prefix,
+                                         suffix=target.suffix, delete=False) as stream:
+            temporary = stream.name
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        yield temporary
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass  # A successful rename/replace consumed the staged path.
+            except OSError as error:
+                logging.getLogger(__name__).warning("Không dọn được %s: %s", temporary, error)
+
+
+def _create_bytes_if_absent(path: str | Path, payload: bytes) -> bool:
+    """Publish complete bytes, without replacing a concurrent winner.
+
+    Unsupported primitives fail closed. Hostile parent-directory replacement
+    is outside this contract, and directory fsync remains best effort.
+    """
+    target = Path(path)
+    if os.path.lexists(target):
+        return False
+    with _staged_bytes(target, payload, prefix=".adopt_tmp_") as temporary:
+        try:
+            if os.name == "nt":
+                os.rename(temporary, target)
+            else:
+                os.link(temporary, target)
+        except FileExistsError:
+            return False
+    _fsync_directory(target.parent)
+    return True
+
+
+def create_json_if_absent(path: str | Path, payload: Any) -> bool:
+    """Strict JSON first creation: True if published, False if already present.
+
+    Serialize/encode before touching disk. New files are private (0600 on
+    POSIX). Existing files, directories and dangling symlinks are not replaced.
+    """
+    text = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    return _create_bytes_if_absent(path, text.encode("utf-8"))
 
 
 def _writable(directory: Path) -> bool:
@@ -219,56 +309,55 @@ def _writable(directory: Path) -> bool:
     directory = Path(directory)
     if not directory.is_dir():
         return False
-    probe = directory / f".write_probe_{os.getpid()}"
+    probe: str | None = None
     try:
-        probe.write_text("x", encoding="utf-8")
-        probe.unlink()
+        fd, probe = tempfile.mkstemp(dir=str(directory), prefix=".write_probe_")
+        os.close(fd)
         return True
     except OSError:
-        try:
-            probe.unlink()
-        except OSError:
-            pass
         return False
+    finally:
+        if probe is not None:
+            try:
+                os.unlink(probe)
+            except OSError:
+                pass
+
+
+
+def _temp_prefix(prefix: str | None, target: Path) -> str:
+    if prefix is None or prefix == "":
+        return f".{target.stem}_tmp_"
+    if not isinstance(prefix, str):
+        raise TypeError("prefix phải là chuỗi hoặc None.")
+    if any(char in prefix for char in ("/", "\\", "\x00", ":")):
+        raise ValueError("prefix chỉ được là tiền tố tên file, không phải đường dẫn.")
+    return prefix
 
 
 def atomic_write_text(path: str | Path, content: str, *, prefix: str | None = None,
                       encoding: str = "utf-8") -> None:
-    """Ghi một file VĂN BẢN theo cùng kiểu an toàn như ``atomic_write_json``.
+    """Stage encoded bytes in the target directory, then replace atomically.
 
-    Tồn tại vì ``voice_cache/index.csv`` (mới v7.6) là file mà người dùng và
-    chương trình CÙNG sửa: mở ``"w"`` trực tiếp sẽ cắt mất chỉ mục cũ, và một lần
-    ghi hỏng giữa chừng biến cả kho giọng thành "không tìm thấy file nào" - mất
-    công tạo lại mà không ai giải thích được vì sao.
+    Validate/encode before creating directories. Temporary ownership unwinds
+    on ordinary errors, KeyboardInterrupt and SystemExit; cancellation before
+    publication leaves the old destination unchanged. No rollback after commit.
     """
+    if not isinstance(content, str):
+        raise TypeError("content phải là chuỗi.")
     target = Path(str(path))
-    parent = target.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_name = prefix or f".{target.stem}_tmp_"
-    fd, tmp_path = tempfile.mkstemp(dir=str(parent), prefix=tmp_name, suffix=target.suffix)
-    try:
-        with os.fdopen(fd, "w", encoding=encoding, newline="") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, target)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError as cleanup_error:
-            logging.getLogger(__name__).debug("Không dọn được %s: %s", tmp_path, cleanup_error)
-        raise
-    if os.name != "nt":
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(dir_fd)
-        except OSError:
-            pass
-        finally:
-            os.close(dir_fd)
+    temporary_prefix = _temp_prefix(prefix, target)
+    payload = content.encode(encoding)
+    with _staged_bytes(target, payload, prefix=temporary_prefix) as temporary:
+        if os.name != "nt":
+            try:
+                mode = stat.S_IMODE(target.stat().st_mode)
+            except FileNotFoundError:
+                pass
+            else:
+                os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    _fsync_directory(target.parent)
 
 
 def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = None,
@@ -295,7 +384,7 @@ def atomic_write_json(path: str | Path, payload: Any, *, prefix: str | None = No
     # Windows nhận CRLF do dịch ký tự xuống dòng). `json.load` đọc cả hai, và một
     # thư mục dữ liệu có hai kiểu xuống dòng khó xử lý hơn.
     target = Path(str(path))
-    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    text = json.dumps(payload, ensure_ascii=False, indent=indent, allow_nan=False)
     if trailing_newline:
         text += "\n"
     atomic_write_text(target, text, prefix=prefix or f".{target.stem}_tmp_")

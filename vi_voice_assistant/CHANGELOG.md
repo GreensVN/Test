@@ -1,5 +1,493 @@
 # CHANGELOG
 
+## v7.11.1 (2026-10-18) - cloud request timeout, typed audio, VAD budget và temp privacy
+
+### Lỗi tái hiện và sửa
+
+- **Cloud có thể chờ không giới hạn:** recognizer operation_timeout từng None,
+  gồm instance được cache. Áp/kiểm timeout 15s trước mỗi recognize_google; không
+  set được thì không gửi. gTTS playback/cache truyền connect/read timeout 15/15s.
+  Không tự retry network ở lớp này; SDK có thể có nhiều request/retry riêng,
+  nên không gọi đây là deadline 15s cho toàn utterance/pipeline.
+- **MP3 tạm rò rỉ:** save/player lỗi hoặc KeyboardInterrupt từng bỏ lại file
+  tại temp chung, mode theo umask. Dùng directory owner-private và finally
+  cleanup; denied cloud không allocate file. Lỗi cleanup-only được log, không
+  đổi success thành playback failure để tự phát lại. Windows handoff cũ 0,5s
+  vẫn không chứng minh async player hoàn tất; file/dir bị giữ có thể chưa dọn được.
+- **Biên độ/rate sai:** float audio đã normalized từng bị chia 32768 như int16;
+  mọi array bị gắn 16000 Hz. Thêm audio_utils thuần stdlib: buffer native int16
+  hoặc float32/64 trong [-1,1], mono 1D/(frames,1), rate integer 8000..192000,
+  finite và tối đa 15s. Kiểm shape/length trước tolist allocation, không sửa input.
+  Pass sampling_rate thật, không tự resample/downmix/guess endian/bit depth.
+  Unsupported/stereo/empty/quá dài bị từ chối, không cắt im lặng. Backend có thể
+  cần resampler riêng; không có thì fail có kiểm soát.
+- **Google WAV:** normalized float được encode lại PCM16 little-endian, clamp
+  +1 thành 32767, giữ rate/channels/sample width; cloud array route không cần
+  NumPy chỉ để dựng WAV. Invalid audio dừng trước load model/network.
+- **VAD sai budget:** giới hạn phrase từng là timeout + phrase_limit, dù speech
+  bắt đầu ngay; silence wait dư chunk và int() làm tròn sớm. Tách wait/speech
+  counters, ceil tới chunk 0,1s, giữ tổng MAX_DURATION. Đây là frame budget,
+  không bảo đảm wall-clock nếu native stream.read bị kẹt.
+- **RMS lệch theo dependency:** bytes/typed buffer không có astype khi NumPy có
+  mặt; fallback dùng len(array) như byte count. Dùng chung chuẩn normalize,
+  PCM16 bytes có endian rõ, invalid frame về 0, không phụ thuộc import NumPy.
+- **Runner approx:** full pytest/ML đã pass nhưng 4 embedded case fail vì shim
+  chỉ scalar. Thêm flat list/tuple/dict, exact infinity, nan_ok, abs/rel phối
+  hợp, default abs cho zero; reject tolerance âm/NaN và nested containers.
+  Tránh lỗi cũ finite có thể match infinity do inf <= inf. Không nới tolerance
+  audio hay giả vờ triển khai toàn bộ pytest/NumPy/complex approx semantics.
+- Cập nhật fake decoder theo np.asarray và typed PCM thật để assertion lỗi
+  decoder cũ vẫn chạm decoder, không pass chỉ vì input bị reject sớm.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **78 ca** trong 3 file test_v7111_*.py, tổng **2049**. Nhóm đầu 54 ca
+  có **44 fail / 10 pass** trước sửa; RMS thêm 8 ca (6 fail/2 pass trước sửa),
+  approx thêm 16 ca (15 fail/1 pass trước sửa). Không bỏ coverage cũ.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **2049 passed**; runner nhúng:
+  **2049 pass, 0 fail, 0 skip**. Ruff/mypy sạch; build/clean no-optional wheel
+  install ngoài repo; 5 installed CI scripts, version/JSON/privacy đều pass local.
+- Audio/HTTP/ASR/TTS tests dùng mock và buffer tổng hợp, không gửi request cloud,
+  thu mic, phát loa hay tải weights. Chưa xác minh real provider deadlines,
+  ASR quality/resampling dependency, GPU/CPU speed, async Windows audio hoặc
+  native Windows/macOS/WSL. Timeout không huỷ request đang chạy đã được opt-in;
+  policy mới áp cho lần gọi sau. Không claim mọi lỗi đã được loại bỏ.
+- Directory cleanup/fsync best effort, không SIGKILL/power-loss transaction.
+  History/reminders vẫn chưa có inter-process lock, timer cần tiến trình sống.
+  Chưa có Actions run cho branch ở lần kiểm tra; integration dispatch trước
+  đó HTTP 403, local không thay remote matrix.
+
+## v7.11.0 (2026-10-18) - speech opt-in, đúng engine, optional model assets ở data home
+
+### Thay đổi hành vi và lỗi sửa
+
+- **Audio upload ngầm:** listen_once từng luôn chọn Google khi có SpeechRecognition,
+  khác lớp STT offline-first. Thống nhất auto local-first; cloud chỉ khi chọn
+  google tường minh hoặc allow-cloud-stt. Offline cấm cloud fallback. Flags bool
+  được kiểm kiểu, policy reset ở invocation kế tiếp/config lỗi, không giữ consent cũ.
+- **Model download:** STT mặc định chỉ cache local. Processor/model from_pretrained
+  có local_files_only và trust_remote_code=False; pipeline nhận object đã load,
+  không model ID string. Chỉ --stt-download cho phép tải. Chuẩn bị backend trước
+  mở mic; kiểm timeout, kết quả decoder; file API từ chối URL/file không tồn tại.
+  Array API vẫn nhận PCM int16 như đường record, không phải API cho mọi audio format.
+- **TTS network/cache:** auto không fallback gTTS trừ khi allow-cloud-tts; chọn
+  gtts tường minh là consent. Auto prewarm cũng không dùng gTTS ngầm, nhưng writer
+  gtts tường minh vẫn hoạt động. Print engine không phát cached audio; cached cloud
+  resolver không vượt qua revocation. Giữ custom resolver local đang khoẻ, không
+  ép thử lại các backend khác; plugin Python không phải sandbox mạng.
+- **Piper/VieNeu:** helper _speak_piper cũ thực tế gọi VieNeu, nên nhận xét trước
+  rằng VieNeu chưa tích hợp là không chính xác. Nay có engine vieneu rõ ràng;
+  piper thực sự gọi binary với --model local và cleanup WAV tạm. Auto chỉ reuse
+  VieNeu đã initialize, không kéo model cold-start. Standalone STT chỉ inspect
+  nếu chưa --listen; standalone TTS không tự phát lời chào khi không có action,
+  --engine được áp dụng cả cho --speak và validate theo writer/speaker.
+- **Alias chạy -m:** thêm state alias STT/TTS. Alias loader hỗ trợ get_code qua
+  loader nguồn, giữ các lệnh python -m ...stt/tts --help và original module spec.
+- **PhoBERT/data:** model, checkpoints và extra CSV dùng data_path, không ghi vào
+  installed package. Bundle cần labels list[str] duy nhất, config object và
+  weight file; BOM hỗ trợ. Inference local_files_only, trust_remote_code=False,
+  validate label count/id2label/capacity trước publish instance. Không tự nhận
+  model package cũ; explicit model_dir vẫn hỗ trợ. Metadata presence không chứng
+  minh weights tốt: loader/inference thật vẫn cần kiểm.
+- **Training:** feedback dùng shared schema-aware CSV reader, chấp nhận headerless
+  verified row và phối hợp khóa writer. Lưu labels atomic, gắn id2label/label2id
+  vào config trước save. Chọn TrainingArguments keyword qua signature thay retry
+  TypeError; kiểm hyperparameters trước import AI. Có extra [phobert] và tùy chọn
+  --local-files-only. Lệnh train tường minh có thể tải checkpoint nếu không bật cờ này.
+- **Runner:** None fixture không còn bị coi là unknown; dependencies/default/module
+  scope nhận None đúng. Lỗi setup nằm trong failure/finalizer handling, không làm
+  mất summary hay crash cả runner. Giữ old assertions, cấp cloud consent rõ trong
+  các test chủ đích Google/gTTS và tạo file local trong fake inference tests.
+- Sửa cách diễn đạt LICENSE/NOTICE gây hiểu nhầm; không cấp quyền mới, không xem
+  metadata repo là bằng chứng quyền thương mại của model bên ngoài.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **95 ca** trong 3 file test_v711_*.py, tổng **1971**. Nhóm 78 ca đầu có
+  **66 fail / 12 pass** trước sửa; bổ sung direct model/training/Piper, 2 module
+  CLI và 5 None/setup-fixture regressions. Không loại test cũ để đạt số xanh.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1971 passed**; runner nhúng:
+  **1971 pass, 0 fail, 0 skip**. Ruff/mypy sạch, build wheel/sdist và cả 5 Python
+  installed CI scripts trên bản cài no-optional từ ngoài repo pass local.
+- Test ASR/TTS/transformers dùng mocks, không thu mic/phát loa/tải weights. Chưa
+  chứng minh chất lượng giọng, tốc độ GPU/CPU, HF/provider API mọi phiên bản,
+  native Windows/macOS/WSL hay license upstream. Chưa có Actions run remote;
+  integration dispatch trước đó HTTP 403. Không khẳng định mọi lỗi đã hết.
+- Policy áp cho lần gọi kế tiếp, không thu hồi request đang chạy. Flags vẫn module
+  global, không hỗ trợ concurrent CLI sessions. Cloud/binary/Python plugin do
+  caller chọn không phải sandbox; chỉ load model tin cậy. File export model đa
+  file không phải transaction toàn bundle; metadata atomic/mapping kiểm giảm
+  mismatch nhưng không rollback một training/save đã dở.
+- Core timer cần tiến trình còn chạy; history/reminders chưa có inter-process lock.
+
+## v7.10.6 (2026-10-18) - core import cùng state, data root ổn định, reload đúng profile
+
+### Lỗi tái hiện và sửa
+
+- **Hai runtime trong một process:** canonical import của paths/config/executor/
+  nlu_advanced từng tạo module riêng so với import phẳng. Đổi config trên package
+  executor không đổi executor/NLU mà CLI thực sự dùng; fallback paths có thể
+  trỏ hai temp directory. Lazy alias loader nay import đúng module phẳng qua
+  import lock chuẩn, kiểm origin, giữ original spec cho importlib.reload.
+  Chỉ intercept bốn tên canonical của package, không thay module tên ngắn của
+  app khác. __init__ chỉ đăng ký bridge; version import không nạp core/tạo data/
+  launch process, đăng ký lại idempotent. Không alias main và các module khác.
+- **Data root đi theo cwd:** XDG tương đối từng được cache nguyên dạng; XDG còn
+  lấn native root trên macOS/Windows. Chỉ nhận XDG tuyệt đối ở Unix; Windows
+  dùng LOCALAPPDATA tuyệt đối hoặc home/AppData/Local, macOS dùng native root.
+  VI_ASSISTANT_HOME vẫn ưu tiên, cho relative và pin tuyệt đối khi chọn lần đầu.
+  Cả temp factory trả relative cũng được pin. Cache init/reset cùng RLock tránh
+  nhiều fallback và tránh initializer cũ ghi đè một reset vừa hoàn tất.
+- **Nhầm installed thành source:** cần cả parent pyproject và test tree của
+  package (không có trong wheel), không tin một pyproject lạ cạnh site-packages.
+  Checkout đã bỏ tests sẽ dùng user data root; VI_ASSISTANT_HOME vẫn override.
+- **Reload bỏ profile/đổi dở state:** no-argument reload giữ path custom đã thành
+  công, absolute/pin với cwd lúc chọn. Tính/validate trước commit, giữ CONFIG
+  identity và không clear sang dict rỗng tạm. NLU import/refresh lỗi được báo
+  thay vì swallow; rollback các policy field NLU đã biết nếu hook ném lỗi.
+  Source chỉ cập nhật khi thành công. Lock chung cho reload và các policy/map
+  snapshot phối hợp; không phải transaction chống mọi caller tự sửa globals.
+- **Policy không đồng bộ:** NLU từng biến [] thành default trong khi executor
+  nhận set rỗng. [] hợp lệ nay được giữ ở cả hai; nghĩa là caller chủ động bỏ
+  danh sách xác nhận, chỉ dùng khi có ý định. Missing key vẫn default an toàn;
+  policy sai kiểu bị từ chối trước sửa thresholds. Confidence 0 vẫn luôn bị chặn.
+- **Consent/speech tồn dư:** apply CLI options reset auto-confirm trước load;
+  chỉ bật --yes sau config thành công. Apply không --yes không giữ cờ cũ;
+  kiểm optional features reset speech trước khi bật theo yêu cầu/khả dụng.
+- **Runner cleanup:** full embedded phát hiện helper chdir lưu cwd trung gian
+  ở lần gọi thứ hai, sau teardown nó trỏ vào directory đã xoá. Giữ snapshot
+  ban đầu cho nhiều chdir/syspath_prepend; prepend path có sẵn vẫn đưa lên đầu,
+  invalidate import caches như pytest. Thêm 4 ca direct/end-to-end thất bại
+  trước sửa; không nới assert ổn định cwd của tests production.
+- Test compatibility chỉ thêm đúng tên registration vào allowlist import;
+  regression subprocess mạnh hơn cấm process, kiểm core chưa import và chưa có
+  data directory. Test reload cũ cô lập thêm selected-path state; không bỏ test.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **68 ca** trong 3 file `test_v7106_*.py`; nhóm đầu ghi nhận **51 fail /
+  13 pass** trước sửa. Case ValueError của path được kiểm lại bằng mapping env
+  fault injection (OS không cho đặt NUL trong environment thật), không xem đó
+  là env hợp lệ ở kernel. Có race 2/8 thread init fallback, reset giữa init,
+  policy reader khi reload và concurrent core import hai thứ tự.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1876 passed**; runner nhúng:
+  **1876 pass, 0 fail, 0 skip**. Ruff/mypy sạch, build wheel/sdist và 5 installed
+  CI script local từ ngoài repo; version/JSON/privacy và import identity đúng.
+- Native directory rules Windows/macOS được mock tại Linux/Python 3.11; chưa
+  chạy thiết bị Windows/macOS/WSL/audio/OS action thật. Actions chưa có run lúc
+  kiểm tra, dispatch integration trước đó HTTP 403; local không thay remote CI.
+- Thay directory policy không xoá/di chuyển dữ liệu cũ: nếu cần vị trí cũ hãy
+  trỏ VI_ASSISTANT_HOME tuyệt đối vào đó. reset_cache chỉ reset resolver, không
+  rebind CONFIG_PATH/HISTORY_PATH/etc đã import; đổi home live cần restart.
+- Bridge chỉ bốn module core, không hot-upgrade hay hợp nhất các instance trùng
+  đang tồn tại trước nâng cấp. Foreign short-name collision bị từ chối, không
+  giành namespace của host. Arbitrary importlib.reload khi app đang chạy, sửa
+  trực tiếp globals và nhiều CLI session đồng thời không có transaction guard.
+- Cache/policy lock là in-process; history/reminders vẫn không có inter-process
+  lock, no-replace cần filesystem support, directory fsync/cleanup best effort.
+  Paused reminders vẫn cần restart/restore, không có background retry service.
+
+## v7.10.5 (2026-10-18) - startup/JSON lỗi vẫn có kiểm soát, atomic cleanup khi huỷ
+
+### Lỗi tái hiện và sửa
+
+- **Startup làm bẩn stdout:** lỗi tạo config khi import từng in warning lên
+  stdout trước parse_args/redirect. Cảnh báo config/log nay in trực tiếp stderr;
+  `safe_print(file=...)` giữ cả fallback trên đúng stream, không rơi sang stdout.
+- **Log custom không tạo được:** setup từng mkdir LOG_DIR mặc định kể cả khi
+  caller chọn log_file khác; không tạo parent của file custom. Nay chỉ tạo parent
+  thực tế, lỗi file vẫn cấu hình console handler thay vì thất bại toàn bộ.
+- **Analysis hỏng gây traceback/chạy một phần:** run_once từng serialize/iterate
+  ngoài try; một record hợp lệ đứng trước record lỗi có thể chạy trước khi crash.
+  Nay kiểm list[dict], serialization và summary cho cả batch trước command đầu.
+  Batch/metadata không serialize được trả lỗi phân tích 2 ở cả JSON/human mode,
+  không dispatch; giữ dry-run unknown=0 khi batch hợp lệ.
+- **JSON encoding/output:** thêm `json_output.py` cho machine JSON (CLI/doctor/
+  JSON logs): ASCII escape, không NaN/inf; lỗi cả exception.__str__ vẫn báo được.
+  Hoàn tất short-write, từ chối count sai/0 và flush trước command. Output không
+  xác nhận ghi thành công trả 1 và không dispatch; không cố ghép JSON thứ hai vào
+  stream hỏng. Doctor kiểm shape/serialization trước in, lỗi trả báo cáo JSON 1.
+  Config/history trên đĩa vẫn UTF-8 dễ đọc. Escape không sửa lone surrogate từ
+  provider; round-trip với Python JSON, client kiểm Unicode scalar nghiêm ngặt
+  vẫn có thể từ chối dữ liệu Unicode không hợp lệ từ upstream.
+- **Huỷ ghi file để lại temp:** except Exception không bắt KeyboardInterrupt/
+  SystemExit. Dùng chung context manager staged bytes cho overwrite/no-replace;
+  đóng handle và cleanup qua finally khi Python unwind, rồi truyền tiếp huỷ.
+  Trước publish file cũ không đổi; sau publish không có rollback.
+- **Encoding/prefix:** encode và kiểm prefix trước tạo directory/temp. Từ chối
+  prefix chứa separator, drive/ADS separator hoặc NUL. Text writer không cần
+  tự sở hữu raw fd qua fdopen; giữ codec/newline và quyền file cũ. Test I/O lỗi
+  cũ inject fsync thay fdopen, giữ nguyên assertion bảo toàn file/dọn temp.
+- **Runner capture:** kiểm tra output chặt hơn đã phát hiện tee nhúng trả None
+  thay vì count, làm 6 ca JSON cũ fail ở embedded (pytest/ML vẫn pass). Tee nay
+  trả tiến độ thực, chỉ mirror phần đã nhận, giữ tương thích None-returning real
+  stream như ResilientStream; không nới lỏng output guard production. Thêm 7 ca
+  tái hiện lỗi count/short-write của tee.
+- **Audit artifact:** chọn wheel/sdist theo phiên bản chung, không chọn glob đầu
+  có thể là build cũ; yêu cầu có module JSON mới trong wheel.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **132 ca** trong 3 file `test_v7105_*.py`; **95/119 ca đầu thất bại trước
+  sửa**, 24 ca đối chứng. Thêm 6 ca short-write/count cũng thất bại trước guard.
+  Thêm 7 ca tee cũng thất bại trước sửa runner. Tổng **1808**, không bỏ test cũ.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1808 passed**; runner nhúng:
+  **1808 pass, 0 fail, 0 skip**. Có subprocess thật cho module/script/canonical
+  startup với config lỗi, log parent lỗi, narrow output, I/O/flush lỗi và inject
+  KeyboardInterrupt/SystemExit ở fsync/publish; không chạy OS action nguy hiểm.
+- Ruff/mypy sạch; build wheel/sdist, clean no-optional install ngoài repo; phiên
+  bản/JSON/privacy và toàn bộ 5 Python script của install job pass local.
+- Cleanup chỉ khi Python unwind: không cam kết dọn sau SIGKILL/mất điện; cleanup
+  và directory fsync vẫn best effort. Output I/O lỗi có thể đã ghi một phần;
+  batch execution không phải transaction, không rollback action đã thực hiện.
+- Kiểm Linux/Python 3.11; native Windows/macOS/WSL/audio/OS action chưa xác minh.
+  GitHub Actions chưa có run ở lần kiểm tra, dispatch integration trước đó bị
+  HTTP 403; local không thay matrix remote. History/reminders vẫn chưa có khoá
+  liên process, nhắc nhở vẫn cần tiến trình chạy; paused lịch chưa có retry nền.
+
+## v7.10.4 (2026-10-18) - giữ history cũ, migration containment và khởi tạo không ghi đè
+
+### Lỗi tái hiện và sửa
+
+- **History mất dữ liệu:** file UTF-8 BOM từng bị xem là lỗi rồi thay bằng lịch
+  sử chỉ có câu mới. Nay đọc `utf-8-sig`; phân biệt file thiếu với file không
+  đọc được/JSON hỏng/sai root. File hỏng được giữ nguyên, append bỏ qua và cảnh
+  báo để người dùng sao lưu/sửa/di chuyển, không giả rằng dữ liệu cũ là rỗng.
+- **History chạy đua:** khoá read/modify/atomic-write giữa các thread dùng cùng
+  module; không để snapshot cũ ghi đè entry thread khác. Giữ giới hạn 200,
+  lọc entry sai kiểu, bỏ trùng liên tiếp; input không phải string không làm
+  crash hoặc chèn object vào lịch sử. Path string và Path đều được đọc đúng.
+- **Migration thoát vùng:** helper public trước đây ghép `PACKAGE_DIR / name`
+  và `data_dir / name` trần. Nay kiểm tên tương đối portable trước khi probe,
+  containment và symlink ở cả root nguồn/đích; không đọc/copy theo đường thoát.
+  Cho phép subdirectory nằm trong vùng. `data_path` cũng chặn Windows-rooted
+  path trên POSIX, không chỉ drive/UNC.
+- **File mới ghi đè file người dùng:** check `exists()` rồi copy/save có thể
+  thay thế file vừa được bên khác tạo. Thêm `create_json_if_absent()` và publisher
+  bytes: serialize/encode trước I/O, temp private cùng thư mục, write/flush/fsync,
+  đóng handle rồi rename no-replace (Windows) hoặc hardlink (POSIX). File đầy
+  đủ mới xuất hiện; file/directory/dangling symlink có sẵn không bị thay thế.
+  Không dùng fallback ghi đè; lỗi allocation không bị nhầm thành xung đột đích.
+- **Config lần đầu:** nếu bên tạo khác thắng, đọc/validate file của bên đó,
+  không trả về/ghi lên bằng defaults của mình. File thắng cuộc sai JSON cũng
+  được giữ nguyên và báo lỗi. Thiếu primitive no-replace thì cảnh báo, giữ
+  config trong RAM; migration lỗi thì bỏ qua và dọn temp best effort.
+- **Command ingress:** JSON decoder có thể ném ValueError do integer quá dài
+  hoặc RecursionError do nesting. Nay từ chối có kiểm soát. Target lỗi `str()`
+  không biến thành target rỗng rồi dispatch; nhãn intent lỗi không làm hỏng
+  chính thông báo từ chối. Giữ các quy tắc ép target hợp lệ trước đó.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **91 ca** trong 3 file `test_v7104_*.py`; **68/90 ca đầu thất bại trước
+  bản sửa**, 22 ca là đối chứng. Tổng **1676**, giữ các test trước đó.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1676 passed**; runner nhúng:
+  **1676 pass, 0 fail, 0 skip**. Test thật 2/8 thread append history, 2/6 thread
+  cùng migrate, deterministic race lúc user tạo config, static symlink escape,
+  fsync/publication/read lỗi, JSON/đối tượng sai kiểu.
+- Ruff/mypy sạch; build wheel/sdist, phiên bản/JSON/privacy và cả 5 Python script
+  của install job chạy trên bản cài không optional deps từ ngoài repo.
+- No-replace cần primitive filesystem phù hợp. POSIX không hỗ trợ hardlink sẽ
+  không adopt/khởi tạo file, không âm thầm dùng copy ghi đè. Chưa phòng attacker
+  đổi parent directory/symlink đồng thời với thao tác; metadata fsync best effort,
+  không phải transaction chống mất điện.
+- History lock chỉ phối hợp thread cùng module, không bảo vệ nhiều process hay
+  caller tự ghi file. History/reminders vẫn chưa có inter-process lock; lịch
+  tạm dừng vẫn cần restart/`restore_reminders()` để thử lại, chưa có retry nền.
+- Xác minh Linux/Python 3.11; chưa chạy native Windows/macOS/WSL, micro, audio hoặc
+  OS action thật. GitHub Actions chưa có run ở lần kiểm tra; integration trước
+  đó bị từ chối dispatch HTTP 403. Kết quả local không thay matrix remote.
+
+## v7.10.3 (2026-10-18) - kết quả công cụ thật và confidence không tự nâng lên 100%
+
+### Lỗi tái hiện và sửa
+
+- **Thành công giả:** `_run_first_available` từng trả True ngay sau `Popen`,
+  kể cả một Python child thoát 7; không chạy công cụ dự phòng dù công cụ đầu
+  đã lỗi. Công cụ hệ thống/âm lượng/chụp ảnh nay chờ và kiểm mã thoát, không
+  chỉ kiểm xem binary có được khởi chạy hay không. Không dùng shell; chặn
+  stdout/stderr child để không làm bẩn JSON stdout.
+- **Timeout:** chuỗi dự phòng dùng một deadline monotonic 15 giây. Binary
+  thiếu/không có quyền hoặc trả mã lỗi có thể thử công cụ sau; timeout hoặc
+  mã thoát sai kiểu/kết quả không xác định dừng ngay, không tự lặp hành động
+  có thể đã diễn ra. Timeout không phải xác nhận thao tác chưa thực hiện và
+  không cung cấp rollback.
+- **GUI:** tách helper gửi yêu cầu mở app/browser/file, không chờ người dùng
+  đóng GUI. Wrapper `Popen` không tự gọi lại sau `TypeError`; cập nhật mock cũ
+  theo đúng API mới, giữ các kiểm chứng argv/whitelist/chuỗi dự phòng.
+- **Confidence:** NLU từng clamp 1.5 thành 1.0, đánh dấu `need_confirm`/`ok`
+  dù doc nói ngoài [0,1] phải bị từ chối. Nay NLU/executor cùng từ chối giá trị
+  ngoài khoảng, bool, NaN/inf và integer không chuyển được sang float. Phần
+  hiển thị và feedback dùng 0 thay vì 100%; đọc threshold lỗi dùng mặc định
+  an toàn, không ném `OverflowError`.
+- **Tên ảnh:** timestamp tới giây từng làm nhiều ảnh trong cùng tick ghi đè
+  nhau. Thêm UUID ở path local và PowerShell WSL; test regex vẫn kiểm timestamp
+  và UUID, đồng thời kiểm nhiều path khác nhau khi đồng hồ bị đóng băng.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **103 ca** trong 2 file `test_v7103_*.py`; **63/93 ca đầu thất bại trước
+  bản sửa**, 30 ca là đối chứng. Tổng **1585**, không bỏ test cũ. Mock ở các test
+  platform cũ trả `CompletedProcess` cho lệnh đồng bộ; mock GUI vẫn dùng Popen.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1585 passed**; runner nhúng:
+  **1585 pass, 0 fail, 0 skip**. Có chạy child Python thật cho exit 0/nonzero,
+  fallback ghi marker và timeout; lệnh shutdown/lock/âm lượng/chụp ảnh chỉ mock.
+- Ruff/mypy sạch, build wheel/sdist; kiểm bản cài không optional deps từ ngoài
+  repo, phiên bản/JSON/privacy và toàn bộ 5 Python script của install job.
+- Xác minh Linux/Python 3.11, không xác minh thiết bị Windows/macOS/WSL, micro,
+  âm thanh hay hành động OS thật. Exit 0 chỉ xác nhận công cụ báo thành công,
+  không chứng minh màn hình đã khoá/ảnh đã hiển thị/thiết bị đổi trạng thái.
+  GUI helper chỉ xác nhận process creation, không biết app có mở hoàn tất.
+- GitHub Actions vẫn chưa có run cho branch ở lần kiểm tra này; lần dispatch
+  trước bị HTTP 403 (quyền Actions của integration). Kiểm chứng local không
+  thay thế matrix đa OS/Python chạy thật trên GitHub.
+- Lịch tạm dừng vẫn cần restart hoặc `restore_reminders()` để thử lại, chưa có
+  vòng retry tự động. History/reminders chưa có khoá liên process; CSV chỉ có
+  advisory lock, không phải transaction chống mất điện.
+
+## v7.10.2 (2026-10-18) - phục hồi timer không mất lịch, callback có thế hệ
+
+### Lỗi tái hiện và sửa
+
+- **Callback cũ/đúp:** ID lịch không phân biệt được các chặng timer hoặc một
+  lịch vừa huỷ rồi phục hồi cùng ID. Mỗi lần bật timer nay có token thế hệ;
+  callback sai thế hệ không tạo chặng mới, phát thông báo hoặc xoá lịch mới.
+- **Khôi phục mất dữ liệu:** thiếu tài nguyên tạo thread khi restore có thể
+  làm `reminders.json` bị ghi lại thành rỗng. Bản ghi tương lai nay còn trong
+  registry và file dưới trạng thái tạm dừng; `restore_reminders()` có thể thử
+  lại, không nhân đôi timer đang chạy. Không làm mất bản ghi khi retry tiếp tục lỗi.
+- **Chặng/lần lặp sau bị mất:** lỗi bật timer nối tiếp không còn thoát callback
+  bằng traceback rồi để handle đã chết trông như còn hoạt động. Lần lặp tiếp
+  theo vẫn được giữ nếu không bật được timer. Danh sách ghi rõ **TẠM DỪNG**;
+  khởi động lại để thử khôi phục, vẫn có thể huỷ. Chưa có vòng tự retry nền.
+- **Lỗi handle:** `cancel()` lỗi không được ngăn thông báo đến giờ hay xử lý
+  lịch lặp. Handle tạo dở được huỷ; token vô hiệu ngay khi start thất bại.
+  Yêu cầu đặt lịch mới thất bại vẫn rollback, không báo đặt thành công giả.
+- **Thời gian:** bỏ lịch một lần đã hết hạn khi retry bản ghi tạm dừng, nhưng
+  vẫn đưa lịch lặp tới mốc tương lai. Clamp integer quá lớn khi chuyển sang
+  `float()` bị tràn; giới hạn datetime trả `None` thay vì `OverflowError`. Chỉ đổi
+  `Z` ở cuối chuỗi ISO, không sửa ký tự phân cách ngày/giờ hợp lệ.
+- **CI:** bỏ giới hạn base `main` của `pull_request`, tránh bỏ qua PR xếp chồng.
+  Thêm kiểm tra callback/restore lỗi trên wheel đã cài từ ngoài repository.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **55 ca** trong 2 file `test_v7102_*.py`; **37/46 ca đầu thất bại trước
+  bản sửa**, 9 ca là đối chứng. Tổng bộ test **1482**; giữ mọi test trước đó.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **1482 passed**; runner nhúng:
+  **1482 pass, 0 fail, 0 skip**. Có fault injection start/cancel/write lỗi,
+  callback cũ sau restore cùng ID và 2/8 thread cùng gọi callback một chặng.
+- Ruff/mypy sạch; build wheel/sdist, kiểm tra phiên bản/JSON và các bước safety
+  trên bản cài sạch không optional deps, từ thư mục ngoài repo.
+- Kiểm chứng tại Linux/Python 3.11, chưa xác minh thiết bị Windows/macOS, micro,
+  âm thanh hoặc hành động OS thật. Mock timer không chứng minh độ chính xác
+  thời gian thực; nhắc nhở cần tiến trình chạy, lịch tạm dừng chưa được phục vụ.
+- Không có GitHub Actions run tại thời điểm kiểm tra. Dispatch trả HTTP 403
+  `Resource not accessible by integration`; cần quyền Actions ở kết nối GitHub.
+  Trạng thái thành công của bot review không thay thế CI chạy thật.
+- History/reminders vẫn chưa có khoá liên tiến trình; không chạy nhiều phiên
+  cùng ghi một thư mục dữ liệu. Khóa CSV vẫn là advisory, không phải transaction.
+
+## v7.10.1 (2026-10-17) - phản hồi đáng tin, ngữ cảnh không sửa dữ liệu và ngưỡng 0
+
+### Lỗi tái hiện và sửa
+
+- **Bỏ qua bảo vệ khi ngưỡng bằng 0:** `_judge` có thể biến confidence 0 của
+  câu phủ định thành `need_confirm`, rồi `--yes` cho qua; executor cũng nhận 0
+  nếu threshold 0. Cả hai tầng nay luôn từ chối confidence <= 0/sai kiểu, vẫn
+  giữ cấu hình chấp nhận confidence dương rất thấp khi người dùng chủ động chọn.
+- **Dạy thành công giả:** trước đây `teach` luôn báo "Đã ghi nhớ" dù thư mục đích
+  không ghi được. `log_feedback` nay trả bool sau flush/fsync; dạy báo lỗi khi
+  lưu thất bại hoặc không đọc được danh sách nhãn, không vô hiệu validation.
+  Lệnh huấn luyện trong thông báo dùng tên package đầy đủ để chạy ngoài source.
+- **CSV:** thêm append dưới khóa OS (flock trên POSIX, msvcrt trên Windows),
+  cùng khóa cho reader, timeout 5 giây. Kiểm tra header dưới khóa và ghi BOM
+  đúng một lần; record nhiều dòng/UTF-8 không trộn giữa các thread/process.
+  Theo thứ tự header hiện có; thiếu/trùng cột bắt buộc thì giữ nguyên file và
+  báo lỗi. Chấp nhận file cũ không header, BOM-only và dòng cuối thiếu newline.
+  Dữ liệu Unicode không mã hóa được bị từ chối trước khi ghi; xử lý short-write.
+- **Verified:** chỉ `True`/integer 1 được dùng làm xác nhận. Chuỗi `"false"`, `"0"`,
+  `"1"`, float hoặc container truthy không được biến thành nhãn huấn luyện đã duyệt.
+- **Context:** `max_items=0` không còn vô tình nhớ vô hạn do slicing `[-0:]`;
+  sai kiểu/âm báo lỗi rõ ràng. Lưu deepcopy, không giữ dict caller có thể sửa.
+  Thay đại từ một lượt, không quét lại target vừa chèn; bảo vệ URL/path ở câu
+  gốc, hỗ trợ chữ hoa. URL chứa `/no/` không còn bị nhân đôi khi nói "mở nó".
+
+### Kiểm chứng và giới hạn
+
+- Thêm **83 ca** trong 3 file `test_v7101_*.py`; trong 68 ca đầu tiên,
+  **52 thất bại trước bản sửa**. Giữ các test trước đó, tổng **1427**.
+- Pytest lite và scikit-learn/joblib/rapidfuzz: **1427 passed**; runner nhúng:
+  **1427 pass, 0 fail, 0 skip**. Có đối chứng ghi đồng thời 4 process/80 record,
+  2 thread cùng tạo file; có test timeout, fsync lỗi, short-write và MSVCRT giả.
+- Ruff/mypy sạch; build wheel/sdist và kiểm tra lại bản cài không optional deps
+  từ ngoài repo. CI thêm kiểm chứng feedback/context/ngưỡng 0 trên bản cài đặt.
+- Khóa CSV là advisory, chỉ bảo vệ writer/reader hợp tác; append không phải
+  transaction chống mất điện. History/reminders vẫn không có khóa liên process.
+- Xác minh tại Linux/Python 3.11; MSVCRT được mock, chưa chạy thiết bị Windows/macOS,
+  micro/âm thanh hay thao tác hệ điều hành thật. Nhắc nhở cần tiến trình còn chạy.
+
+## v7.10.0 (2026-10-17) - ổn định timer, JSON CLI và ranh giới dữ liệu
+
+### Sửa lỗi và nâng cấp
+
+- **Nhắc nhở:** timer xa ngày chia từng chặng tối đa 24 giờ, không tạo song song
+  nhiều lời nhắc; đăng ký trước khi start, rollback nếu start thất bại. Huỷ và
+  callback cũ/đúp được kiểm tra lại; restore giữ ID, tránh nhân đôi, đọc BOM và
+  múi giờ, bỏ mục sai kiểu. Lịch lặp có ID mới và bỏ qua các mốc đã lỡ; không báo
+  đặt thành công khi không tạo được timer. Chỉnh cách gọi Chủ nhật trong cùng tuần.
+- **CLI:** `--json` tách thông báo model/executor sang stderr để stdout chứa đúng
+  một JSON; câu rỗng trả `[]`, cấu hình riêng hỏng trả lỗi JSON/exit 1.
+  Dry-run bỏ qua khôi phục timer, thực thi, xác nhận và dạy model. Trạng thái
+  chưa hiểu/cần xác nhận trả exit 2; thực thi thất bại trả exit 1. Giữ dry-run
+  trả 0 khi phân tích được (kể cả status unknown), không giả là đã thực thi. `--yes` không
+  bỏ qua độ tự tin thấp. Giữ hành vi `--once` ưu tiên đối số văn bản.
+- **NLU:** chặn phủ định hệ thống (`đừng`, `không`, `do not`…); phân biệt `dừng`
+  và `đừng`. Tách câu không phân biệt hoa/thường, bảo vệ nội dung nhắc/tìm kiếm,
+  phẩy thập phân và dấu phân cách trong URL; từ `lock`/`shutdown` nằm trong
+  URL không được thành lệnh hệ thống, động từ mở URL rõ ràng được ưu tiên. Truy vấn không bị sửa typo hay mất
+  `C++ & C#`; `raw` giữ câu gốc và ngữ cảnh giữ chữ hoa/dấu câu URL. Sửa thay
+  `chúng nó` trước `nó`; thứ trong tuần không hợp lệ không gây KeyError.
+- **Toán:** AST giới hạn chiều dài/số node/kích thước số/luỹ thừa; hỗ trợ căn,
+  mũ âm và toán tử Unicode. Từ chối bool, kết quả phức/không hữu hạn, dấu ngoặc
+  lỗi và phần ghép chỉ tính được một phần; giữ biểu thức gốc khi trích thực thể.
+- **Cấu hình và I/O:** kiểm kiểu map, hành động nguy hiểm, ngưỡng hữu hạn và
+  thứ tự ngưỡng; deepcopy mặc định, đọc BOM và cấu hình đi kèm gói. Ghi JSON
+  atomic không nhận NaN, giữ file cũ/quyền file khi lỗi. Đường dẫn chặn ổ đĩa
+  Windows, NUL, traversal và symlink thoát vùng; vẫn cho thư mục con hợp lệ.
+  Không tự nhận lịch sử/lời nhắc/feedback cũ trong thư mục cài đặt.
+- **Model/doctor:** confidence sai/rỗng/NaN không được mặc định thành 100%; cache
+  lite dùng unpickler chỉ-dữ-liệu, kiểm tra bảng và tham số trước khi dùng.
+  TF-IDF hạ confidence theo tỷ lệ n-gram thực sự đã học, không tự tin vào câu
+  rác. Loại số phiên bản khỏi calculate; đồng bộ cách hiểu lệnh mở YouTube và
+  `google` thiếu truy vấn giữa lite và scikit-learn.
+  Doctor nhận đúng module `speech_recognition`, map app theo hệ điều hành và
+  lệnh sửa lỗi có tên package đầy đủ; xuất JSON không bị lẫn thông báo kiểm tra.
+- **Thực thi:** truyền lỗi mở trình duyệt, kiểm tra URL HTTP(S) và đường dẫn
+  thực thi/symlink; lịch sử lọc kiểu và giới hạn kích thước.
+- **Runner nhúng:** nhiều lớp `parametrize` chạy tích Descartes thay vì ghi đè;
+  hỗ trợ tên tham số dạng list, không bung list của một đối số; tham số trống,
+  trùng hoặc sai số giá trị trở thành lỗi test, không tạo kết quả xanh giả.
+- **Đóng gói:** `_version.py` là nguồn chung cho metadata, `__version__` và CLI
+  (trước đây lần lượt 7.8.0/7.9/7.9). License dùng SPDX, build backend
+  `setuptools>=77`; core vẫn stdlib-only, yêu cầu Python >= 3.9 không đổi.
+
+### Kiểm chứng
+
+- **1344 passed** bằng pytest ở cả môi trường lite và môi trường có
+  scikit-learn/joblib/rapidfuzz; **1344 pass, 0 fail, 0 skip** bằng runner nhúng.
+  Tăng **210** ca so với baseline 1134; thêm 7 file regression `test_v710_*.py`.
+- Ruff và mypy sạch. CI bổ sung kiểm tra stdout JSON và phiên bản metadata/API/CLI
+  trên bản đã cài, chạy từ ngoài repo.
+- Build được wheel và sdist; cài wheel không dependencies vào venv sạch,
+  kiểm phiên bản, entrypoint và stdout JSON từ ngoài repo; không thấy file
+  runtime/tests trong wheel hay dữ liệu riêng trong sdist.
+- Kiểm tra thực hiện trong Linux/Python 3.11; chưa xác minh micro/âm thanh,
+  model giọng nói, hay hành động hệ điều hành thật trên Windows/macOS.
+- Nhắc nhở cần tiến trình còn chạy; chưa có dịch vụ nền. Việc ghi atomic không
+  cung cấp khoá liên tiến trình; không cam kết an toàn khi nhiều phiên cùng ghi
+  một thư mục dữ liệu. Không khẳng định đã loại bỏ mọi lỗi ngoài phạm vi test.
+
 ## v7.9 (bổ sung 9f) - "nhắc tôi X" phải NHẮC, không phải LÀM LUÔN X; 1134 test
 
 **Lỗi nguy hiểm nhất tìm được trong đợt này: không có dấu hiệu báo lỗi.**

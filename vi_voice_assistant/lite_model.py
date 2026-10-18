@@ -325,9 +325,17 @@ class LiteIntentModel:
         def _num(key: str, default: float) -> float:
             value = state.get(key, default)
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-            return float(value) if ok else default
+            if not ok:
+                return default
+            try:
+                number = float(value)
+            except (ValueError, OverflowError):
+                return default
+            return number if math.isfinite(number) else default
 
-        model = cls(alpha=_num("alpha", 0.15), temperature=_num("temperature", 0.08))
+        alpha, temperature = _num("alpha", 0.15), _num("temperature", 0.08)
+        model = cls(alpha=alpha if alpha > 0 else 0.15,
+                    temperature=temperature if temperature > 0 else 0.08)
         model.format_version = int(_num("format_version", 0.0))
         classes = state.get("classes", [])
         model.classes_ = [str(c) for c in classes] if isinstance(classes, (list, tuple)) else []
@@ -394,6 +402,13 @@ def save_lite_model(model: LiteIntentModel, path: Path | str = LITE_MODEL_PATH) 
                 pass
 
 
+class _DataOnlyUnpickler(pickle.Unpickler):
+    """Cache lite chỉ là dict/list/số/chuỗi: không bao giờ cần thực thi GLOBAL."""
+
+    def find_class(self, module: str, name: str):
+        raise pickle.UnpicklingError(f"Không cho phép nạp đối tượng {module}.{name}")
+
+
 def load_lite_model(
     path: Path | str = LITE_MODEL_PATH, fingerprint: str | None = None
 ) -> LiteIntentModel | None:
@@ -402,12 +417,8 @@ def load_lite_model(
         return None
     try:
         with path.open("rb") as handle:
-            # pickle CHỈ được nạp từ file model do chính dự án này
-            # sinh ra (lite_model.pkl trong thư mục cài đặt), tức vùng tin cậy
-            # (trust boundary) là đĩa của người dùng. Nếu sau này cho phép nạp
-            # model tải từ nơi khác thì PHẢI đổi sang định dạng dữ liệu thuần
-            # (JSON/npz) - pickle từ nguồn lạ tương đương thực thi mã tuỳ ý.
-            state = pickle.load(handle)  # noqa: S301
+            state = _DataOnlyUnpickler(handle).load()
+
     except Exception:
         return None
     if not isinstance(state, dict):
@@ -417,7 +428,20 @@ def load_lite_model(
         return None
     if fingerprint is not None and state.get("fingerprint") != fingerprint:
         return None
-    model = LiteIntentModel.from_state(state)
+    try:
+        model = LiteIntentModel.from_state(state)
+        # Bảng không đầy đủ/sai kiểu thì cache hỏng: huấn luyện lại thay vì
+        # chờ tới lúc dự đoán mới chết ở phép cộng hay khi dựng từ vựng.
+        for label in model.classes_:
+            table = model._log_prob[label]
+            numbers = [model._log_prior[label], model._log_default[label], *table.values()]
+            if (not isinstance(table, dict)
+                    or any(not isinstance(key, str) for key in table)
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           for value in numbers)):
+                return None
+    except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
+        return None
     # Cập nhật version lên mới nhất khi load
     model.format_version = FORMAT_VERSION
     return model if model.classes_ else None

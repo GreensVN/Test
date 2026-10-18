@@ -21,6 +21,7 @@ Ba lỗi tìm được, cùng họ "lỗi bị nuốt rồi biến thành hành 
 """
 import sys
 import types
+from array import array
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,12 @@ def fake_sr(monkeypatch):
     return calls
 
 
+def _local_exports(tf):
+    tf.AutoProcessor = types.SimpleNamespace(from_pretrained=lambda *a, **k:
+        types.SimpleNamespace(tokenizer=object(), feature_extractor=object()))
+    tf.AutoModelForSpeechSeq2Seq = types.SimpleNamespace(from_pretrained=lambda *a, **k: object())
+
+
 @pytest.fixture
 def broken_transformers(monkeypatch):
     """Cài `transformers`/`torch` giả, cố tình làm `pipeline()` nổ."""
@@ -88,6 +95,7 @@ def broken_transformers(monkeypatch):
     torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     tf = types.ModuleType("transformers")
     tf.pipeline = fake_pipeline
+    _local_exports(tf)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "transformers", tf)
     return attempts
@@ -98,6 +106,7 @@ def fake_numpy(monkeypatch):
     """`numpy` giả: máy CI không cài, mà `transcribe_array` cần `np.float32`."""
     np = types.ModuleType("numpy")
     np.float32 = "float32"
+    np.asarray = lambda value, dtype=None: value
     monkeypatch.setitem(sys.modules, "numpy", np)
     return np
 
@@ -109,7 +118,7 @@ def test_tai_lai_truoc_khi_bo_model_offline(broken_transformers, fake_sr):
     """Lần tải đầu hỏng KHÔNG được kết luận là hỏng vĩnh viễn."""
     import stt
 
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     st._load_model()
     assert broken_transformers["n"] == stt._MAX_MODEL_LOAD_ATTEMPTS, \
         "phải thử lại trước khi bỏ model offline"
@@ -123,7 +132,7 @@ def test_het_ca_hai_duong_thi_bao_ro(monkeypatch, broken_transformers):
     import stt
 
     monkeypatch.setitem(sys.modules, "speech_recognition", None)
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     with pytest.raises(RuntimeError):
         st._load_model()
 
@@ -144,6 +153,7 @@ def test_tai_lai_vao_thanh_cong_thi_khong_bo_sang_google(monkeypatch, fake_sr):
     torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     tf = types.ModuleType("transformers")
     tf.pipeline = fake_pipeline
+    _local_exports(tf)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "transformers", tf)
 
@@ -172,7 +182,7 @@ def test_mat_mang_thi_bao_cho_nguoi_dung(fake_sr, capsys):
     """Bản cũ nuốt lỗi thành "" - người dùng tưởng mình nói không ra."""
     import stt
 
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     st._use_google = True
     fake_sr["mode"] = "error"
     assert st._google_transcribe(b"audio") == ""
@@ -185,7 +195,7 @@ def test_noi_khong_roi_thi_bao_rieng(fake_sr, capsys):
     thì gõ tay. Gộp chung thì người dùng nói lại mãi mà không bao giờ được."""
     import stt
 
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     st._use_google = True
     fake_sr["mode"] = "unknown"
     assert st._google_transcribe(b"audio") == ""
@@ -198,7 +208,7 @@ def test_google_hong_lien_tiep_khong_in_spam(fake_sr, capsys):
     """Chỉ cảnh báo lần đầu và mỗi 10 lần - in mỗi câu là spam trong lúc dùng."""
     import stt
 
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     st._use_google = True
     fake_sr["mode"] = "error"
     for _ in range(12):
@@ -212,7 +222,7 @@ def test_google_hong_lien_tiep_khong_in_spam(fake_sr, capsys):
 def test_nghe_lai_duoc_thi_bien_so_hoi_reset(fake_sr, capsys):
     import stt
 
-    st = stt.STT()
+    st = stt.STT(allow_cloud=True)
     st._use_google = True
     fake_sr["mode"] = "error"
     st._google_transcribe(b"audio")
@@ -236,15 +246,9 @@ def test_loi_giai_ma_offline_khong_lam_sap_cau_lenh(fake_numpy, tmp_path, capsys
     st = stt.STT()
     st._pipe = Boom()
 
-    class FakeArray:
-        def astype(self, _t):
-            return self
-
-        def __truediv__(self, _o):
-            return self
-
-    assert st.transcribe_array(FakeArray()) == ""
+    assert st.transcribe_array(array("h", [0, 100])) == ""
     assert "Lỗi" in capsys.readouterr().out
+    (tmp_path / "audio.wav").write_bytes(b"fake local audio")
     assert st.transcribe_file(tmp_path / "audio.wav") == ""
 
 
@@ -253,4 +257,5 @@ def test_duong_offline_that_thi_van_tra_ve_chuoi(fake_numpy, tmp_path):
 
     st = stt.STT()
     st._pipe = lambda audio: {"text": "  mở nhạc  "}
+    (tmp_path / "audio.wav").write_bytes(b"fake local audio")
     assert st.transcribe_file(tmp_path / "audio.wav") == "mở nhạc"

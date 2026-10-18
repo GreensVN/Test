@@ -1,5 +1,5 @@
 """
-executor.py v7.8
+executor.py v7.10.6
 -----------
 v7.1: thêm type hints, security hardening, CI
 -----------
@@ -57,7 +57,8 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable
 
-from config import load_config, load_config_safe
+from config import CONFIG_LOCK, load_config, load_config_safe
+from config import CONFIG_PATH as _DEFAULT_CONFIG_PATH
 from paths import atomic_write_json, data_path
 from platform_utils import (
     is_windows7_or_older,
@@ -100,28 +101,47 @@ DANGEROUS_ACTIONS: set[str] = {str(a) for a in CONFIG.get("dangerous_actions", [
 SPEAK_ENABLED: bool = False
 
 
+_ACTIVE_CONFIG_PATH: Path | None = None
+
+
+def current_config_path() -> Path:
+    """The source a no-argument reload will read, pinned independently of cwd."""
+    with CONFIG_LOCK:
+        return (_ACTIVE_CONFIG_PATH if _ACTIVE_CONFIG_PATH is not None
+                else Path(_DEFAULT_CONFIG_PATH).expanduser().absolute())
+
+
 def reload_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Nạp lại config.json khi đang chạy, cập nhật tại chỗ."""
-    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS
-    fresh = load_config(path) if path else load_config()
-    CONFIG.clear()
-    CONFIG.update(fresh)
-    CONFIDENCE_THRESHOLD = float(CONFIG.get("confidence_threshold", 0.35))
-    DANGEROUS_ACTIONS = {str(a) for a in CONFIG.get("dangerous_actions", [])}
-    # v7.2: đồng bộ cả ngưỡng của tầng NLU. Trước đây "nap lai"/--config chỉ
-    # cập nhật executor nên người dùng đổi confidence_accept trong config.json
-    # rồi nạp lại vẫn thấy trợ lý hỏi y như cũ (ngưỡng NLU đóng băng lúc import).
-    try:
+    """Reload the selected profile in place, committing only after NLU refresh.
+
+    Cooperating policy readers use CONFIG_LOCK; this is not an inter-process
+    transaction or a guarantee about callers mutating public globals directly.
+    """
+    global CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS, CONFIG_ERROR, _ACTIVE_CONFIG_PATH
+    with CONFIG_LOCK:
+        target = (_ACTIVE_CONFIG_PATH if path is None
+                  else Path(path).expanduser().absolute())
+        fresh = load_config(target) if target is not None else load_config()
+        threshold = float(fresh.get("confidence_threshold", 0.35))
+        dangerous = set(fresh.get("dangerous_actions", ("shutdown", "restart", "logout", "sleep")))
         import nlu_advanced
 
-        nlu_advanced.refresh_thresholds(CONFIG)
-    except Exception as e:  # pragma: no cover - NLU không bắt buộc phải có
-        logger.debug("Không cập nhật được ngưỡng của tầng NLU: %s", e)
-    logger.info(
-        "Đã nạp lại cấu hình: %d web, %d file",
-        len(CONFIG.get("website_map", {})),
-        len(CONFIG.get("file_map", {})),
-    )
+        old_policy = (nlu_advanced.CONFIDENCE_ACCEPT, nlu_advanced.CONFIDENCE_ASK,
+                      set(nlu_advanced.DANGEROUS_TARGETS))
+        try:
+            nlu_advanced.refresh_thresholds(fresh)
+        except BaseException:
+            (nlu_advanced.CONFIDENCE_ACCEPT, nlu_advanced.CONFIDENCE_ASK,
+             nlu_advanced.DANGEROUS_TARGETS) = old_policy
+            raise
+        obsolete = set(CONFIG) - set(fresh)
+        CONFIG.update(fresh)
+        for key in obsolete:
+            del CONFIG[key]
+        CONFIDENCE_THRESHOLD, DANGEROUS_ACTIONS = threshold, dangerous
+        CONFIG_ERROR = None
+        _ACTIVE_CONFIG_PATH = target
+        logger.info("Đã nạp lại cấu hình từ %s", current_config_path())
     return CONFIG
 
 
@@ -173,6 +193,7 @@ EXECUTABLE_EXTENSIONS = {
     ".pyw",
     ".app",
     ".lnk",  # v7.0: chặn thêm shortcut
+    ".desktop", ".url", ".scf", ".command", ".application", ".sct",
 }
 
 CHITCHAT_REPLIES: list[tuple[str, list[str]]] = [
@@ -309,8 +330,17 @@ def respond(text: str) -> None:
 
 
 def _open_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+                 and not any(ord(char) < 32 or ord(char) == 127 for char in url))
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        safe_print("[TỪ CHỐI] Chỉ mở URL HTTP(S) có tên máy chủ hợp lệ.")
+        return False
     if SYSTEM == "Linux" and is_wsl():
-        if _run_first_available([["wslview", url], ["explorer.exe", url]]):
+        if _launch_first_available([["wslview", url], ["explorer.exe", url]]):
             return True
         logger.warning("WSL: không tìm thấy wslview/explorer.exe để mở URL %s", url)
         return False
@@ -325,7 +355,7 @@ def _open_path(path: str) -> bool:
     # Expand và resolve
     try:
         expanded = os.path.expandvars(os.path.expanduser(path))
-        p = Path(expanded)
+        p = Path(expanded).resolve()
         # Kiểm tra tồn tại, không follow symlink nguy hiểm quá mức
         if not p.exists():
             safe_print(f"[LỖI] Không tìm thấy đường dẫn: {expanded}")
@@ -346,7 +376,7 @@ def _open_path(path: str) -> bool:
         elif SYSTEM == "Darwin":
             _popen(["open", str(p)])
         elif is_wsl():
-            if not _run_first_available([["wslview", str(p)]]):
+            if not _launch_first_available([["wslview", str(p)]]):
                 safe_print("[LỖI] Trên WSL cần cài wslu: sudo apt install wslu")
                 return False
         else:
@@ -406,32 +436,34 @@ def _as_map(value: Any) -> dict[str, str]:
 
 
 def _app_map_for_platform() -> dict[str, str]:
-    if SYSTEM == "Darwin":
-        return _as_map(CONFIG.get("app_map_macos", {}))
-    if SYSTEM == "Windows":
-        return _as_map(CONFIG.get("app_map_windows", {}))
-    return _as_map(CONFIG.get("app_map_linux", {}))
+    key = {"Darwin": "app_map_macos", "Windows": "app_map_windows"}.get(SYSTEM, "app_map_linux")
+    with CONFIG_LOCK:
+        return _as_map(CONFIG.get(key, {}))
 
 
 # ============================================================================
 # System actions
 # ============================================================================
 def action_open_website(target: str) -> bool:
-    url, matched_key = _best_match(target, CONFIG.get("website_map", {}), fuzzy=False)
+    if not target or target == "unknown":
+        respond("Bạn muốn mở trang web nào ạ?")
+        return False
+    with CONFIG_LOCK:
+        mapping = CONFIG.get("website_map", {})
+    url, matched_key = _best_match(target, mapping, fuzzy=False)
     if url is None:
         if _URL_SCHEME_RE.match(target):
             url = target
         elif _BARE_DOMAIN_RE.match(target):
             url = "https://" + target
         else:
-            url, matched_key = _best_match(target, CONFIG.get("website_map", {}))
+            url, matched_key = _best_match(target, mapping)
             if url is None:
                 url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(target)
 
     safe_print(f"[THỰC THI] Mở trình duyệt: {url}")
     logger.info("Mở website: target=%r matched=%r url=%s", target, matched_key, url)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def action_open_app(target: str) -> bool:
@@ -490,36 +522,87 @@ def action_open_app(target: str) -> bool:
         return False
 
 
-def _popen(cmd: list[str]) -> None:
-    """Popen wrapper that tolerates simple mocks (lambda cmd: ...) used in tests."""
-    try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except TypeError:
-        # Mock không nhận kwargs stdout/stderr (test cũ)
-        subprocess.Popen(cmd)
-    # FileNotFoundError sẽ được caller xử lý
+# One overall budget for a utility fallback chain, not 15 seconds per tool.
+_COMMAND_TIMEOUT = 15.0
 
-def _run_first_available(candidates: list[list[str]]) -> bool:
+
+def _popen(cmd: list[str]) -> None:
+    """Launch a GUI request without waiting for the application to close.
+
+    Never retry TypeError: a failed wrapper cannot prove no process started.
+    """
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _launch_first_available(candidates: list[list[str]]) -> bool:
+    """Browser/file launchers acknowledge creation, not application completion."""
     for cmd in candidates:
         try:
             _popen(cmd)
-            logger.info("Lệnh hệ thống chạy thành công: %s", cmd)
+            logger.info("Đã gửi yêu cầu mở bằng: %s", cmd)
             return True
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            logger.debug("Lệnh %s lỗi: %s", cmd, e)
-            continue
+        except OSError as error:
+            logger.debug("Không mở được bằng %s: %s", cmd, error)
+        except Exception as error:
+            logger.warning("Không xác định được trạng thái mở bằng %s: %s", cmd, error)
+            return False
+    return False
+
+
+def _run_command(cmd: list[str], *, timeout: float | None = None) -> bool:
+    """Check a short utility's exit status, without a shell or inherited output."""
+    result = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=_COMMAND_TIMEOUT if timeout is None else timeout,
+    )
+    code = result.returncode
+    if isinstance(code, bool) or not isinstance(code, int):
+        raise ValueError("Không đọc được mã thoát của công cụ hệ thống.")
+    if code != 0:
+        logger.warning("Công cụ %s kết thúc với mã lỗi %s", cmd, code)
+    return code == 0
+
+
+def _run_first_available(candidates: list[list[str]]) -> bool:
+    """Try known failures only; an ambiguous timeout must not repeat an action."""
+    deadline = time.monotonic() + _COMMAND_TIMEOUT
+    for cmd in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("Hết thời gian thử công cụ hệ thống.")
+            return False
+        try:
+            if _run_command(cmd, timeout=remaining):
+                logger.info("Công cụ hoàn tất thành công: %s", cmd)
+                return True
+        except OSError as error:
+            logger.debug("Không chạy được %s: %s", cmd, error)
+        except subprocess.TimeoutExpired:
+            logger.warning("Công cụ %s hết thời gian; không chạy lệnh dự phòng.", cmd)
+            return False
+        except Exception as error:
+            logger.warning("Không xác định được kết quả %s: %s", cmd, error)
+            return False
     return False
 
 
 def _is_executable_path(path: str) -> bool:
-    cleaned = (path or "").strip().rstrip("\"'")
-    return Path(cleaned).suffix.lower() in EXECUTABLE_EXTENSIONS
+    cleaned = os.path.expandvars(os.path.expanduser((path or "").strip().rstrip("\"'")))
+    try:
+        # Kiểm cả tên được nhập lẫn đích symlink/biến môi trường. Windows bỏ
+        # dấu chấm/khoảng trắng cuối tên khi mở file, nên không được lách .exe.
+        paths = (Path(cleaned), Path(cleaned).resolve())
+        return any(Path(str(p).rstrip(". ")).suffix.lower() in EXECUTABLE_EXTENSIONS
+                   or (p.is_file() and os.name != "nt" and os.access(p, os.X_OK))
+                   for p in paths)
+    except (OSError, ValueError, RuntimeError):
+        return True  # đường dẫn không kiểm tra được thì từ chối, không mở liều
 
 
 def action_open_file(target: str) -> bool:
-    path, matched_key = _best_match(target, CONFIG.get("file_map", {}))
+    with CONFIG_LOCK:
+        mapping = CONFIG.get("file_map", {})
+    path, matched_key = _best_match(target, mapping)
     if path is None:
         if target and _SAFE_PATH_RE.match(target) and ".." not in target:
             path = target
@@ -554,7 +637,8 @@ def _system_control_wsl(target: str) -> bool:
     }
     if target in commands:
         try:
-            _popen(commands[target])
+            if not _run_command(commands[target]):
+                return False
             safe_print(f"[THỰC THI] Lệnh hệ thống (WSL -> Windows host): {target}")
             logger.info("Lệnh hệ thống qua Windows host (WSL): %s", target)
             return True
@@ -573,7 +657,8 @@ def _system_control_wsl(target: str) -> bool:
             f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
         )
         try:
-            _popen(["powershell.exe", "-NoProfile", "-Command", ps])
+            if not _run_command(["powershell.exe", "-NoProfile", "-Command", ps]):
+                return False
             safe_print(f"[THỰC THI] Điều chỉnh âm thanh (WSL -> Windows host): {target}")
             return True
         except FileNotFoundError:
@@ -588,7 +673,9 @@ def _system_control_wsl(target: str) -> bool:
             "$g = [System.Drawing.Graphics]::FromImage($bmp); "
             "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
             "$dir = [Environment]::GetFolderPath('MyPictures'); "
-            "$path = Join-Path $dir ('screenshot_{0:yyyyMMdd_HHmmss}.png' -f (Get-Date)); "
+            "$name = 'screenshot_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + "
+            "[Guid]::NewGuid().ToString('N') + '.png'; "
+            "$path = Join-Path $dir $name; "
             "$bmp.Save($path); Write-Output $path"
         )
         try:
@@ -694,17 +781,18 @@ SCREENSHOT_LINUX_TOOLS = ["gnome-screenshot", "spectacle", "scrot", "grim", "imp
 
 
 def _screenshot_path() -> Path:
-    """Đường dẫn file ảnh chụp màn hình: ~/Pictures/screenshot_<thoi-gian>.png
+    """Đường dẫn ảnh: ~/Pictures/screenshot_<thoi-gian>_<uuid>.png
 
-    Đặt tên file theo timestamp để KHÔNG ghi đè ảnh cũ - người dùng chụp liên
-    tục khi lập trình báo cáo lỗi rất dễ có nhiều tấm trong cùng phút.
+    Timestamp kèm UUID: nhiều ảnh trong cùng một tick đồng hồ không dùng
+    lại tên cũ, kể cả khi đồng hồ được chỉnh lùi.
     """
     pictures_dir = Path(HOME) / "Pictures"
     pictures_dir.mkdir(parents=True, exist_ok=True)
-    return pictures_dir / f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+    name = f"screenshot_{datetime.datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex}.png"
+    return pictures_dir / name
 
 
-def _send_virtual_key(target: str) -> None:
+def _send_virtual_key(target: str) -> bool:
     """Bấm phím âm lượng ảo qua PowerShell (dùng cho Windows và WSL)."""
     key = VOLUME_KEYS_WINDOWS[target]
     repeat = 5 if target in ("volume_up", "volume_down") else 1
@@ -712,7 +800,7 @@ def _send_virtual_key(target: str) -> None:
         "$w = New-Object -ComObject WScript.Shell; "
         f"1..{repeat} | ForEach-Object {{ $w.SendKeys([char]{key}) }}"
     )
-    _popen(["powershell", "-NoProfile", "-Command", ps])
+    return _run_command(["powershell", "-NoProfile", "-Command", ps])
 
 
 def _windows_screenshot() -> bool:
@@ -726,7 +814,8 @@ def _windows_screenshot() -> bool:
         "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
         f"$bmp.Save('{safe_path}')"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=15)
+    if not _run_command(["powershell", "-NoProfile", "-Command", ps]):
+        return False
     safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
     logger.info("Đã chụp màn hình: %s", path)
     return True
@@ -737,8 +826,7 @@ def _system_control_windows(target: str) -> bool | None:
     if target in COMMANDS_WINDOWS:
         safe_print(f"[THỰC THI] {' '.join(COMMANDS_WINDOWS[target])}")
         logger.info("Lệnh hệ thống (Windows): %s", target)
-        _popen(COMMANDS_WINDOWS[target])
-        return True
+        return _run_command(COMMANDS_WINDOWS[target])
 
     if target in VOLUME_KEYS_WINDOWS:
         if _volume_via_pycaw(target):
@@ -746,7 +834,8 @@ def _system_control_windows(target: str) -> bool | None:
             logger.info("Điều chỉnh âm thanh qua pycaw: %s", target)
             return True
 
-        _send_virtual_key(target)
+        if not _send_virtual_key(target):
+            return False
         safe_print(f"[THỰC THI] Điều chỉnh âm thanh (phím ảo): {target}")
         if target == "unmute":
             safe_print(
@@ -765,18 +854,17 @@ def _system_control_macos(target: str) -> bool | None:
     if target in COMMANDS_MACOS:
         safe_print(f"[THỰC THI] Lệnh hệ thống (macOS): {target}")
         logger.info("Lệnh hệ thống (macOS): %s", target)
-        _popen(COMMANDS_MACOS[target])
-        return True
+        return _run_command(COMMANDS_MACOS[target])
 
     if target in VOLUME_MACOS:
         safe_print(f"[THỰC THI] Điều chỉnh âm thanh (macOS): {target}")
         logger.info("Điều chỉnh âm thanh (macOS): %s", target)
-        _popen(VOLUME_MACOS[target])
-        return True
+        return _run_command(VOLUME_MACOS[target])
 
     if target == "screenshot":
         path = _screenshot_path()
-        _popen(["screencapture", str(path)])
+        if not _run_command(["screencapture", str(path)]):
+            return False
         safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
         return True
     return None
@@ -798,7 +886,7 @@ def _linux_screenshot() -> bool:
         safe_print(f"[THỰC THI] Đã chụp màn hình: {path}")
         return True
     safe_print(
-        "[LỖI] Không tìm thấy công cụ chụp màn hình (đã thử "
+        "[LỖI] Không tìm thấy hoặc không chạy được công cụ chụp màn hình (đã thử "
         f"{', '.join(SCREENSHOT_LINUX_TOOLS)})."
     )
     return False
@@ -813,7 +901,7 @@ def _system_control_linux(target: str) -> bool | None:
             safe_print(f"[THỰC THI] Lệnh hệ thống (Linux): {target}")
             return True
         safe_print(
-            f"[LỖI] Không tìm thấy công cụ phù hợp cho '{target}' trên Linux "
+            f"[LỖI] Không tìm thấy hoặc công cụ không chạy được lệnh '{target}' trên Linux "
             f"(đã thử systemctl/shutdown/loginctl...)."
         )
         logger.warning("Không tìm thấy lệnh Linux khả dụng cho: %s", target)
@@ -824,7 +912,8 @@ def _system_control_linux(target: str) -> bool | None:
             safe_print(f"[THỰC THI] Điều chỉnh âm thanh (Linux): {target}")
             return True
         safe_print(
-            "[LỖI] Không tìm thấy công cụ chỉnh âm lượng (đã thử wpctl, pactl, amixer) "
+            "[LỖI] Không tìm thấy hoặc không chạy được công cụ chỉnh âm lượng "
+            "(đã thử wpctl, pactl, amixer) "
             "trên máy này. Cài PipeWire (wpctl), PulseAudio (pactl) hoặc "
             "ALSA utils (amixer - gói alsa-utils, có ở gần mọi bản Linux để bàn)."
         )
@@ -860,7 +949,9 @@ def action_system_control(target: str) -> bool:
                 "hình, tăng âm lượng, chụp màn hình.")
         return False
 
-    if target in DANGEROUS_ACTIONS:
+    with CONFIG_LOCK:
+        needs_confirmation = target in DANGEROUS_ACTIONS
+    if needs_confirmation:
         if not _confirm(f"Bạn chắc chắn muốn '{target}'?"):
             safe_print("Đã huỷ lệnh.")
             logger.info("Người dùng huỷ lệnh nguy hiểm: %s", target)
@@ -891,8 +982,7 @@ def action_search_web(target: str) -> bool:
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(target)
     respond(f"Đang tìm kiếm {target}")
     logger.info("Tìm kiếm web: %s", target)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def action_play_media(target: str) -> bool:
@@ -900,8 +990,7 @@ def action_play_media(target: str) -> bool:
     url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
     respond(f"Đang phát {query}")
     logger.info("Phát media: %s", query)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 def _format_number(value: Any) -> str:
@@ -925,7 +1014,8 @@ def action_calculate(target: str, data: dict[str, Any] | None = None) -> bool:
         except Exception:
             result = None
 
-    if result is None:
+    if (type(result) not in (int, float)
+            or (isinstance(result, float) and not math.isfinite(result))):
         respond(f"Xin lỗi, tôi chưa tính được phép tính {target}")
         return False
 
@@ -939,8 +1029,7 @@ def action_get_weather(target: str) -> bool:
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
     respond(f"Đang xem {query}")
     logger.info("Xem thời tiết: %s", query)
-    _open_url(url)
-    return True
+    return _open_url(url)
 
 
 WEEKDAYS_VI = ["thứ Hai", "thứ Ba", "thứ Tư", "thứ Năm", "thứ Sáu", "thứ Bảy", "Chủ nhật"]
@@ -970,19 +1059,25 @@ def action_chitchat(target: str) -> bool:
 
 
 # --- Reminders với atomic write và lock ---
-def _reminder_at(item: dict[str, Any]):
-    """Lấy mốc giờ của một lời nhắc, chấp nhận cả khi nó được lưu dạng chuỗi.
-
-    v7.2: ``reminders.json`` có thể bị sửa tay hoặc được ghi bởi phiên bản cũ,
-    nên mọi chỗ đọc danh sách này phải dùng hàm "an toàn" thay vì index thẳng.
-    """
-    at = item.get("at")
-    if isinstance(at, str):
+def _local_datetime(value: object) -> datetime.datetime | None:
+    """Đổi ISO có timezone về giờ địa phương; nội bộ chỉ dùng datetime naive."""
+    if isinstance(value, str):
         try:
-            return datetime.datetime.fromisoformat(at)
+            value = datetime.datetime.fromisoformat(
+                value[:-1] + "+00:00" if value.endswith("Z") else value
+            )
         except ValueError:
             return None
-    return at if isinstance(at, datetime.datetime) else None
+    if not isinstance(value, datetime.datetime):
+        return None
+    try:
+        return value.astimezone().replace(tzinfo=None) if value.tzinfo else value
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _reminder_at(item: dict[str, Any]) -> datetime.datetime | None:
+    return _local_datetime(item.get("at")) if isinstance(item, dict) else None
 
 
 # --- Nhịp lặp (v7.9) --------------------------------------------------------
@@ -1022,55 +1117,46 @@ def _coerce_repeat(repeat: object) -> dict[str, Any] | None:
 
 def _next_occurrence(run_at: datetime.datetime,
                      repeat: dict[str, Any]) -> datetime.datetime | None:
-    """Lần xuất hiện KẾ TIẾP sau `run_at`. None nếu không tính được.
-
-    Luôn trả về mốc **sau** `run_at`. Nếu vì lý do gì đó trả về mốc đã qua,
-    `_schedule_reminder` từ chối đặt (delay <= 0) và chuỗi lặp dừng lại - tức
-    lỗi sẽ thày một nhắc bị bỏ, chứ không thành vòng lặp treo máy.
-    """
+    """Lần kế tiếp sau run_at; ngày cuối tháng được chặn về ngày có thật."""
     kind = repeat.get("kind")
-    if kind == "daily":
-        nxt = run_at + datetime.timedelta(days=1)
-    elif kind == "weekly":
-        weekday = repeat.get("weekday")
-        if weekday is None:
-            nxt = run_at + datetime.timedelta(days=7)
-        else:
-            # run_at.weekday() là 0=thứ hai; weekday của người dùng cùng hệ.
-            ahead = (weekday - run_at.weekday()) % 7 or 7
-            nxt = run_at + datetime.timedelta(days=ahead)
-    elif kind == "monthly":
-        year, month = run_at.year, run_at.month + 1
-        if month > 12:
-            year, month = year + 1, 1
-        # Ngày 31 tháng 2 không tồn tại -> lùi về ngày cuối tháng đó thay vì nổ.
-        day = min(run_at.day, _days_in_month(year, month))
-        nxt = run_at.replace(year=year, month=month, day=day)
-    else:
-        return None
-    return nxt if nxt > run_at else None
+    try:
+        if kind == "daily":
+            return run_at + datetime.timedelta(days=1)
+        if kind == "weekly":
+            weekday = repeat.get("weekday")
+            ahead = (weekday - run_at.weekday()) % 7 or 7 if weekday is not None else 7
+            return run_at + datetime.timedelta(days=ahead)
+        if kind == "monthly":
+            year, month = run_at.year, run_at.month + 1
+            if month > 12:
+                year, month = year + 1, 1
+            day = min(run_at.day, _days_in_month(year, month))
+            return run_at.replace(year=year, month=month, day=day)
+    except (ValueError, OverflowError):
+        logger.warning("Lịch lặp vượt quá phạm vi datetime: %s", run_at)
+    return None
 
 
 def _next_future_occurrence(run_at: datetime.datetime, repeat: dict[str, Any],
                             now: datetime.datetime) -> datetime.datetime | None:
-    """Lần xuất hiện đầu tiên SAU `now`, cuộn từng bước.
-
-    Vì sao phải cuộn vòng chứ không gọi `_next_occurrence` một lần: máy tắt 3
-    ngày thì lịch "mỗi ngày" cần cuộn 3 bước mới tới tương lai. Cuộn đúng MỘT
-    bước thì vẫn nằm trong quá khứ, `_schedule_reminder` từ chối, và cả chuỗi
-    biến mất - đúng cái hỏng mà hàm này sinh ra để chặn.
-
-    Có chặn trên để đồng hồ hỏng (lùi hàng năm) không quay vô hạn.
-    """
-    nxt = run_at
-    for _ in range(400):
-        step = _next_occurrence(nxt, repeat)
-        if step is None:
-            return None
-        nxt = step
-        if nxt > now:
-            return nxt
-    logger.warning("Không cuộn được tới lần lặp kế tiếp cho %r", repeat)
+    """Bỏ các lần đã lỡ (kể cả máy ngủ nhiều năm), không làm mất cả chuỗi."""
+    nxt = _next_occurrence(run_at, repeat)
+    if nxt is None or nxt > now:
+        return nxt
+    kind = repeat.get("kind")
+    try:
+        if kind in ("daily", "weekly"):
+            period = 1 if kind == "daily" else 7
+            steps = (now - nxt).days // period + 1
+            return nxt + datetime.timedelta(days=steps * period)
+        # Tối đa 9999 năm mà datetime biểu diễn được; không chặn 400 lần
+        # (trước đây một lịch hàng ngày mất hẳn sau khi máy tắt >400 ngày).
+        for _ in range(12 * 9999):
+            nxt = _next_occurrence(nxt, repeat)
+            if nxt is None or nxt > now:
+                return nxt
+    except (ValueError, OverflowError):
+        return None
     return None
 
 
@@ -1097,7 +1183,7 @@ def _repeat_label(repeat: dict[str, Any] | None) -> str:
 
 
 
-def _save_reminders() -> None:
+def _save_reminders() -> bool:
     try:
         with ACTIVE_REMINDERS_LOCK:
             data: list[dict[str, Any]] = []
@@ -1114,95 +1200,162 @@ def _save_reminders() -> None:
                 if repeat:
                     entry["repeat"] = repeat
                 data.append(entry)
-        # Atomic write (paths.atomic_write_json) - chap nhận ca Path lan str de
-        # test monkeypatch REMINDERS_PATH duoc de dang.
-        atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
-    except OSError as e:
+            # Giữ lock ĐẾN KHI ghi xong: snapshot cũ không được ghi đè một
+            # lần huỷ/đặt mới từ luồng timer khác.
+            atomic_write_json(REMINDERS_PATH, data, prefix=".reminders_tmp_")
+        return True
+    except (OSError, TypeError, ValueError) as e:
         logger.warning("Không lưu được danh sách nhắc nhở: %s", e)
+        return False
+
+
+def _cancel_timer(timer: object, reminder_id: object) -> None:
+    """A broken handle must not block registry cleanup or notification."""
+    cancel = getattr(timer, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception as error:
+            logger.warning("Không huỷ được timer của nhắc nhở %r: %s", reminder_id, error)
+
+
+def _warn_paused_reminder(entry: dict[str, Any]) -> None:
+    safe_print(
+        f"[CẢNH BÁO] Nhắc nhở '{entry['task']}' tạm dừng vì không tạo được timer. "
+        "Khởi động lại trợ lý để thử khôi phục."
+    )
 
 
 def _arm_timer(task: str, delay: float, reminder_id: str,
                repeat: dict[str, Any] | None,
-               continuation: bool = False) -> threading.Timer:
-    """Bật một chặng đếm ngược.
+               continuation: bool = False, *, timer_token: object = None) -> threading.Timer:
+    """Bật một chặng, gắn callback với đúng thế hệ timer (không chỉ ID lịch).
 
-    `continuation=True` là CHẶNG NỐI TIẾP của một lịch dài hơn trần Timer (lặp
-    hằng tháng), KHÔNG phải lần nhắc thật: nó chỉ bật chặng kế tiếp, không báo,
-    không hẹn lại. Không phân biệt thì mỗi chặng bắn một lần nhắc và hẹn thêm
-    một lịch mới - nhắc hằng tháng thành nhắc vài lần mỗi tháng.
+    Chặng nối tiếp không được phát thông báo hoặc tạo lịch lặp mới. Callback
+    cũ có thể còn chạy sau cancel/restore, nên phải kiểm tra cả token thế hệ.
     """
-    timer = threading.Timer(delay, _fire_reminder,
+    callback = functools.partial(_fire_reminder, timer_token=timer_token)
+    timer = threading.Timer(delay, callback,
                             args=[task, reminder_id, repeat, continuation])
     timer.daemon = True
-    timer.start()
+    try:
+        timer.start()
+    except (OSError, RuntimeError, OverflowError):
+        _cancel_timer(timer, reminder_id)
+        raise
     return timer
 
 
+def _start_reminder_timer(entry: dict[str, Any], delay: float) -> bool:
+    """Create one generation; retain an explicitly paused record on failure."""
+    token = object()
+    entry["_timer_token"] = token
+    entry["timer"] = None
+    try:
+        entry["timer"] = _arm_timer(
+            entry["task"], min(delay, _MAX_TIMER_SECONDS), entry["id"],
+            entry.get("repeat"), continuation=delay > _MAX_TIMER_SECONDS, timer_token=token,
+        )
+    except (OSError, RuntimeError, OverflowError) as error:
+        entry.pop("_timer_token", None)
+        entry["_timer_error"] = str(error) or type(error).__name__
+        logger.warning("Không tạo được timer nhắc nhở %r: %s", entry["id"], error)
+        return False
+    entry.pop("_timer_error", None)
+    return True
+
+
+def _register_reminder(entry: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (registered, retrying) without replacing a live timer.
+
+    Caller holds ACTIVE_REMINDERS_LOCK. A paused ID remains cancellable and
+    persists just like other pending records, including after a failed retry.
+    """
+    existing = next((item for item in ACTIVE_REMINDERS if item.get("id") == entry["id"]), None)
+    if existing is not None:
+        if not existing.get("_timer_error") or existing.get("timer") is not None:
+            return False, False
+        ACTIVE_REMINDERS.remove(existing)
+    ACTIVE_REMINDERS.append(entry)
+    return True, existing is not None
+
+
 def _schedule_reminder(task: str, run_at: datetime.datetime, persist: bool = True,
-                       repeat: object = None) -> str | None:
-    clean_repeat = _coerce_repeat(repeat)
-    delay = (run_at - datetime.datetime.now()).total_seconds()
+                       repeat: object = None, *, reminder_id: str | None = None,
+                       keep_on_failure: bool = False) -> str | None:
+    at = _local_datetime(run_at)
+    if at is None:
+        return None
+    delay = (at - datetime.datetime.now()).total_seconds()
     if delay <= 0:
         return None
-    reminder_id = f"{run_at.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    # v7.8: ĐĂNG KÝ MỤC VÀO DANH SÁCH TRƯỚC KHI BẬT TIMER. Bản cũ `timer.start()`
-    # đứng trước, nên với độ trễ rất ngắn (vài trăm phần nghìn giây, hợp lệ khi
-    # `--json` gửi "0.001" phút) timer nổ trước lúc mục được thêm vào
-    # ACTIVE_REMINDERS: `_fire_reminder` quét không thấy id của mình nên không
-    # gỡ gì, rồi mục mới được thêm vào - một lời nhắc "ma" không bao giờ tắt,
-    # cứ nằm trong `nhac nho` tới cuối phiên.
-    entry: dict[str, Any] = {"id": reminder_id, "task": task, "at": run_at,
-                             "timer": None}
+    clean_repeat = _coerce_repeat(repeat)
+    reminder_id = reminder_id or f"{at:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
+    entry: dict[str, Any] = {"id": reminder_id, "task": task, "at": at, "timer": None}
     if clean_repeat:
         entry["repeat"] = clean_repeat
     with ACTIVE_REMINDERS_LOCK:
-        ACTIVE_REMINDERS.append(entry)
-    # Timer dài hơn trần của threading (Windows ~49.7 ngày) nổ OverflowError
-    # lúc khởi tạo; cắt thành nhiều chặng ngắn (chặng sau nối tiếp ở
-    # `_fire_reminder` nhờ `repeat`).
-    while delay > _MAX_TIMER_SECONDS:
-        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id, clean_repeat,
-                   continuation=True)
-        delay -= _MAX_TIMER_SECONDS
-    entry["timer"] = _arm_timer(task, delay, reminder_id, clean_repeat)
-    if persist:
-        _save_reminders()
-    return reminder_id
+        registered, retrying = _register_reminder(entry)
+        if not registered:
+            return None
+        started = _start_reminder_timer(entry, delay)
+        if not started:
+            if not (keep_on_failure or retrying):
+                ACTIVE_REMINDERS.remove(entry)
+                return None
+            _warn_paused_reminder(entry)
+        if persist and not _save_reminders():
+            safe_print("[CẢNH BÁO] Lời nhắc chỉ còn trong phiên này vì không lưu được xuống đĩa.")
+    return reminder_id if started else None
+
+
+def _discard_paused_reminder(reminder_id: str | None) -> None:
+    """An expired paused one-shot must not be saved again by a later retry."""
+    with ACTIVE_REMINDERS_LOCK:
+        for entry in list(ACTIVE_REMINDERS):
+            if (entry.get("id") == reminder_id and entry.get("_timer_error")
+                    and entry.get("timer") is None):
+                ACTIVE_REMINDERS.remove(entry)
+
+
+def _restore_reminder(item: object) -> bool:
+    if not isinstance(item, dict):
+        logger.warning("Bỏ qua mục nhắc nhở không phải object: %r", item)
+        return False
+    run_at = _reminder_at(item)
+    if run_at is None:
+        logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
+        return False
+    rid = item.get("id")
+    rid = rid if isinstance(rid, str) and rid else None
+    repeat = _coerce_repeat(item.get("repeat"))
+    now = datetime.datetime.now()
+    if repeat and run_at <= now:
+        run_at = _next_future_occurrence(run_at, repeat, now)
+    if run_at is None or run_at <= now:
+        _discard_paused_reminder(rid)
+        return False
+    return _schedule_reminder(as_text(item.get("task")) or "báo thức", run_at,
+                              persist=False, repeat=repeat, reminder_id=rid,
+                              keep_on_failure=True) is not None
 
 
 def restore_reminders() -> int:
     rem_path = Path(REMINDERS_PATH)
-    if not rem_path.exists():
-        return 0
-    try:
-        with rem_path.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError, json.JSONDecodeError) as e:
-        logger.warning("Không đọc được reminders.json: %s", e)
-        return 0
-
-    restored = 0
-    for item in data if isinstance(data, list) else []:
-        if not isinstance(item, dict):
-            logger.warning("Bỏ qua mục nhắc nhở không phải object trong reminders.json: %r", item)
-            continue
-        run_at = _reminder_at(item)
-        if run_at is None:
-            logger.warning("Bỏ qua mục nhắc nhở thiếu mốc giờ hợp lệ: %r", item)
-            continue
-        task = str(item.get("task") or "báo thức")
-        repeat = _coerce_repeat(item.get("repeat"))
-        # v7.9: máy tắt rồi mở lại, mốc giờ lặp đã trôi qua trong lúc đó
-        # (ngủ qua giờ uống thuốc chẳng hạn). Không cuộn tới lần kế thì lời nhắc
-        # bị bỏ vĩnh viễn - và với "mỗi ngày" thì mất luôn cả chuỗi.
-        if repeat and run_at <= datetime.datetime.now():
-            rolled = _next_future_occurrence(run_at, repeat,
-                                             datetime.datetime.now())
-            if rolled is not None:
-                run_at = rolled
-        if _schedule_reminder(task, run_at, persist=False, repeat=repeat):
-            restored += 1
-    _save_reminders()
+    with ACTIVE_REMINDERS_LOCK:
+        if not rem_path.exists():
+            return 0
+        try:
+            with rem_path.open(encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("Không đọc được reminders.json: %s", e)
+            return 0
+        if not isinstance(data, list):
+            logger.warning("reminders.json phải là danh sách; giữ nguyên file để sửa.")
+            return 0
+        restored = sum(_restore_reminder(item) for item in data)
+        _save_reminders()
     if restored:
         logger.info("Đã khôi phục %d nhắc nhở còn hạn", restored)
     return restored
@@ -1222,13 +1375,7 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
             task = str(item.get("task") or "")
             if key and key not in strip_diacritics(task.lower()) and key != item.get("id"):
                 continue
-            timer = item.get("timer")
-            cancel = getattr(timer, "cancel", None)
-            if callable(cancel):
-                try:
-                    cancel()
-                except Exception as e:  # pragma: no cover - timer lạ không được làm hỏng lệnh huỷ
-                    logger.warning("Không huỷ được timer của nhắc nhở %r: %s", item.get("id"), e)
+            _cancel_timer(item.get("timer"), item.get("id"))
             try:
                 ACTIVE_REMINDERS.remove(item)
             except ValueError:  # pragma: no cover - đã bị gỡ ở nơi khác
@@ -1239,35 +1386,53 @@ def cancel_reminder(keyword: object = None) -> list[dict[str, Any]]:
     return removed
 
 
+def _continue_reminder(reminder_id: str | None, *, timer_token: object = None) -> None:
+    """Hết một chặng: tra lại deadline, không tạo timer mồ côi sau khi huỷ."""
+    with ACTIVE_REMINDERS_LOCK:
+        entry = next((item for item in ACTIVE_REMINDERS
+                      if item.get("id") == reminder_id), None)
+        if entry is None or (timer_token is not None
+                             and entry.get("_timer_token") is not timer_token):
+            return
+        at = _reminder_at(entry)
+        if at is None:
+            return
+        delay = (at - datetime.datetime.now()).total_seconds()
+        if delay > 0:
+            if not _start_reminder_timer(entry, delay):
+                _save_reminders()
+                _warn_paused_reminder(entry)
+            return
+    # Máy ngủ/đồng hồ nhảy qua deadline: bắn đúng một lần, không chờ thêm 24h.
+    _fire_reminder(entry["task"], reminder_id, entry.get("repeat"), timer_token=timer_token)
+
+
 def _fire_reminder(task: str, reminder_id: str | None = None,
-                   repeat: object = None, continuation: bool = False) -> None:
-    clean_repeat = _coerce_repeat(repeat)
+                   repeat: object = None, continuation: bool = False,
+                   *, timer_token: object = None) -> None:
     if continuation:
-        # Chặng nối tiếp: chuyển sang chặng kế tiếp, KHÔNG nhắc và KHÔNG hẹn lại.
-        _arm_timer(task, _MAX_TIMER_SECONDS, reminder_id or "", clean_repeat,
-                   continuation=True)
+        _continue_reminder(reminder_id, timer_token=timer_token)
         return
-    fired_at: datetime.datetime | None = None
+    clean_repeat = _coerce_repeat(repeat)
     if reminder_id is not None:
         with ACTIVE_REMINDERS_LOCK:
-            for item in list(ACTIVE_REMINDERS):
-                if item.get("id") == reminder_id:
-                    fired_at = _reminder_at(item)
-                    ACTIVE_REMINDERS.remove(item)
-        # v7.9: nhắc có nhịp lặp tự hẹn lại lần kế thay vì biến mất. Làm
-        # TRƯỚC khi respond/popup để người dùng đang bị vỗ vẫn một giây mà
-        # `reminders.json` lỡ ghi hỏng không mất luôn lịch đã hẹn.
-        #
-        # `repeat` PHẢI truyền LẠI vào lịch mới. Bản đầu chỉ dùng nó để tính mốc
-        # kế tiếp rồi bỏ, nên nhắc hằng ngày chỉ nhắc ĐÚNG HAI LẦN rồi hạ
-        # xuống thành nhắc một lần - hỏng đúng kiểu khó phát hiện nhất, vì cả
-        # tháng đầu vẫn chạy ngon.
-        nxt = _next_occurrence(fired_at, clean_repeat) if (
-            fired_at is not None and clean_repeat) else None
-        if nxt is not None and _schedule_reminder(task, nxt,
-                                                  repeat=clean_repeat) is None:
-            nxt = None
-        _save_reminders()
+            item = next((item for item in ACTIVE_REMINDERS
+                         if item.get("id") == reminder_id), None)
+            # Timer.cancel() không thể dừng callback đã bắt đầu. Kiểm tra id
+            # là hàng rào cuối: lịch đã huỷ/đã bắn không được báo thêm lần nữa.
+            if item is None or (timer_token is not None
+                                and item.get("_timer_token") is not timer_token):
+                return
+            fired_at = _reminder_at(item)
+            _cancel_timer(item.get("timer"), reminder_id)
+            ACTIVE_REMINDERS.remove(item)
+            clean_repeat = _coerce_repeat(item.get("repeat")) or clean_repeat
+            nxt = (_next_future_occurrence(fired_at, clean_repeat, datetime.datetime.now())
+                   if fired_at is not None and clean_repeat else None)
+            if nxt is not None:
+                _schedule_reminder(task, nxt, persist=False, repeat=clean_repeat,
+                                   keep_on_failure=True)
+            _save_reminders()
     respond(f"Đến giờ rồi. Nhắc bạn: {task}")
     try:
         if SYSTEM == "Windows":
@@ -1306,6 +1471,8 @@ def _to_number(value: object, default: float, low: float, high: float) -> float:
     """
     try:
         number = float(value)  # type: ignore[arg-type]
+    except OverflowError:
+        return (high if value > 0 else low) if isinstance(value, int) else default
     except (TypeError, ValueError):
         return default
     if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
@@ -1346,20 +1513,23 @@ def _coerce_time_info(raw: object) -> dict[str, Any]:
 
 
 def _reminder_when(time_info: dict[str, Any], now: datetime.datetime) -> datetime.datetime | None:
-    """Tính thời điểm chạy từ `time_info`; None nếu chưa đủ thông tin để nhắc."""
+    """Tính deadline hữu hạn; lịch vượt phạm vi datetime không làm sập handler."""
     kind = time_info.get("type")
-    if kind == "delay":
-        minutes = _to_number(time_info.get("minutes"), 5.0, 0.0, 366 * 24 * 60)
-        return now + datetime.timedelta(minutes=minutes)
-    if kind == "clock":
-        hour = int(_to_number(time_info.get("hour"), 7.0, 0.0, 23.0))
-        minute = int(_to_number(time_info.get("minute"), 0.0, 0.0, 59.0))
-        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        day_offset = int(_to_number(time_info.get("day_offset"), 0.0, 0.0, 3660.0))
-        run_at += datetime.timedelta(days=day_offset)
-        if run_at <= now:
-            run_at += datetime.timedelta(days=1)
-        return run_at
+    try:
+        if kind == "delay":
+            minutes = _to_number(time_info.get("minutes"), 5.0, 0.0, 366 * 24 * 60)
+            return now + datetime.timedelta(minutes=minutes)
+        if kind == "clock":
+            hour = int(_to_number(time_info.get("hour"), 7.0, 0.0, 23.0))
+            minute = int(_to_number(time_info.get("minute"), 0.0, 0.0, 59.0))
+            run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            day_offset = int(_to_number(time_info.get("day_offset"), 0.0, 0.0, 3660.0))
+            run_at += datetime.timedelta(days=day_offset)
+            if run_at <= now:
+                run_at += datetime.timedelta(days=1)
+            return run_at
+    except (ValueError, OverflowError):
+        logger.warning("Thời điểm nhắc vượt phạm vi datetime: %r", time_info)
     return None
 
 
@@ -1438,7 +1608,9 @@ def try_complete_pending_reminder(text: object, dry_run: bool = False) -> bool |
     if dry_run:
         safe_print(f"   [TEST] Sẽ nhắc {task!r} lúc {run_at:%H:%M} (chế độ test: không đặt lịch)")
         return True
-    _schedule_reminder(task, run_at, repeat=repeat)
+    if _schedule_reminder(task, run_at, repeat=repeat) is None:
+        respond("Không đặt được lịch nhắc. Bạn thử lại giúp tôi nhé.")
+        return False
     logger.info("Đặt nhắc nhở (trả lời sau khi hỏi lại): %s lúc %s", task, run_at)
     respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
@@ -1465,7 +1637,9 @@ def _reminder_when_phrase(run_at: datetime.datetime,
         return " ngày mai"
     if days <= 7:
         # "thứ X tuần sau" cũng rơi vào khoảng này và đọc đúng nghĩa.
-        return f" {_WEEKDAY_VI[run_at.weekday()]} tuần sau"
+        same_week = days + now.weekday() < 7
+        week = "tuần này" if same_week else "tuần sau"
+        return f" {_WEEKDAY_VI[run_at.weekday()]} {week}"
     if run_at.month == now.month:
         return f" ngày {run_at.day} tháng này"
     if run_at.year == now.year:
@@ -1508,7 +1682,9 @@ def action_set_reminder(target: str, data: dict[str, Any] | None = None) -> bool
         return False
 
     clear_pending_reminder()
-    _schedule_reminder(task, run_at, repeat=repeat)
+    if _schedule_reminder(task, run_at, repeat=repeat) is None:
+        respond("Không đặt được lịch nhắc. Bạn thử lại giúp tôi nhé.")
+        return False
     logger.info("Đặt nhắc nhở: %s lúc %s (lặp %s)", task, run_at, repeat or "không")
     respond(_reminder_confirmation(task, run_at, repeat, now))
     return True
@@ -1583,19 +1759,37 @@ def _read_confidence(raw: object) -> float:
         return -1.0
     try:
         value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return -1.0
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         return -1.0
     return value
 
 
+def _command_target(raw: object) -> str | None:
+    """None signals conversion failure, distinct from a valid empty target."""
+    try:
+        return "" if raw is None else str(raw).strip()
+    except Exception:
+        safe_print("[TỪ CHỐI] Trường 'target' không chuyển được thành văn bản.")
+        logger.warning("Không chuyển được target kiểu %s; không thực thi.", type(raw).__name__)
+        return None
+
+
+def _intent_label(raw: object) -> str:
+    """A malformed label must not break the message explaining its rejection."""
+    try:
+        return str(raw)
+    except Exception:
+        return f"<{type(raw).__name__}>"
+
+
 def execute_command(intent_json: dict[str, Any] | str) -> bool:
     if isinstance(intent_json, str):
         try:
             intent_json = json.loads(intent_json)
-        except json.JSONDecodeError:
-            safe_print("[LỖI] Đầu vào không phải JSON hợp lệ.")
+        except (ValueError, RecursionError):
+            safe_print("[LỖI] Đầu vào không phải JSON hợp lệ hoặc vượt giới hạn bộ đọc.")
             return False
 
     if not isinstance(intent_json, dict):
@@ -1609,17 +1803,22 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
     raw_target = intent_json.get("target")
     # Ep kieu TRUOC khi strip: `target` co the la so (model goi len hoac intent
     # khac truyen vao), ma `(2026 or "").strip()` thi nang nhu chinh no.
-    target = "" if raw_target is None else str(raw_target).strip()
+    target = _command_target(raw_target)
+    if target is None:
+        return False
     raw_confidence = intent_json.get("confidence", 1.0)
     confidence = _read_confidence(raw_confidence)
 
     handler = HANDLERS.get(intent)
     if handler is None:
-        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {raw_intent}")
-        logger.warning("Không hiểu ý định: %s", raw_intent)
+        label = _intent_label(raw_intent)
+        safe_print(f"[TỪ CHỐI] Không hiểu ý định: {label}")
+        logger.warning("Không hiểu ý định: %s", label)
         return action_unknown(target)
 
-    if confidence < CONFIDENCE_THRESHOLD:
+    with CONFIG_LOCK:
+        threshold = CONFIDENCE_THRESHOLD
+    if confidence <= 0.0 or confidence < threshold:
         if confidence < 0:
             # Giá trị -1 = "độ tự tin không đọc được" (sai kiểu/NaN/vô hạn), khác
             # hẳn "thấp thật". In "-1.00" như thể là đo được sẽ khiến người dùng
@@ -1634,7 +1833,8 @@ def execute_command(intent_json: dict[str, Any] | str) -> bool:
                 f"[TỪ CHỐI] Độ tự tin quá thấp ({confidence:.2f}). "
                 f"Bạn nói rõ hơn giúp tôi nhé."
             )
-            logger.info("Từ chối vì độ tự tin thấp: %.2f < %.2f", confidence, CONFIDENCE_THRESHOLD)
+            logger.info("Từ chối vì độ tự tin thấp/không có bằng chứng: %.2f (ngưỡng %.2f)",
+                        confidence, threshold)
         return False
 
     if _handler_wants_data(handler):

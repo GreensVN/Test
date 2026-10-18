@@ -6,7 +6,8 @@ VÀ CHO PHÉP BẠN MỞ MÃ NGUỒN.
 
 v6.4: đổi engine chính từ Piper (vi_VN-vais1000-medium, CC BY 4.0) sang
 VieNeu-TTS v3-Turbo (pnnbao-ump, Apache 2.0). Lý do đổi:
-  - Apache 2.0 KHÔNG bắt buộc ghi công như CC BY (dù vẫn nên ghi công).
+  - Tuân thủ LICENSE/NOTICE của code, weights và dataset; thông tin ở đây
+    không thay thế việc kiểm tra giấy phép nguồn trước phân phối.
   - Chất lượng tự nhiên hơn Piper rõ rệt (48kHz, kiến trúc train từ đầu
     trên ~10.000 giờ dữ liệu Việt-Anh, không phải fine-tune).
   - Có 10 giọng dựng sẵn (nam + nữ) thay vì 1 giọng nữ cố định như Piper.
@@ -81,8 +82,8 @@ MODEL_INFO = {
     "sample_rate": 48000,
     "kien_truc": "Train từ đầu (không fine-tune) trên ~10.000 giờ dữ liệu "
                   "Việt-Anh, codec MOSS-Audio-Tokenizer-Nano",
-    "ghi_chu": "Apache 2.0 không bắt buộc ghi công (khác CC BY 4.0 của Piper "
-               "trước đây), nhưng nên giữ thông báo giấy phép khi phát hành.",
+    "ghi_chu": "Kiểm tra LICENSE/NOTICE gốc của code, weights và dataset; "
+               "giữ các thông báo bắt buộc khi phân phối.",
 }
 
 # 10 giọng dựng sẵn — không cần audio mẫu, gọi thẳng bằng tên
@@ -256,7 +257,7 @@ def download_voice(force: bool = False):
 
 
 def _write_attribution():
-    """Ghi file ghi công — Apache 2.0 không bắt buộc nhưng nên giữ lại."""
+    """Ghi thông tin nguồn; không thay thế các LICENSE/NOTICE bắt buộc."""
     os.makedirs(VOICE_DIR, exist_ok=True)
     path = os.path.join(VOICE_DIR, "ATTRIBUTION.txt")
     with open(path, "w", encoding="utf-8") as f:

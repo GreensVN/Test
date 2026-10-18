@@ -1,5 +1,5 @@
 """
-config.py
+config.py v7.10.6
 ---------
 Nạp cấu hình từ config.json.
 
@@ -48,11 +48,15 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
-from paths import atomic_write_json, data_path
+from paths import atomic_write_json, create_json_if_absent, data_path
 from platform_utils import safe_print, setup_console
+
+CONFIG_LOCK = threading.RLock()
 
 BASE_DIR = Path(__file__).resolve().parent
 # v7.3: config được lưu ở THƯ MỤC DỮ LIỆU của người dùng (xem paths.py) thay vì
@@ -87,7 +91,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "confidence_threshold": 0.35,
     "confidence_accept": 0.45,
     "confidence_ask": 0.25,
-    "dangerous_actions": ["shutdown", "restart", "logout"],
+    "dangerous_actions": ["shutdown", "restart", "logout", "sleep"],
     "website_map": {
         "google": "https://www.google.com",
         "google dich": "https://translate.google.com",
@@ -316,10 +320,8 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge(result[key], value)
-        elif isinstance(value, dict):
-            result[key] = copy.deepcopy(value)
         else:
-            result[key] = value
+            result[key] = copy.deepcopy(value)
     return result
 
 
@@ -354,6 +356,7 @@ def _validate_config(cfg: dict[str, Any]) -> None:
 
     _check_thresholds(cfg)
     _check_maps(cfg)
+    _check_dangerous_actions(cfg)
 
 
 def _check_thresholds(cfg: dict[str, Any]) -> None:
@@ -361,9 +364,11 @@ def _check_thresholds(cfg: dict[str, Any]) -> None:
     for key in ("confidence_threshold", "confidence_accept", "confidence_ask"):
         if key not in cfg:
             continue
+        if isinstance(cfg[key], bool):
+            raise RuntimeError(f"{key} phải là số trong [0,1], không phải bool.")
         try:
             value = float(cfg[key])
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise RuntimeError(f"Giá trị {key} không hợp lệ: {e}") from e
         if not 0.0 <= value <= 1.0:
             raise RuntimeError(f"{key} phải trong [0,1], nhận {value}")
@@ -376,21 +381,31 @@ def _check_maps(cfg: dict[str, Any]) -> None:
     đó chỉ hợp lệ từ Python 3.12 trong khi dự án hỗ trợ từ 3.9.
     """
     for key in MAP_KEYS:
-        value = cfg.get(key)
-        if value is None:
+        if key not in cfg:
             continue
+        value = cfg[key]
         if not isinstance(value, dict):
             raise RuntimeError(
                 f'"{key}" phải là JSON object {{"ten": "gia tri"}}, '
                 f"nhưng đang là {type(value).__name__}."
             )
-        bad = sorted(str(k) for k, v in value.items() if not isinstance(v, str))
+        bad = sorted(str(k) for k, v in value.items()
+                     if not isinstance(k, str) or not isinstance(v, str))
         if bad:
             raise RuntimeError(
                 f'"{key}" có giá trị KHÔNG phải chuỗi cho các khoá: '
                 f"{', '.join(bad[:5])}. "
                 'Mọi giá trị phải là chuỗi, ví dụ: "chrome": "chrome.exe".'
             )
+
+
+def _check_dangerous_actions(cfg: dict[str, Any]) -> None:
+    if "dangerous_actions" not in cfg:
+        return
+    actions = cfg["dangerous_actions"]
+    if (not isinstance(actions, list)
+            or any(not isinstance(a, str) or not a.strip() for a in actions)):
+        raise RuntimeError('"dangerous_actions" phải là danh sách tên hành động (list[str]).')
 
 
 def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
@@ -400,17 +415,26 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
     """
     path = Path(path)
     if not path.exists():
+        # Lần đầu dùng bản cài đặt: lấy whitelist đi theo gói TRƯỚC khi tạo
+        # config mặc định. Chờ tới main() thì executor đã tạo file mất rồi.
+        shipped = BASE_DIR / "config.json"
+        initial = (load_config(shipped) if path == Path(CONFIG_PATH)
+                   and path.resolve() != shipped.resolve() and shipped.is_file()
+                   else copy.deepcopy(DEFAULT_CONFIG))
         try:
-            save_config(DEFAULT_CONFIG, path)
+            if create_json_if_absent(path, initial):
+                return initial
         except OSError as e:
-            safe_print(f"[CẢNH BÁO] Không tạo được file cấu hình '{path}': {e}")
-            safe_print("   Chạy tiếp với cấu hình mặc định (chưa lưu).")
-        return copy.deepcopy(DEFAULT_CONFIG)
+            safe_print(f"[CẢNH BÁO] Không tạo được file cấu hình '{path}': {e}", file=sys.stderr)
+            safe_print("   Chạy tiếp với cấu hình mặc định (chưa lưu).", file=sys.stderr)
+            return initial
+        # A concurrent creator won: read/validate its bytes below, not our
+        # defaults. Never replace or silently ignore that writer's config.
 
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             user_config = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+    except (ValueError, UnicodeError, OSError) as e:
         raise RuntimeError(
             f"Không đọc được file cấu hình '{path}': {e}\n"
             f"-> Kiểm tra JSON, hoặc xoá file để tạo lại mặc định."
@@ -461,12 +485,13 @@ def save_config(config: dict[str, Any], path: str | Path = CONFIG_PATH) -> None:
     if not isinstance(config, dict):
         raise TypeError(f"save_config cần dict, nhận được {type(config).__name__}.")
     try:
-        json.dumps(config, ensure_ascii=False)
+        json.dumps(config, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as e:
         raise TypeError(
             "config chứa giá trị không ghi thành JSON được: " + str(e)
             + " (key phải là chuỗi; giá trị chỉ nhận dict/list/str/số/bool/None)."
         ) from e
+    _validate_config(config)
     atomic_write_json(path, config, prefix=".config_tmp_")
 
 

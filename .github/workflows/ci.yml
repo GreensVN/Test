@@ -1,14 +1,17 @@
-name: CI - Trợ lý ảo tiếng Việt v7.8
+name: CI - Trợ lý ảo tiếng Việt
 
 on:
   push:
     branches: [ main, arena/* ]
+  # Stacked PRs target arena/* rather than main; do not silently skip them.
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  PYTHONUTF8: "1"
 
 jobs:
   test:
@@ -95,7 +98,7 @@ jobs:
     - name: Install mypy
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "mypy>=1.11,<2"
+        python -m pip install "mypy>=1.11"
     - name: mypy (package + install.py)
       run: |
         mypy --version
@@ -176,18 +179,315 @@ jobs:
         python -m pip install .
     - name: Console scripts must run
       shell: bash
+      working-directory: ${{ runner.temp }}
       run: |
         vi-assistant --version
         vi-assistant --doctor
         vi-assistant --dry-run --once "mở youtube"
         vi-doctor --json > doctor.json
-        python -c "import json;d=json.load(open('doctor.json'));print('ok' if d['sections'] else 'empty')"
+        python -c "import json;d=json.load(open('doctor.json', encoding='utf-8'));print('ok' if d['sections'] else 'empty')"
     - name: Module entry point + run from another cwd
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
         cd ~
         python -m vi_voice_assistant --version
+    - name: Installed version and strict JSON CLI (outside the repo)
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        python - <<'PY'
+        import json
+        import os
+        import pathlib
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from importlib.metadata import version
+
+        import vi_voice_assistant
+        import vi_voice_assistant.main as cli
+
+        assert version("vi-voice-assistant") == vi_voice_assistant.__version__ == cli.APP_VERSION
+        script = shutil.which("vi-assistant")
+        assert script, "console script missing"
+
+        def no_nonfinite(value):
+            raise AssertionError(f"non-standard JSON number: {value}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, VI_ASSISTANT_HOME=str(pathlib.Path(directory) / "data"))
+            for entry in ([sys.executable, "-m", "vi_voice_assistant"], [script]):
+                cases = (("15 + 27", True, 0), ("", True, 0),
+                         ("đừng tắt máy tính", True, 0), ("đừng tắt máy tính", False, 2))
+                for text, dry_run, expected_code in cases:
+                    command = [*entry, "--once", text, "--json"]
+                    if dry_run:
+                        command.append("--dry-run")
+                    result = subprocess.run(
+                        command,
+                        capture_output=True, text=True, encoding="utf-8", env=env, timeout=120)
+                    assert result.returncode == expected_code, result.stdout + result.stderr
+                    body = json.loads(result.stdout, parse_constant=no_nonfinite)
+                    if not text:
+                        assert body == [], body
+                    elif text == "15 + 27":
+                        assert len(body) == 1 and body[0]["result"] == 42, body
+                    else:
+                        assert len(body) == 1 and body[0]["status"] == "unknown", body
+        print("installed metadata/API/CLI versions match; JSON stdout is clean")
+        PY
+    - name: Installed assistant safety and persistence
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        python - <<'PY'
+        import contextlib
+        import datetime
+        from array import array
+        import io
+        import importlib
+        import json
+        import pathlib
+        import struct
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+        import vi_voice_assistant.audio_utils as audio
+        import vi_voice_assistant.config as config
+        import vi_voice_assistant.executor as executor
+        import vi_voice_assistant.main as cli
+        import vi_voice_assistant.nlu_advanced as nlu
+        import vi_voice_assistant.paths as storage
+        import vi_voice_assistant.phobert_model as phobert
+        import vi_voice_assistant.stt as stt
+        import vi_voice_assistant.tts as tts
+        from vi_voice_assistant.csv_utils import read_keyed_csv
+
+        memory = nlu.ContextMemory(0)
+        memory.remember({"target": "google"})
+        assert memory.history == []
+        memory = nlu.ContextMemory()
+        target = "https://example.com/no/AbC"
+        payload = {"target": target}
+        memory.remember(payload)
+        payload["target"] = "changed"
+        assert memory.resolve("MỞ NÓ") == "MỞ " + target
+        assert memory.resolve("mở https://other.com/no") == "mở https://other.com/no"
+        nlu.CONFIDENCE_ASK = nlu.CONFIDENCE_ACCEPT = 0.0
+        assert nlu.NLU._judge({"intent": "system_control", "target": "shutdown",
+                               "confidence": 0.0}) == "unknown"
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "private" / "feedback.csv"
+            nlu.FEEDBACK_PATH = str(path)
+            assert nlu.log_feedback("mở chrome", "open_app", 1.0, correct=True) is True
+            rows = read_keyed_csv(path, ("time", "text", "intent", "confidence", "verified"))
+            assert rows[0]["text"] == "mở chrome" and rows[0]["verified"] == "1"
+            blocked = pathlib.Path(directory) / "blocked"
+            blocked.mkdir()
+            nlu.FEEDBACK_PATH = str(blocked)
+            message = nlu.NLU.__new__(nlu.NLU).teach("mở chrome", "open_app")
+            assert "Đã ghi nhớ" not in message
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
+            path = pathlib.Path(directory) / "reminders.json"
+            timers, fail_start = [], [False]
+
+            class Timer:
+                def __init__(self, delay, callback, args=()):
+                    self.callback, self.args = callback, args
+                    self.daemon = False
+                    timers.append(self)
+
+                def start(self):
+                    if fail_start[0]:
+                        raise RuntimeError("simulated thread exhaustion")
+
+                def cancel(self):
+                    pass
+
+                def fire(self):
+                    self.callback(*self.args)
+
+            patches.enter_context(mock.patch.object(executor.threading, "Timer", Timer))
+            patches.enter_context(mock.patch.object(executor, "ACTIVE_REMINDERS", []))
+            patches.enter_context(mock.patch.object(executor, "REMINDERS_PATH", path))
+            executor._schedule_reminder("saved", datetime.datetime.now()
+                                        + datetime.timedelta(days=3))
+            timers[0].fire()
+            timers[0].fire()
+            assert len(timers) == 2 and len(executor.ACTIVE_REMINDERS) == 1
+            fail_start[0] = True
+            timers[1].fire()
+            assert executor.ACTIVE_REMINDERS[0]["timer"] is None
+            assert executor.ACTIVE_REMINDERS[0]["_timer_error"]
+            saved = path.read_bytes()
+            executor.cancel_reminder()
+            path.write_bytes(saved)
+            assert executor.restore_reminders() == 0
+            assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+            fail_start[0] = False
+            assert executor.restore_reminders() == 1
+            assert executor.restore_reminders() == 0
+            executor.cancel_reminder()
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "confirmed.txt"
+            failed = [sys.executable, "-c", "raise SystemExit(7)"]
+            assert executor._run_first_available([failed]) is False
+            code = "from pathlib import Path; Path(" + repr(str(marker)) + ").write_text('ok')"
+            assert executor._run_first_available([failed, [sys.executable, "-c", code]]) is True
+            assert marker.read_text() == "ok"
+        for bad in (10 ** 1000, -10 ** 1000, 1.5, True):
+            assert executor._read_confidence(bad) == -1.0
+            assert nlu._as_confidence(bad) == 0.0
+            assert nlu.NLU._judge({"intent": "system_control", "target": "lock",
+                                   "confidence": bad}) == "unknown"
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
+            root = pathlib.Path(directory)
+            history = root / "history.json"
+            patches.enter_context(mock.patch.object(cli, "HISTORY_PATH", history))
+            history.write_text('["previous"]', encoding="utf-8-sig")
+            cli.save_history_entry("next command")
+            assert cli.load_history() == ["previous", "next command"]
+            history.write_bytes(b'{"broken"')
+            cli.save_history_entry("must not erase")
+            assert history.read_bytes() == b'{"broken"'
+            source, target = root / "legacy" / "package", root / "data"
+            source.mkdir(parents=True)
+            target.mkdir()
+            patches.enter_context(mock.patch.object(storage, "PACKAGE_DIR", source))
+            patches.enter_context(mock.patch.object(storage, "data_dir", lambda: target))
+            (source / "config.json").write_bytes(b'{"legacy":true}')
+            assert storage.migrate_from_package_dir(("config.json",)) == ["config.json"]
+            (source.parent / "private.txt").write_bytes(b"private")
+            assert storage.migrate_from_package_dir(("../private.txt",)) == []
+            assert not (root / "private.txt").exists()
+            created = target / "created.json"
+            assert storage.create_json_if_absent(created, {"first": True}) is True
+            saved = created.read_bytes()
+            assert storage.create_json_if_absent(created, {"second": True}) is False
+            assert created.read_bytes() == saved
+        ran = []
+
+        class BadText:
+            def __str__(self):
+                raise ValueError("unstringifiable target")
+
+        def action(*args):
+            ran.append(args)
+            return True
+
+        with mock.patch.dict(executor.HANDLERS, {"open_app": action}):
+            assert executor.execute_command("1" * 5000) is False
+            assert executor.execute_command({"intent": "open_app", "target": BadText(),
+                                             "confidence": 1.0}) is False
+        assert ran == []
+        class Batch:
+            def __init__(self, records):
+                self.records = records
+
+            def understand(self, text):
+                return self.records
+
+        command = {"intent": "chitchat", "target": "tiếng Việt", "confidence": 1, "status": "ok"}
+        with mock.patch.object(cli, "execute_command", action):
+            output = io.StringIO()
+            assert cli.run_once("batch", Batch([command, None]), as_json=True,
+                                json_output=output) == 2
+            assert json.loads(output.getvalue())["ok"] is False and ran == []
+            output = io.StringIO()
+            assert cli.run_once("batch", Batch([command]), as_json=True, json_output=output) == 0
+            assert output.getvalue().isascii() and json.loads(output.getvalue()) == [command]
+            ran.clear()
+
+            class BrokenFlush(io.StringIO):
+                def flush(self):
+                    raise OSError("simulated output failure")
+
+            assert cli.run_once("batch", Batch([command]), as_json=True,
+                                json_output=BrokenFlush()) == 1
+            assert ran == []
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "existing.txt"
+            target.write_bytes(b"old")
+            cancelled = False
+            with mock.patch.object(storage.os, "fsync", side_effect=KeyboardInterrupt):
+                try:
+                    storage.atomic_write_text(target, "new")
+                except KeyboardInterrupt:
+                    cancelled = True
+            assert cancelled and target.read_bytes() == b"old"
+            assert [item.name for item in target.parent.iterdir()] == ["existing.txt"]
+        for name in ("paths", "config", "executor", "nlu_advanced", "stt", "tts"):
+            assert importlib.import_module(name) is importlib.import_module("vi_voice_assistant." + name)
+        assert cli.executor is executor and cli.NLU is nlu.NLU
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory) / "profile.json"
+            cfg = dict(config.DEFAULT_CONFIG, confidence_threshold=0.8,
+                       confidence_accept=0.9, confidence_ask=0.7, dangerous_actions=[])
+            storage.atomic_write_json(profile, cfg)
+            executor.reload_config(profile)
+            assert executor.CONFIG is executor.reload_config()
+            assert executor.current_config_path() == profile.absolute()
+            assert executor.CONFIDENCE_THRESHOLD == 0.8 and nlu.CONFIDENCE_ASK == 0.7
+            assert executor.DANGEROUS_ACTIONS == nlu.DANGEROUS_TARGETS == set()
+            cfg["confidence_ask"] = 0.75
+            storage.atomic_write_json(profile, cfg)
+            executor.reload_config()
+            assert nlu.CONFIDENCE_ASK == 0.75
+            executor.set_auto_confirm(True)
+            assert cli._apply_cli_options(SimpleNamespace(yes=False, config=None, engine=None)) is None
+            assert executor.AUTO_CONFIRM is False
+            executor.set_speech_enabled(True)
+            cli._warn_missing_optional_features(SimpleNamespace(voice=False, speak=False))
+            assert executor.SPEAK_ENABLED is False
+        assert pathlib.Path(phobert.MODEL_DIR) == storage.data_path("phobert_model")
+        stt.configure("google")
+        assert stt.ALLOW_CLOUD is True
+        stt.configure("auto")
+        assert stt.ALLOW_CLOUD is False and stt.ALLOW_DOWNLOAD is False
+        tts.configure("gtts")
+        tts.configure("auto")
+        assert tts.ALLOW_CLOUD is False
+        speech_calls = []
+
+        class Local:
+            def listen(self, **kwargs):
+                return "local result"
+
+        with mock.patch.object(stt, "_offline_available", lambda: True), \
+                mock.patch.object(stt, "_default_stt", lambda: Local()):
+            assert stt.listen_once() == "local result"
+        tts.configure("print")
+        with mock.patch.object(tts, "_speak_cache", lambda text: speech_calls.append(text) or True):
+            tts.speak("must not play", show=False)
+        assert speech_calls == []
+        tts.configure("auto")
+        with mock.patch.object(tts, "_local_engines", lambda: []), \
+                mock.patch.object(tts, "_speak_cache", lambda text: False), \
+                mock.patch.object(tts, "_speak_gtts", lambda text: speech_calls.append(text) or True):
+            tts.speak("must not upload", show=False)
+        assert speech_calls == []
+        normalized = audio.normalize_mono(array("h", [-32768, 0, 32767]))
+        assert audio.pcm16_bytes(normalized) == struct.pack("<hhh", -32768, 0, 32767)
+        assert list(audio.normalize_mono(array("f", [-1.0, 0.0, 1.0]))) == [-1.0, 0.0, 1.0]
+
+        class Recognizer:
+            operation_timeout = None
+
+            def recognize_google(self, payload, language=None):
+                assert 0 < self.operation_timeout <= 15
+                return "timeout configured"
+
+        service = SimpleNamespace(UnknownValueError=type("UnknownValueError", (Exception,), {}),
+                                  RequestError=type("RequestError", (Exception,), {}))
+        stt.configure("google")
+        with mock.patch.object(stt, "_sr", service):
+            assert stt._recognize(Recognizer(), object(), "vi-VN") == "timeout configured"
+        stt.configure("auto")
+        print("installed assistant safety and persistence passed")
+        PY
     - name: User data must NOT be written into site-packages
       shell: bash
       run: |
@@ -237,6 +537,7 @@ jobs:
         PY
     - name: User data must land in the DATA DIR (not a fixed XDG path)
       shell: bash
+      working-directory: ${{ runner.temp }}
       run: |
         python - <<'PY'
         # Kiem tra THAT, khong `|| echo ok`. Dung chinh paths.data_path() de lay
@@ -248,24 +549,36 @@ jobs:
         assert not missing, f"thieu du lieu nguoi dung tai thu muc du lieu: {missing}"
         print("du lieu nam o:", data_path(".history.json").parent)
         PY
-    - name: Wheel must not carry private runtime files
+    - name: Wheel and sdist must not carry private runtime files
       shell: bash
       run: |
-        python -m pip install wheel
-        python -m pip wheel . --no-deps -w dist
+        python -m pip install build
+        python -m build
         python - <<'PY'
-        import glob, zipfile
-        wheel = glob.glob("dist/*.whl")[0]
+        import glob, tarfile, zipfile
+        from vi_voice_assistant._version import __version__
+        wheels = glob.glob(f"dist/vi_voice_assistant-{__version__}-*.whl")
+        assert len(wheels) == 1, wheels
+        wheel = wheels[0]
         names = zipfile.ZipFile(wheel).namelist()
         bad = [n for n in names if any(k in n for k in
                (".history.json", "reminders.json", "feedback.csv", "lite_model.pkl",
-                "logs/", "__pycache__", "/tests/"))]
+                "intent_model.pkl", "voice_cache/", "logs/", "__pycache__", "/tests/"))]
         assert not bad, f"wheel rò rỉ file runtime/tests: {bad}"
         need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
-                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py"}
+                "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py",
+                "vi_voice_assistant/_version.py", "vi_voice_assistant/json_output.py",
+                "vi_voice_assistant/_vi_runtime_aliases.py", "vi_voice_assistant/audio_utils.py"}
         missing = need - set(names)
         assert not missing, f"wheel thiếu: {missing}"
         print("wheel ok:", len(names), "files")
+        with tarfile.open(f"dist/vi_voice_assistant-{__version__}.tar.gz") as archive:
+            names = archive.getnames()
+        bad = [n for n in names if any(k in n for k in
+               (".history.json", "reminders.json", "feedback.csv", ".pkl", "voice_cache/",
+                "logs/", "__pycache__"))]
+        assert not bad, f"sdist rò rỉ file runtime: {bad}"
+        print("sdist ok:", len(names), "entries")
         PY
 
   # Cai bang script huong dan cua chinh du an (install.py) - kiem tra no khong

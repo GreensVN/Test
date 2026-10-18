@@ -5,7 +5,8 @@
   "dangerous_actions": [
     "shutdown",
     "restart",
-    "logout"
+    "logout",
+    "sleep"
   ],
   "website_map": {
     "google": "https://www.google.com",

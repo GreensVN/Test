@@ -254,7 +254,7 @@ def test_xac_nhan_no_ngay_mai():
 
 @pytest.mark.parametrize("days,expected", [
     (5, "thứ hai tuần sau"),      # 5/10/2026 là thứ Hai
-    (4, "chủ nhật tuần sau"),
+    (4, "chủ nhật tuần này"),    # 4/10 vẫn cùng tuần với 30/9, không phải tuần sau.
     (6, "thứ ba tuần sau"),
 ])
 def test_xac_nhan_no_ten_ngay_trong_tuan(days, expected):

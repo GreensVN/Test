@@ -28,19 +28,20 @@ phí) rồi tải thư mục phobert_model/ về máy.
 from __future__ import annotations
 
 import argparse
-import csv
-import json
+import inspect
+import math
 import os
 import sys
 
+from csv_utils import read_keyed_csv
 from dataset import get_dataset_as_lists
-from paths import data_path
+from paths import atomic_write_json, data_path
+from phobert_model import MODEL_DIR
 from platform_utils import safe_print, setup_console
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "phobert_model")
-CHECKPOINT_DIR = os.path.join(BASE_DIR, "phobert_checkpoints")
-EXTRA_CSV = os.path.join(BASE_DIR, "my_dataset.csv")
+CHECKPOINT_DIR = str(data_path("phobert_checkpoints"))
+EXTRA_CSV = str(data_path("my_dataset.csv"))
 FEEDBACK_CSV = str(data_path("feedback.csv"))
 BASE_CHECKPOINT = "vinai/phobert-base"
 
@@ -56,28 +57,27 @@ def load_training_data(use_feedback: bool = True):
 
     n_extra = 0
     if os.path.exists(EXTRA_CSV):
-        with open(EXTRA_CSV, encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                text = (row.get("text") or "").strip()
-                intent = (row.get("intent") or "").strip()
-                if text and intent:
-                    texts.append(text)
-                    labels.append(intent)
-                    n_extra += 1
+        for row in read_keyed_csv(EXTRA_CSV, ("text", "intent")):
+            text = (row.get("text") or "").strip()
+            intent = (row.get("intent") or "").strip()
+            if text and intent:
+                texts.append(text)
+                labels.append(intent)
+                n_extra += 1
     safe_print(f"[2] my_dataset.csv     : {n_extra} câu")
 
     n_fb = 0
     if use_feedback and os.path.exists(FEEDBACK_CSV):
-        with open(FEEDBACK_CSV, encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                if str(row.get("verified", "0")).strip() != "1":
-                    continue
-                text = (row.get("text") or "").strip()
-                intent = (row.get("intent") or "").strip()
-                if text and intent:
-                    texts.append(text)
-                    labels.append(intent)
-                    n_fb += 1
+        columns = ("time", "text", "intent", "confidence", "verified")
+        for row in read_keyed_csv(FEEDBACK_CSV, columns):
+            if str(row.get("verified", "0")).strip() != "1":
+                continue
+            text = (row.get("text") or "").strip()
+            intent = (row.get("intent") or "").strip()
+            if text and intent:
+                texts.append(text)
+                labels.append(intent)
+                n_fb += 1
     safe_print(f"[3] feedback đã xác nhận: {n_fb} câu")
 
     return texts, labels
@@ -142,10 +142,15 @@ def train(args):
     )
 
     safe_print(f"\n[Model] Nạp checkpoint gốc: {args.model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    options = {"local_files_only": getattr(args, "local_files_only", False),
+               "trust_remote_code": False}
+    tokenizer = AutoTokenizer.from_pretrained(args.model, **options)
     model = AutoModelForSequenceClassification.from_pretrained(
-        args.model, num_labels=len(label_names)
+        args.model, num_labels=len(label_names), **options
     )
+
+    model.config.id2label = {i: label for label, i in label2id.items()}
+    model.config.label2id = dict(label2id)
 
     train_ds = build_torch_dataset(tokenizer, X_train, y_train, args.max_length)
     val_ds = build_torch_dataset(tokenizer, X_val, y_val, args.max_length)
@@ -174,15 +179,12 @@ def train(args):
         "report_to": [],
     }
 
-    # Phiên bản transformers mới đổi tên tham số evaluation_strategy -> eval_strategy
-    try:
-        training_args = TrainingArguments(
-            eval_strategy="epoch", save_strategy="epoch", **common_kwargs
-        )
-    except TypeError:
-        training_args = TrainingArguments(
-            evaluation_strategy="epoch", save_strategy="epoch", **common_kwargs
-        )
+    parameters = inspect.signature(TrainingArguments).parameters
+    strategy = "eval_strategy" if "eval_strategy" in parameters else "evaluation_strategy"
+    if strategy not in parameters:
+        raise RuntimeError("Transformers TrainingArguments không hỗ trợ evaluation strategy.")
+    training_args = TrainingArguments(**{strategy: "epoch", "save_strategy": "epoch"},
+                                      **common_kwargs)
 
     trainer = Trainer(
         model=model,
@@ -203,8 +205,7 @@ def train(args):
     os.makedirs(MODEL_DIR, exist_ok=True)
     trainer.save_model(MODEL_DIR)
     tokenizer.save_pretrained(MODEL_DIR)
-    with open(os.path.join(MODEL_DIR, "labels.json"), "w", encoding="utf-8") as f:
-        json.dump(label_names, f, ensure_ascii=False, indent=2)
+    atomic_write_json(os.path.join(MODEL_DIR, "labels.json"), label_names)
 
     safe_print(f"\nĐã lưu model vào: {MODEL_DIR}/")
     safe_print("Từ giờ main.py / intent_model.py sẽ tự động dùng PhoBERT.")
@@ -231,10 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         "--model",
         default=BASE_CHECKPOINT,
         help=(
-            "Checkpoint gốc (mặc định vinai/phobert-base - giay phep MIT, an toan "
-            "cho dung thuong mai). TRANH dung vinai/phobert-base-v2 vi license "
-            "AGPL-3.0 co the buoc ban phai mo ma nguon toan bo ung dung neu host "
-            "qua mang."
+            "Checkpoint gốc (mặc định vinai/phobert-base). Kiểm tra giấy phép "
+            "code/trọng số/dataset của checkpoint cụ thể trước phân phối hoặc thương mại."
         ),
     )
     parser.add_argument("--epochs", type=int, default=4)
@@ -244,8 +243,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-feedback", action="store_true", help="Bỏ qua feedback.csv khi gộp dữ liệu"
     )
+    parser.add_argument("--local-files-only", action="store_true",
+                        help="chỉ dùng checkpoint/tokenizer đã có trong cache local")
     args = parser.parse_args(argv)
-    train(args)
+    if args.epochs < 1 or args.batch_size < 1 or not 1 <= args.max_length <= 512:
+        parser.error("epochs/batch-size phải dương và max-length trong [1,512].")
+    if not math.isfinite(args.lr) or args.lr <= 0:
+        parser.error("learning rate phải dương và hữu hạn.")
+    try:
+        train(args)
+    except Exception as error:
+        safe_print(f"[LỖI] Huấn luyện PhoBERT chưa hoàn tất: {error}")
+        return 1
     return 0
 
 

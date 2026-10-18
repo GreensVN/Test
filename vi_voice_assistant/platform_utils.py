@@ -1,5 +1,5 @@
 """
-platform_utils.py
+platform_utils.py v7.10.5
 ------------------
 Tiện ích phát hiện hệ điều hành + sửa lỗi console.
 
@@ -26,6 +26,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ def setup_console() -> None:
             logger.debug("Không đổi được code page sang UTF-8: %s", cp_error)
 
 
-def safe_print(text: str = "", end: str = "\n") -> None:
+def safe_print(text: str = "", end: str = "\n", *, file: TextIO | None = None) -> None:
     """
     In an toàn, chia theo dòng, fallback sang không dấu nếu lỗi.
     Thread-safe nhờ _ResilientStream.
@@ -162,14 +163,14 @@ def safe_print(text: str = "", end: str = "\n") -> None:
     for i, line in enumerate(lines):
         line_end = end if i == last else "\n"
         try:
-            print(line, end=line_end)
+            print(line, end=line_end, file=file)
         except (PermissionError, OSError, UnicodeError):
             try:
                 from text_utils import strip_diacritics
 
                 print(
                     strip_diacritics(line).encode("ascii", errors="replace").decode("ascii"),
-                    end=line_end,
+                    end=line_end, file=file,
                 )
             except Exception:  # noqa: S110
                 # Đây là tầng FALLBACK CUỐI của việc in ấn: nếu nó cũng hỏng thì

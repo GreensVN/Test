@@ -1,8 +1,79 @@
-# Trợ lý ảo tiếng Việt v7.8
+# Trợ lý ảo tiếng Việt v7.11.1
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
-11 nhóm ý định và thực thi lệnh thật trên Windows (kể cả Windows 7), macOS, Linux và WSL.
+11 nhóm ý định và thực thi lệnh thật trên Windows (khuyến nghị Windows 10/11), macOS, Linux và WSL.
 
+> **v7.11.1 (2026-10-18)** - cloud có timeout mỗi request, không phải
+> deadline toàn pipeline. MP3 tạm private-directory/cleanup best effort. Array
+> STT hỗ trợ PCM int16 và normalized float; kiểm mono/finite/size/rate trước
+> backend, giữ biên độ và truyền rate thật. Không đoán bit depth/downmix/resample.
+> VAD giới hạn speech từ lúc bắt đầu nói; RMS không phụ thuộc NumPy. Cloud vẫn
+> opt-in; helper mới không phải network sandbox hay bảo đảm phần cứng realtime.
+> **2049 ca kiểm thử**, thêm 78 ca so với 7.11.0.
+>
+> **v7.11.0 (2026-10-18)** - STT `auto` chỉ thử local, không auto cloud
+> hay tải weights. Chọn `--stt-engine google` là đồng ý gửi audio; auto fallback
+> cần `--allow-cloud-stt`. `--stt-download` chỉ cho phép tải model STT. TTS auto
+> không gTTS nếu chưa `--allow-cloud-tts`; chọn gtts tường minh cũng là opt-in.
+> Piper/VieNeu được tách đúng engine; auto không cold-start VieNeu, print không
+> phát cached audio. PhoBERT assets/checkpoints ở data home, local-only load,
+> validate bundle trước dùng. Bridge state còn gồm STT/TTS, giữ cách chạy `-m`.
+> **1971 ca kiểm thử**, thêm 95 ca so với 7.10.6. Xem hướng dẫn chuyển đổi ở root README.
+>
+> **v7.10.6 (2026-10-18)** - lazy alias bốn core module dùng chung state
+> giữa package/flat import; version-only không nạp core hay tạo data. Data root
+> native, tuyệt đối, init/reset cache thread-safe. No-path reload giữ profile
+> custom; refresh lỗi không thành công giả; policy rỗng có chủ ý được đồng bộ.
+> CLI options mới reset consent/speech cũ. Flags vẫn global, chưa hỗ trợ session
+> CLI đồng thời. Nâng cấp cần restart; không hot-repair các module đã bị trùng.
+> **1876 ca kiểm thử**, thêm 68 ca so với 7.10.5.
+>
+> **v7.10.5 (2026-10-18)** - startup warning luôn ở stderr; custom log
+> dùng đúng parent và fallback console khi file lỗi. Kiểm toàn batch/serialization
+> trước dispatch; JSON lỗi không làm chạy trước một phần batch. JSON máy dùng
+> ASCII escape, hoàn tất short-write và flush trước action; output lỗi trả nonzero.
+> Staged-file helper dọn temp khi huỷ bình thường bằng Ctrl+C/SystemExit, giữ file
+> cũ nếu chưa publish; kiểm codec/prefix trước I/O, không giả rollback sau commit.
+> **1808 ca kiểm thử**, thêm 132 ca so với 7.10.4.
+>
+> **v7.10.4 (2026-10-18)** - history đọc BOM và không ghi đè file lỗi;
+> khoá read/modify/write cho thread cùng module, chưa có khoá liên process.
+> Migration kiểm nguồn/đích nằm trong root, không theo symlink thoát vùng;
+> file/config khởi tạo không thay thế file của bên tạo thắng cuộc. Windows dùng
+> rename no-replace, POSIX dùng hardlink; không hỗ trợ thì cảnh báo và bỏ copy/
+> dùng config RAM. JSON/target lỗi bị từ chối trước action, không rơi vào mặc định.
+> **1676 ca kiểm thử**, thêm 91 ca so với 7.10.3.
+>
+> **v7.10.3 (2026-10-18)** - công cụ hệ thống trả mã lỗi không còn báo
+> thành công chỉ vì tạo được process. Chuỗi dự phòng có tổng timeout 15 giây;
+> timeout/kết quả mơ hồ dừng chuỗi, không tự lặp hành động. Mở GUI vẫn bất đồng
+> bộ. Confidence ngoài [0,1]/integer quá lớn/bool bị từ chối, không gây crash hay
+> hiện 100%; tên ảnh có UUID và child output không lẫn stdout JSON.
+> **1585 ca kiểm thử**, thêm 103 ca so với 7.10.2.
+>
+> **v7.10.2 (2026-10-18)** - callback timer kiểm tra thế hệ, không chỉ ID;
+> callback cũ/đúp không chạm vào lịch được phục hồi. Khi tạo timer lỗi, lịch đã
+> lưu/lịch lặp còn lại dưới trạng thái **tạm dừng**, có nhãn trong danh sách,
+> có thể huỷ; khởi động lại để thử phục hồi, chưa có vòng retry tự động nền.
+> Không mất bản ghi khi retry lỗi, không để lịch tạm dừng đã hết hạn tồn tại mãi.
+> Chặn lỗi số nguyên lớn/tràn datetime; CI nhận PR nhắm vào mọi nhánh.
+> **1482 ca kiểm thử**, thêm 55 ca so với 7.10.1.
+>
+> **v7.10.1 (2026-10-17)** - tiếp tục hardening: confidence 0/không hợp lệ
+> luôn bị từ chối kể cả ngưỡng bằng 0; CSV đọc/ghi dùng khóa liên process có
+> timeout, không trộn header/BOM/record. `log_feedback` trả bool sau flush/fsync,
+> `teach` không báo ghi nhớ khi thất bại. Context lưu snapshot, dung lượng 0 tắt
+> nhớ, không thay đại từ trong URL/path hoặc thay tiếp dữ liệu đã chèn.
+> **1427 ca kiểm thử**, thêm 83 ca so với 7.10.0.
+>
+> **v7.10.0 (2026-10-17)** - sửa vòng đời timer (chia chặng khi nhắc xa,
+> huỷ callback cũ, khôi phục idempotent và lịch lặp bỏ lỡ mốc); JSON CLI sạch
+> trên stdout, mã thoát phản ánh lỗi và dry-run không chạy lệnh/timer; chặn
+> phủ định hệ thống, giữ dấu câu truy vấn/URL và ngữ cảnh. Siết cấu hình,
+> containment đường dẫn, số hữu hạn và giới hạn AST toán học; cache lite
+> không cho giải tuần tự đối tượng tuỳ ý. Metadata/API/CLI dùng chung phiên bản.
+> **1344 ca kiểm thử**, tăng 210, pytest và runner nhúng chạy đủ như nhau.
+>
 > **v7.8 (2026-09-27)** - **lớp bảo vệ không được làm hỏng thứ nó bảo vệ**:
 > `normalize_text` xoá toán tử để câu dễ phân loại, rồi chính con số mất dấu trong
 > lớp bảo vệ đó. `"12,75 + 1"` báo `target = "75 + 1"` (=76) nhưng `result = 13.75`;
@@ -70,7 +141,7 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 >
 > Chi tiết từng lỗi: **CHANGELOG.md**; báo cáo các bản trước: **UPGRADE_REPORT_v7.md**.
 
-## Điểm nổi bật v7.2
+## Điểm nổi bật
 
 - **11 ý định**: mở web, mở app, mở file, điều khiển hệ thống, tìm kiếm, phát nhạc/video, nhắc nhở, thời tiết, xem giờ/ngày, tính toán, chit-chat.
 - **Không cần thư viện ngoài**: `lite_model.py` - Naive Bayes n-gram ký tự thuần Python, huấn luyện <1s, ~97-98% chính xác. Tự dùng scikit-learn hoặc PhoBERT nếu có.
@@ -89,26 +160,24 @@ Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu l�
 
 ## Cài đặt & chạy
 
+Các lệnh dưới đây chạy từ thư mục `vi_voice_assistant/` của bản checkout.
+Nếu đã cài gói, thay `python main.py` bằng `vi-assistant` hoặc
+`python -m vi_voice_assistant` từ thư mục bất kỳ.
+
 ```bash
-# Chạy ngay, không cần cài gì thêm
+# Chạy ngay, chỉ cần Python >= 3.9
 python main.py
 
-# Hoac dung bootstrap o thu muc goc (tu kiem tra may + tu chua loi pip)
-python ../install.py            # cai goi co ban
-python ../install.py --check    # chi chan doan
+# Bootstrap ở thư mục gốc
+python ../install.py
+python ../install.py --check
 
-# Cai chuan Python -> co lenh toan cuc
-pip install ..                  # vi-assistant "mở youtube"
-pip install "..[full]"          # + scikit-learn, TTS/STT
-python main.py --doctor         # may da du gi, thieu gi, lenh khac phuc la gi
-```
+# Cài chuẩn Python: core không cần thư viện ngoài
+pip install ..
+pip install "..[full]"          # + scikit-learn, TTS/STT (tuỳ chọn)
+python main.py --doctor
 
-# Cài đầy đủ (khuyến nghị)
-pip install -r requirements.txt
-# hoặc
-pip install -e .
-
-# Giọng AI
+# Giọng AI (tuỳ chọn, Python >= 3.10)
 pip install vieneu
 python giong_noi_ai.py tai
 python giong_noi_ai.py thu "Xin chào Việt Nam"
@@ -124,8 +193,8 @@ python main.py --version                    # phiên bản + model
 python main.py --debug                      # log chi tiết
 python main.py --no-banner                  # không banner
 python main.py --config my_config.json      # config riêng
-python main.py --engine edge                # TTS engine
-python main.py --history .history.json      # lịch sử riêng
+python main.py --engine auto                # Tự chọn TTS local; cloud cần opt-in
+python main.py --history                    # In lịch sử lệnh rồi thoát
 python main.py --dry-run                    # chỉ phân tích
 python main.py --sysinfo                    # thông tin hệ thống
 ```
@@ -133,6 +202,37 @@ python main.py --sysinfo                    # thông tin hệ thống
 Lệnh trong phiên: `mic`, `voice`, `test`, `nhac nho`, `huy nhac [từ khoá]`, `nap lai`, `day <câu> = <intent>`, `quen`, `help`, `thoat`.
 
 Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
+
+### JSON, mã thoát và an toàn
+
+`--json` chỉ dùng với câu lệnh một lần hoặc `--doctor`. Stdout chứa đúng một
+giá trị JSON; log và tiến trình khởi động ở stderr. Câu lệnh rỗng trả `[]`.
+Mã thoát một lần: `0` đã xử lý; `1` lỗi khởi động/cấu hình/thực thi;
+`2` chưa hiểu, cần xác nhận hoặc không phân tích được. Riêng dry-run trả `0`
+nếu phân tích được (kể cả `status: "unknown"`); hãy đọc trường `status`.
+`--yes` không bỏ ngưỡng tự tin.
+`--once` được ưu tiên nếu đồng thời có đối số văn bản. Confidence bằng 0 luôn
+bị từ chối, kể cả khi ngưỡng bằng 0.
+
+`--dry-run` không thực thi, hỏi xác nhận, dạy model hay khôi phục timer; vẫn
+có thể tạo cache, lịch sử và log. **Lời nhắc chỉ chạy khi tiến trình còn hoạt
+động**, không phải lịch nền của hệ điều hành. Khi cài gói, dữ liệu nằm ở thư
+mục người dùng; đặt `VI_ASSISTANT_HOME` để chọn thư mục riêng.
+
+### Phản hồi và ngữ cảnh
+
+`log_feedback(...)` trả `True` sau khi ghi và flush/fsync, `False` khi lỗi I/O,
+encoding hoặc hết thời gian chờ khóa. `teach(...)` chỉ báo ghi nhớ khi lưu thành
+công và nhãn đã được kiểm tra. Chỉ `True` hoặc integer `1` là phản hồi xác nhận;
+chuỗi `"false"`/`"0"`/`"1"` không được coi là nhãn đã xác nhận.
+
+Các reader/writer dùng `csv_utils` phối hợp bằng khóa OS (timeout 5 giây).
+Khóa không bảo vệ thao tác editor/ghi ngoài helper và append không phải
+transaction chống mất điện. `reminders.json`/history vẫn chưa có khóa liên
+process; tránh nhiều phiên dùng chung thư mục dữ liệu để ghi các file này.
+
+`ContextMemory(0)` tắt nhớ; dung lượng âm/sai kiểu bị từ chối rõ ràng. Các kết
+quả được deepcopy để caller sửa dict không đổi lại lịch sử đã ghi nhận.
 
 ## Cấu trúc
 
@@ -156,19 +256,26 @@ Chi tiết: **HUONG_DAN_SU_DUNG.txt**, **CHANGELOG.md**
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 392 test | + `test_v74_compat.py` (tương thích Python 3.9, import sạch) và `test_v74_hardening.py` (atomic write, dispatcher, doctor, install.py); mỗi test gắn một lỗi thật đã sửa |
+| `tests/` | 2049 ca kiểm thử | Thêm 3 file `test_v7111_*.py` cho cloud timeout/temp, typed audio và VAD/approx; giữ assertions cũ với typed-buffer mocks |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py        # 392 pass, 0 fail - không cần cài gì
-pytest tests/ -v           # nếu đã cài pytest
-python -m unittest discover
+python run_tests.py -q     # 2049 pass, 0 fail - không cần cài gì
+# Ép runner nhúng ngay cả khi đã cài pytest:
+# Linux/macOS: VI_TESTS_FORCE_EMBEDDED=1 python run_tests.py -q
+# PowerShell: $env:VI_TESTS_FORCE_EMBEDDED="1"; python run_tests.py -q
+python -m pytest tests/ -q # 2049 passed
+# Từ thư mục GỐC repo, sau khi cài ".[dev]":
+python -m ruff check .
+python -m mypy
 ```
 
 ## Tương thích
 
-- Python 3.8+ (Windows 7: Python 3.8.x), Windows 8/10/11, macOS, Linux, WSL
+- Python 3.9+; khuyến nghị Python 3.12/3.13, Windows 10/11, macOS, Linux hoặc WSL
+- Không cam kết Python 3.8/Windows 7; metadata gói yêu cầu Python >= 3.9
+- Đã kiểm chứng Linux/Python 3.11 trong sandbox; CI cấu hình Python 3.9–3.13 đa hệ điều hành. Micro/âm thanh/model giọng và thao tác OS thật cần kiểm trên máy đích
 - `python main.py --sysinfo` để kiểm tra
 
 ## Giấy phép
@@ -185,4 +292,4 @@ Xem **UPGRADE_REPORT_v7.md** để biết chi tiết các lỗi đã fix và bre
 git log --oneline v6.4..v7.2
 ```
 
-Tất cả lỗi regex và Path compatibility đã được fix, không còn regression.
+Xem CHANGELOG.md để biết phạm vi sửa lỗi và các giới hạn đã biết; bộ test không thay thế kiểm thử thiết bị thật.

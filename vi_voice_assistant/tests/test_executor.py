@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -124,7 +125,8 @@ def test_app_map_for_platform_picks_correct_map(monkeypatch):
 def test_action_open_app_uses_macos_map_on_darwin(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Darwin")
     calls = {}
-    monkeypatch.setattr(executor.subprocess, "Popen", lambda cmd: calls.setdefault("cmd", cmd))
+    monkeypatch.setattr(executor.subprocess, "Popen",
+                        lambda cmd, **kwargs: calls.setdefault("cmd", cmd))
     ok = executor.action_open_app("chrome")
     assert ok is True
     assert calls["cmd"] == ["open", "-a", "Google Chrome"]
@@ -133,7 +135,8 @@ def test_action_open_app_uses_macos_map_on_darwin(monkeypatch):
 def test_action_open_app_uses_linux_map_and_splits_args(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     calls = {}
-    monkeypatch.setattr(executor.subprocess, "Popen", lambda cmd: calls.setdefault("cmd", cmd))
+    monkeypatch.setattr(executor.subprocess, "Popen",
+                        lambda cmd, **kwargs: calls.setdefault("cmd", cmd))
     ok = executor.action_open_app("word")
     assert ok is True
     assert calls["cmd"] == ["libreoffice", "--writer"]
@@ -188,7 +191,11 @@ def test_action_system_control_macos_shutdown(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Darwin")
     monkeypatch.setattr("builtins.input", lambda _: "y")
     calls = {}
-    monkeypatch.setattr(executor.subprocess, "Popen", lambda cmd: calls.setdefault("cmd", cmd))
+    def fake_run(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     ok = executor.action_system_control("shutdown")
     assert ok is True
     assert calls["cmd"][0] == "osascript"
@@ -197,7 +204,11 @@ def test_action_system_control_macos_shutdown(monkeypatch):
 def test_action_system_control_macos_volume_mute(monkeypatch):
     monkeypatch.setattr(executor, "SYSTEM", "Darwin")
     calls = {}
-    monkeypatch.setattr(executor.subprocess, "Popen", lambda cmd: calls.setdefault("cmd", cmd))
+    def fake_run(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     ok = executor.action_system_control("mute")
     assert ok is True
     assert "muted true" in calls["cmd"][-1]
@@ -209,7 +220,11 @@ def test_action_system_control_linux_uses_systemctl(monkeypatch):
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
     monkeypatch.setattr("builtins.input", lambda _: "y")
     calls = []
-    monkeypatch.setattr(executor.subprocess, "Popen", lambda cmd: calls.append(cmd))
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     ok = executor.action_system_control("restart")
     assert ok is True
     assert calls[0] == ["systemctl", "reboot"]
@@ -221,12 +236,13 @@ def test_action_system_control_linux_falls_back_when_systemctl_missing(monkeypat
     monkeypatch.setattr("builtins.input", lambda _: "y")
     calls = []
 
-    def fake_popen(cmd):
+    def fake_run(cmd, **kwargs):
         if cmd[0] == "systemctl":
             raise FileNotFoundError()
         calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     ok = executor.action_system_control("restart")
     assert ok is True
     assert calls == [["shutdown", "-r", "now"]]
@@ -239,12 +255,13 @@ def test_action_system_control_linux_volume_via_pactl(monkeypatch):
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
     calls = []
 
-    def fake_popen(cmd):
+    def fake_run(cmd, **kwargs):
         if cmd[0] == "wpctl":
             raise FileNotFoundError("wpctl")
         calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
     ok = executor.action_system_control("volume_up")
     assert ok is True
     assert calls[0][0] == "pactl"
@@ -253,7 +270,7 @@ def test_action_system_control_linux_volume_via_pactl(monkeypatch):
 def test_action_system_control_linux_reports_when_no_tool_available(monkeypatch, capsys):
     monkeypatch.setattr(executor, "SYSTEM", "Linux")
     monkeypatch.setattr(executor, "is_wsl", lambda: False)
-    monkeypatch.setattr(executor.subprocess, "Popen", _raise_file_not_found)
+    monkeypatch.setattr(executor.subprocess, "run", _raise_file_not_found)
     ok = executor.action_system_control("lock")
     assert ok is False
     captured = capsys.readouterr()

@@ -1,5 +1,5 @@
 """
-stt.py - Speech-To-Text
+stt.py - Speech-To-Text v7.11.1
 
 v7.0 nâng cấp:
 - Type hints, pathlib, better error handling
@@ -12,18 +12,22 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
+import sys
+import threading
 import wave
-from typing import TYPE_CHECKING, Any
+from array import array
+from importlib.util import find_spec
+from pathlib import Path
+from typing import Any
 
+from audio_utils import normalize_mono, pcm16_bytes
 from platform_utils import safe_print, setup_console
-
-if TYPE_CHECKING:  # Path chi xuat hien trong chu thich kieu (co __future__ annotations)
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.environ.get("STT_MODEL", "vinai/PhoWhisper-small")
+MODEL_NAME = os.environ.get("STT_MODEL", "").strip() or "vinai/PhoWhisper-small"
 SAMPLE_RATE = 16000
 SILENCE_THRESHOLD = 0.015
 SILENCE_DURATION = 1.2
@@ -34,174 +38,211 @@ CHUNK_DURATION = 0.1
 # Một lần là quá ít: lỗi tải thường là lỗi TẠM THỜI (mạng chập chờn, đĩa bận),
 # và bỏ model sau một lần thất bại là mất nhầm.
 _MAX_MODEL_LOAD_ATTEMPTS = 3
+_CLOUD_REQUEST_TIMEOUT = 15.0
+
+
+ENGINE = "auto"
+ALLOW_CLOUD = False
+ALLOW_DOWNLOAD = False
+_policy_lock = threading.RLock()
+_listen_lock = threading.Lock()
+
+
+def configure(engine: str = "auto", *, allow_cloud: bool = False,
+              allow_download: bool = False) -> None:
+    """Select a transport. Google selection is explicit cloud consent.
+
+    Auto is local-only unless allow_cloud is True. Offline forbids cloud even
+    on load failure. Downloads are separate permission and default to False.
+    Configuration applies to subsequent listens, not cancellation of in-flight audio.
+    """
+    global ENGINE, ALLOW_CLOUD, ALLOW_DOWNLOAD, _default_instance
+    if not isinstance(engine, str) or engine not in ("auto", "offline", "google"):
+        raise ValueError("STT engine phải là auto, offline hoặc google.")
+    if type(allow_cloud) is not bool or type(allow_download) is not bool:
+        raise TypeError("STT permission flags phải là bool.")
+    if engine == "offline" and allow_cloud:
+        raise ValueError("STT offline không được bật cloud fallback.")
+    cloud = engine == "google" or allow_cloud
+    with _policy_lock:
+        if (ENGINE, ALLOW_CLOUD, ALLOW_DOWNLOAD) != (engine, cloud, allow_download):
+            _default_instance = None
+        ENGINE, ALLOW_CLOUD, ALLOW_DOWNLOAD = engine, cloud, allow_download
+
+
+def _module_present(name: str) -> bool:
+    if name in sys.modules:
+        return sys.modules[name] is not None
+    try:
+        return find_spec(name) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def _offline_available() -> bool:
+    return _SD_AVAILABLE and _module_present("torch") and _module_present("transformers")
+
+
+def _google_available() -> bool:
+    return _SR_AVAILABLE and (_SD_AVAILABLE or has_pyaudio())
+
+
+def _duration(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("timeout phải là số dương hữu hạn.")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError("timeout phải là số dương hữu hạn.")
+    return number
+
+
+def _apply_cloud_timeout(recognizer) -> None:
+    """SpeechRecognition forwards operation_timeout to the HTTP request."""
+    recognizer.operation_timeout = _CLOUD_REQUEST_TIMEOUT
+    configured = recognizer.operation_timeout
+    if (isinstance(configured, bool) or not isinstance(configured, (int, float))
+            or not math.isfinite(configured) or not 0 < configured <= _CLOUD_REQUEST_TIMEOUT):
+        raise ValueError("Google recognizer không nhận timeout hữu hạn.")
+
+
+def _build_offline_pipeline(model_name: str, device: str, allow_download: bool):
+    import torch
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+    actual = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+    options = {"local_files_only": not allow_download, "trust_remote_code": False}
+    processor = AutoProcessor.from_pretrained(model_name, **options)
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name, **options)
+    return pipeline(
+        "automatic-speech-recognition", model=model, tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor, device=actual,
+        chunk_length_s=30, generate_kwargs={"language": "vi", "task": "transcribe"},
+    )
+
+
+def _decoded_text(result: object) -> str:
+    text = result.get("text") if isinstance(result, dict) else None
+    if isinstance(text, str):
+        return text.strip()
+    logger.warning("STT decoder không trả về text hợp lệ.")
+    return ""
 
 
 def _rms(chunk) -> float:
+    """One amplitude convention regardless of whether NumPy is installed."""
     try:
-        import numpy as np
-
-        return float(np.sqrt(np.mean(chunk.astype("float32") ** 2))) / 32768.0
-    except ImportError:
-        # Fallback không có numpy
-        import math
-        import struct
-
-        # chunk là bytes hoặc array
-        try:
-            # Giả sử int16
-            count = len(chunk) // 2
-            if count == 0:
+        if isinstance(chunk, (bytes, bytearray)):
+            if not chunk or len(chunk) % 2:
                 return 0.0
-            fmt = f"{count}h"
-            samples = struct.unpack(fmt, chunk[: count * 2])
-            sum_squares = sum(s * s for s in samples)
-            return math.sqrt(sum_squares / count) / 32768.0
-        except Exception:
-            return 0.0
+            pcm = array("h")
+            pcm.frombytes(chunk)
+            if sys.byteorder != "little":
+                pcm.byteswap()
+            chunk = pcm
+        samples = normalize_mono(chunk, sampling_rate=SAMPLE_RATE, max_duration=MAX_DURATION)
+        return math.sqrt(sum(value * value for value in samples) / len(samples))
+    except (TypeError, ValueError, OverflowError, NotImplementedError):
+        return 0.0
 
 
 class STT:
-    """PhoWhisper offline + Google fallback."""
+    """Cached local PhoWhisper; Google fallback only with explicit permission."""
 
-    def __init__(self, model_name: str = MODEL_NAME, device: str = "auto"):
-        self.model_name = model_name
-        self.device = device
+    def __init__(self, model_name: str = MODEL_NAME, device: str = "auto", *,
+                 allow_cloud: bool = False, allow_download: bool = False):
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name không được rỗng.")
+        if not isinstance(device, str) or not device.strip():
+            raise ValueError("device phải là chuỗi hợp lệ.")
+        if type(allow_cloud) is not bool or type(allow_download) is not bool:
+            raise TypeError("STT permission flags phải là bool.")
+        self.model_name, self.device = model_name, device
+        self.allow_cloud, self.allow_download = allow_cloud, allow_download
         self._pipe: Any = None
         self._use_google = False
         self._sd: Any = None
         self._recognizer: Any = None
-        # v7.9: đếm số lần tải model đã thử, và số lần Google STT đã hỏng liên
-        # tiếp. Xem `_load_model` và `_google_transcribe`.
         self._load_attempts = 0
         self._google_failures = 0
+        self._language = "vi-VN"
 
     def _load_model(self):
         if self._pipe is not None or self._use_google:
             return
-
-        safe_print(f"[STT] Đang tải model {self.model_name} ...")
-        safe_print("      (Lần đầu ~1GB, từ lần sau <10s)")
-        last_error: Exception | None = None
-        # v7.9: THỬ LẠI trước khi bỏ model offline. Bản cũ ghim `_use_google`
-        # ngay lần tải đầu tiên hỏng, nên MỘT lỗi tạm thời (mạng chập chờn lúc
-        # tải model, đĩa bận một lát) khiến trợ lý chuyển sang STT đám mây
-        # VĨNH VIỄN trong cả phiên - và im lặng, vì đường dẫn cũng là đường của
-        # người dùng, chỉ là âm thanh của nó nằm trên máy người khác.
+        safe_print(f"[STT] Nạp model {self.model_name} "
+                   f"({'cho phép tải' if self.allow_download else 'chỉ cache cục bộ'})...")
         while self._load_attempts < _MAX_MODEL_LOAD_ATTEMPTS:
             self._load_attempts += 1
             try:
-                import torch
-                from transformers import pipeline
-
-                dev = self.device
-                if dev == "auto":
-                    dev = "cuda" if torch.cuda.is_available() else "cpu"
-
-                self._pipe = pipeline(
-                    "automatic-speech-recognition",
-                    model=self.model_name,
-                    device=dev,
-                    chunk_length_s=30,
-                    generate_kwargs={"language": "vi", "task": "transcribe"},
-                )
-                safe_print(f"[STT] Đã tải model ({dev.upper()}). Sẵn sàng nghe.")
+                self._pipe = _build_offline_pipeline(self.model_name, self.device,
+                                                     self.allow_download)
                 return
-            except Exception as e:  # thử lại rồi mới bỏ
-                last_error = e
-                logger.warning("Không tải được PhoWhisper (lần %d/%d): %s",
-                               self._load_attempts, _MAX_MODEL_LOAD_ATTEMPTS, e)
-
-        assert last_error is not None
-        safe_print(f"[STT] Không tải được PhoWhisper sau "
-                   f"{_MAX_MODEL_LOAD_ATTEMPTS} lần ({last_error})")
-        safe_print("[STT] Thử dùng Google STT (cần internet)...")
+            except Exception as error:
+                logger.warning("Không nạp được STT local (%d/%d): %s", self._load_attempts,
+                               _MAX_MODEL_LOAD_ATTEMPTS, error)
+        if not self.allow_cloud:
+            raise RuntimeError("Không nạp được STT local; không gửi audio lên cloud. "
+                               "Dùng --stt-download để cho phép tải model, hoặc chọn "
+                               "--stt-engine google nếu đồng ý gửi audio.")
         try:
             import speech_recognition  # noqa: F401
+        except ImportError as error:
+            raise RuntimeError("Không có STT local hay Google backend khả dụng.") from error
+        self._use_google = True
+        safe_print("[STT] Dùng Google theo quyền đã chọn; audio được gửi tới dịch vụ Google.")
 
-            self._use_google = True
-            safe_print("[STT] Dùng Google STT làm dự phòng.")
-        except ImportError as err:
-            raise RuntimeError(
-                "Không có module nào cho STT.\n"
-                "Cài bằng:  pip install transformers torch sounddevice\n"
-                "hoặc:      pip install SpeechRecognition sounddevice"
-            ) from err
-
-    def _record(self):
-        import numpy as np
-
+    def _record(self, timeout: float = 6.0, phrase_limit: float = 8.0):
         if self._sd is None:
             import sounddevice as sd
 
             self._sd = sd
+        return _record_pcm_sd(timeout, phrase_limit, device=self._sd)
 
-        sd = self._sd
-        chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
-        silence_chunks = int(SILENCE_DURATION / CHUNK_DURATION)
-        max_chunks = int(MAX_DURATION / CHUNK_DURATION)
+    def transcribe_array(self, audio, *, sampling_rate: int = SAMPLE_RATE) -> str:
+        """Typed mono PCM16/normalized float, bounded before backend loading.
 
-        frames = []
-        silent_count = 0
-        speech_started = False
-
-        safe_print("[MIC] Đang nghe... (nói xong im lặng ~1s là tự dừng)")
-
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=chunk_samples
-        ) as stream:
-            for _ in range(max_chunks):
-                chunk, _ = stream.read(chunk_samples)
-                frames.append(chunk.copy())
-
-                if _rms(chunk) > SILENCE_THRESHOLD:
-                    speech_started = True
-                    silent_count = 0
-                else:
-                    if speech_started:
-                        silent_count += 1
-                    if silent_count >= silence_chunks:
-                        break
-
-        audio = np.concatenate(frames, axis=0).flatten()
-        safe_print(f"   Đã ghi {len(audio) / SAMPLE_RATE:.1f}s audio.")
-        return audio
-
-    def transcribe_array(self, audio) -> str:
-        import numpy as np
-
-        self._load_model()
-        if self._use_google:
-            return self._google_from_array(audio)
-
-        audio_float = audio.astype(np.float32) / 32768.0
-        # v7.9: lỗi giải mã (audio hỏng, GPU tràn bộ nhớ) trước đây nổ thẳng ra
-        # ngoài và SẬT cả câu lệnh. Đường Google trả "" êm, đường offline thì
-        # phải công bằng.
+        The rate is passed to the adapter, not guessed or resampled here.
+        Transformers may require an installed resampler for non-native rates.
+        """
         try:
-            result = self._pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_float})
-        except Exception as e:
-            logger.warning("Lỗi khi giải mã audio: %s", e)
-            safe_print(f"[STT] Lỗi khi xử lý âm thanh: {e}")
+            samples = normalize_mono(audio, sampling_rate=sampling_rate,
+                                     max_duration=MAX_DURATION)
+            self._load_model()
+            if self._use_google:
+                return self._google_from_array(samples, sampling_rate=sampling_rate)
+            import numpy as np
+
+            audio_float = np.asarray(samples, dtype=np.float32)
+            return _decoded_text(self._pipe({"sampling_rate": sampling_rate, "raw": audio_float}))
+        except Exception as error:
+            logger.warning("STT array lỗi: %s", error)
+            safe_print(f"[STT] Lỗi khi xử lý âm thanh: {error}")
             return ""
-        return (result.get("text") or "").strip()
 
     def transcribe_file(self, path: str | Path) -> str:
-        self._load_model()
-        if self._use_google:
-            return self._google_from_file(str(path))
         try:
-            result = self._pipe(str(path))
-        except Exception as e:
-            logger.warning("Lỗi khi giải mã file %s: %s", path, e)
-            safe_print(f"[STT] Lỗi khi xử lý file {path}: {e}")
+            local = Path(path).expanduser().absolute()
+            if not local.is_file():
+                raise ValueError("transcribe_file chỉ nhận file local có thật, không nhận URL.")
+            self._load_model()
+            if self._use_google:
+                return self._google_from_file(str(local))
+            return _decoded_text(self._pipe(str(local)))
+        except Exception as error:
+            logger.warning("STT file lỗi: %s", error)
+            safe_print(f"[STT] Lỗi khi xử lý file: {error}")
             return ""
-        return (result.get("text") or "").strip()
 
-    def listen(self) -> str:
-        audio = self._record()
-        text = self.transcribe_array(audio)
-        safe_print(f"   Nhận diện: {text!r}")
-        return text
+    def listen(self, *, language: str = "vi-VN", timeout: float = 6.0) -> str:
+        try:
+            duration = _duration(timeout)
+            self._language = language
+            self._load_model()  # Never open the microphone before a usable backend.
+            audio = self._record(timeout=duration)
+            return "" if audio is None else self.transcribe_array(audio)
+        except Exception as error:
+            safe_print(f"[STT] {error} -> dùng gõ phím.")
+            return ""
 
     def _google_transcribe(self, audio_data) -> str:
         """Gọi Google STT, PHÂN BIỆT rõ hai kiểi hỏng.
@@ -211,13 +252,17 @@ class STT:
         không rõ và mất mạng cần hai cách xử lý KHÁC nhau (nói lại vs gõ tay), và
         hàm `listen_once` ở tầng trên vốn đã phân biệt được; lớp này thì không.
         """
+        if not self.allow_cloud:
+            safe_print("[STT] Cloud chưa được cho phép; không gửi audio.")
+            return ""
         import speech_recognition as sr
 
         if self._recognizer is None:
             self._recognizer = sr.Recognizer()
         try:
-            text = str(self._recognizer.recognize_google(audio_data,
-                                                        language="vi-VN"))
+            _apply_cloud_timeout(self._recognizer)
+            raw = self._recognizer.recognize_google(audio_data, language=self._language)
+            text = raw.strip() if isinstance(raw, str) else ""
             # Nghe được rồi thì số lần hỏng liên tiếp tính lại từ đầu. Không
             # reset thì một lần mất mạng 3 giây giữa phiên làm bộ đếm leo lên
             # mãi, và cảnh báo "lần 1001" xuất hiện ở câu nói hoàn toàn bình
@@ -240,18 +285,22 @@ class STT:
                            "- bạn có thể gõ tay.")
             return ""
 
-    def _google_from_array(self, audio) -> str:
+    def _google_from_array(self, audio, *, sampling_rate: int = SAMPLE_RATE) -> str:
+        if not self.allow_cloud:
+            safe_print("[STT] Cloud chưa được cho phép; không gửi audio.")
+            return ""
         import speech_recognition as sr
 
         if self._recognizer is None:
             self._recognizer = sr.Recognizer()
 
+        samples = normalize_mono(audio, sampling_rate=sampling_rate, max_duration=MAX_DURATION)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(audio.tobytes())
+            wf.setframerate(sampling_rate)
+            wf.writeframes(pcm16_bytes(samples))
         buf.seek(0)
 
         with sr.AudioFile(buf) as source:
@@ -259,6 +308,9 @@ class STT:
         return self._google_transcribe(audio_data)
 
     def _google_from_file(self, path: str) -> str:
+        if not self.allow_cloud:
+            safe_print("[STT] Cloud chưa được cho phép; không gửi audio.")
+            return ""
         import speech_recognition as sr
 
         if self._recognizer is None:
@@ -269,9 +321,11 @@ class STT:
 
 
 # --- Simple utility (Google STT via sounddevice) ---
+_sr: Any = None
 try:
-    import speech_recognition as _sr
+    import speech_recognition as _speech_recognition
 
+    _sr = _speech_recognition
     _SR_AVAILABLE = True
 except ImportError:
     _SR_AVAILABLE = False
@@ -294,70 +348,57 @@ def has_pyaudio() -> bool:
 
 
 def is_available() -> bool:
-    if _SR_AVAILABLE and (_SD_AVAILABLE or has_pyaudio()):
-        return True
-    try:
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
+    """Library/recording availability for the selected policy, not hardware proof."""
+    if ENGINE == "google":
+        return _google_available()
+    return _offline_available() or (ENGINE == "auto" and ALLOW_CLOUD and _google_available())
 
-        return _SD_AVAILABLE
-    except ImportError:
-        return False
+
+def _record_pcm_sd(timeout: float = 6.0, phrase_limit: float = 8.0, *, device=None):
+    import numpy as np
+
+    timeout, phrase_limit = _duration(timeout), _duration(phrase_limit)
+    backend = _sd if device is None else device
+    chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
+    silence_chunks = max(1, math.ceil(SILENCE_DURATION / CHUNK_DURATION))
+    wait_chunks = max(1, math.ceil(timeout / CHUNK_DURATION))
+    speech_chunks = max(1, math.ceil(phrase_limit / CHUNK_DURATION))
+    total_chunks = max(1, math.ceil(MAX_DURATION / CHUNK_DURATION))
+    frames, silent_count = [], 0
+    speech_started = False
+    safe_print("[STT] Đang nghe... (nói vào micro, im lặng ~1s là tự dừng)")
+    with backend.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=chunk_samples
+    ) as stream:
+        for index in range(total_chunks):
+            chunk, _overflow = stream.read(chunk_samples)
+            if _rms(chunk) > SILENCE_THRESHOLD:
+                speech_started, silent_count = True, 0
+            elif speech_started:
+                silent_count += 1
+            if not speech_started:
+                if index + 1 >= wait_chunks:
+                    return None
+                continue
+            frames.append(chunk.copy())
+            if len(frames) >= speech_chunks or silent_count >= silence_chunks:
+                break
+    if not frames:
+        return None
+    audio = np.concatenate(frames, axis=0).flatten()
+    safe_print("   Đã ghi %.1fs audio." % (len(audio) / SAMPLE_RATE))
+    return audio
 
 
 def _record_audiodata_sd(timeout: float = 6.0, phrase_limit: float = 8.0):
-    import numpy as np
-
-    chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
-    silence_chunks = int(SILENCE_DURATION / CHUNK_DURATION)
-    timeout_chunks = int(timeout / CHUNK_DURATION)
-    max_chunks = int(min(MAX_DURATION, phrase_limit + timeout) / CHUNK_DURATION)
-
-    frames = []
-    silent_count = 0
-    speech_started = False
-
-    safe_print("[STT] Đang nghe... (nói vào micro, im lặng ~1s là tự dừng)")
-
-    with _sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=chunk_samples
-    ) as stream:
-        for i in range(max_chunks):
-            chunk, _overflow = stream.read(chunk_samples)
-            if _rms(chunk) > SILENCE_THRESHOLD:
-                speech_started = True
-                silent_count = 0
-            else:
-                if speech_started:
-                    silent_count += 1
-                elif i >= timeout_chunks:
-                    return None
-            if speech_started:
-                frames.append(chunk.copy())
-            if speech_started and silent_count >= silence_chunks:
-                break
-
-    if not frames:
-        return None
-
-    audio = np.concatenate(frames, axis=0).flatten()
-    safe_print("   Đã ghi %.1fs audio." % (len(audio) / SAMPLE_RATE))
-
-    # v7.2: AudioData nhận thẳng PCM gốc, không cần đóng/mở WAV giả rồi cắt
-    # cứng 44 byte đầu. Con số 44 chỉ ĐÚNG với header PCM "canonical" - nếu
-    # wave thêm chunk mở rộng (hoặc ai đó đổi định dạng) là dữ liệu bị lệch
-    # một vài byte và nhận diện ra kết quả rác mà không báo lỗi nào.
-    return _sr.AudioData(audio.tobytes(), SAMPLE_RATE, 2)
+    audio = _record_pcm_sd(timeout, phrase_limit)
+    return None if audio is None else _sr.AudioData(audio.tobytes(), SAMPLE_RATE, 2)
 
 
 def _report_missing_stt() -> None:
-    """Hướng dẫn cài đặt khi máy chưa đủ thư viện STT (không ném lỗi - gõ tay vẫn dùng được)."""
-    if _SR_AVAILABLE:
-        safe_print("[STT] Đã có SpeechRecognition nhưng thiếu thư viện thu âm.")
-        safe_print("      Cài bằng:  pip install sounddevice numpy")
-    else:
-        safe_print("[STT] Chưa cài thư viện nhận diện giọng nói -> dùng gõ phím.")
-        safe_print("      Cài bằng:  pip install SpeechRecognition sounddevice numpy")
+    safe_print("[STT] Backend theo policy hiện tại chưa sẵn sàng; dùng gõ phím.")
+    safe_print("      Local: cài .[stt-offline], dùng --stt-download nếu cần tải model.")
+    safe_print("      Cloud: chọn --stt-engine google hoặc --allow-cloud-stt khi đồng ý gửi audio.")
 
 
 def _capture_audio(timeout: float, phrase_limit: float = 8.0):
@@ -409,8 +450,16 @@ def _capture_audio(timeout: float, phrase_limit: float = 8.0):
 
 def _recognize(recognizer, audio, language: str) -> str:
     """Gửi audio tới Google Web Speech API, trả về chuỗi rỗng khi không nhận được."""
+    if ENGINE != "google" and not (ENGINE == "auto" and ALLOW_CLOUD):
+        return ""
     try:
-        text = str(recognizer.recognize_google(audio, language=language))
+        _apply_cloud_timeout(recognizer)
+    except Exception as error:
+        logger.warning("Không áp được timeout STT; không gửi audio: %s", error)
+        return ""
+    try:
+        raw = recognizer.recognize_google(audio, language=language)
+        text = raw.strip() if isinstance(raw, str) else ""
         safe_print(f"[STT] Nhận diện được: {text}")
         return text
     except _sr.UnknownValueError:
@@ -424,25 +473,32 @@ def _recognize(recognizer, audio, language: str) -> str:
         return ""
 
 
-def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
-    """Nghe một câu qua micro và trả về văn bản. Trả về "" nếu không nghe được."""
-    if not is_available():
+def _listen_google(language: str, timeout: float) -> str:
+    if not _google_available():
         _report_missing_stt()
         return ""
+    safe_print("[STT] Google được chọn/cho phép; audio gửi tới Google.")
+    recognizer = _sr.Recognizer()
+    audio, _gave_up = _capture_audio(timeout)
+    return "" if audio is None else _recognize(recognizer, audio, language)
 
-    if _SR_AVAILABLE:
-        recognizer = _sr.Recognizer()
-        audio, _gave_up = _capture_audio(timeout)
-        if audio is None:
-            return ""
-        return _recognize(recognizer, audio, language)
 
-    # Không có SpeechRecognition -> chỉ còn đường PhoWhisper offline.
+def listen_once(language: str = "vi-VN", timeout: float = 6.0) -> str:
+    """Local-first, never cloud by default; no model download without permission."""
     try:
-        return _default_stt().listen()
-    except Exception as e:
-        safe_print(f"[STT] Lỗi: {e}")
-        return ""
+        duration = _duration(timeout)
+        with _listen_lock:
+            if ENGINE == "google":
+                return _listen_google(language, duration)
+            if _offline_available():
+                return _default_stt().listen(language=language, timeout=duration)
+            if ENGINE == "auto" and ALLOW_CLOUD:
+                return _listen_google(language, duration)
+            _report_missing_stt()
+    except Exception as error:
+        logger.warning("STT không thực hiện được: %s", error)
+        safe_print(f"[STT] {error} -> dùng gõ phím.")
+    return ""
 
 
 _default_instance: STT | None = None
@@ -450,29 +506,37 @@ _default_instance: STT | None = None
 
 def _default_stt() -> STT:
     global _default_instance
-    if _default_instance is None:
-        _default_instance = STT()
-    return _default_instance
+    with _policy_lock:
+        if _default_instance is None:
+            _default_instance = STT(allow_cloud=ENGINE == "auto" and ALLOW_CLOUD,
+                                    allow_download=ALLOW_DOWNLOAD)
+        return _default_instance
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Inspect policy by default; recording always requires --listen."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Nhận giọng nói với cloud opt-in")
+    parser.add_argument("--engine", choices=["auto", "offline", "google"], default="auto")
+    parser.add_argument("--allow-cloud", action="store_true",
+                        help="cho phép fallback gửi audio Google")
+    parser.add_argument("--download", action="store_true", help="cho phép tải model STT chưa cache")
+    parser.add_argument("--listen", action="store_true", help="bắt đầu thu một câu qua microphone")
+    args = parser.parse_args(argv)
+    try:
+        configure(args.engine, allow_cloud=args.allow_cloud, allow_download=args.download)
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
+    setup_console()
+    if args.listen:
+        text = listen_once()
+        safe_print(f"[STT] Kết quả: {text}")
+        return 0 if text else 1
+    safe_print(f"[STT] engine={ENGINE}, cloud={ALLOW_CLOUD}, download={ALLOW_DOWNLOAD}")
+    safe_print("      Thêm --listen để thu âm; mặc định không mở microphone.")
+    return 0
 
 
 if __name__ == "__main__":
-    setup_console()
-    safe_print("[STT] Kiểm tra module nhận diện giọng nói")
-    safe_print(f"      Model mặc định: {MODEL_NAME}")
-    safe_print(f"      Sample rate    : {SAMPLE_RATE} Hz")
-    safe_print(f"      Khả dụng       : {is_available()}")
-    safe_print("")
-
-    if _SD_AVAILABLE:
-        try:
-            import sounddevice as sd
-
-            devices = sd.query_devices()
-            safe_print("Thiết bị âm thanh:")
-            for i, d in enumerate(devices):
-                if d["max_input_channels"] > 0:
-                    safe_print(f"  [{i}] {d['name']} (in: {d['max_input_channels']} ch)")
-        except Exception as e:
-            safe_print(f"(Không liệt kê được thiết bị âm thanh: {e})")
-    else:
-        safe_print("Chưa cài sounddevice: pip install sounddevice")
+    raise SystemExit(main())

@@ -55,6 +55,7 @@ def ex(monkeypatch):
     monkeypatch.setattr(executor, "_confirm", lambda prompt: True)
     ran = []
     monkeypatch.setattr(executor, "_popen", lambda cmd: ran.append(cmd))
+    monkeypatch.setattr(executor, "_run_command", lambda cmd, **kw: ran.append(cmd) or True)
     monkeypatch.setattr(executor, "_run_first_available", lambda c: ran.append(c) or True)
     executor.ran = ran
     return executor

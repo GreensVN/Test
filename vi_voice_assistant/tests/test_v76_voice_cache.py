@@ -84,11 +84,10 @@ def test_atomic_write_text_khong_de_lai_file_tam_khi_loi(tmp_path, monkeypatch):
     target = tmp_path / "index.csv"
     paths.atomic_write_text(target, "cu\n")
 
-    def boom(fd, mode, **kwargs):
-        os.close(fd)
+    def boom(fd):
         raise OSError("đĩa hỏng")
 
-    monkeypatch.setattr(paths.os, "fdopen", boom)
+    monkeypatch.setattr(paths.os, "fsync", boom)
     with pytest.raises(OSError, match="đĩa hỏng"):
         paths.atomic_write_text(target, "mới\n")
 
@@ -212,7 +211,7 @@ def test_prewarm_that_bai_khong_im_lang_cung_ly_do(tts_mod, monkeypatch, tmp_pat
         raise tts_mod.TTSWriteError("chưa cài gTTS (pip install gTTS)")
 
     monkeypatch.setattr(tts_mod, "_WRITERS", (("gtts", ".mp3", broken, lambda: True),))
-    result = tts_mod.prewarm("một câu", out_dir=tmp_path)
+    result = tts_mod.prewarm("một câu", out_dir=tmp_path, engine="gtts")
     assert result["failed"] == 1 and result["written"] == 0
     assert "chưa cài gTTS" in result["detail"][0]["reason"], result["detail"]
 

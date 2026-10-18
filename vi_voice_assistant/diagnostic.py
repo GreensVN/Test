@@ -1,5 +1,5 @@
 """
-diagnostic.py - Chẩn đoán cài đặt & môi trường (v7.3 - v7.6)
+diagnostic.py - Chẩn đoán cài đặt & môi trường (v7.10.5)
 -----------------------------------------------------------
 
 Vì sao cần: trước đây người dùng mới chỉ có ``--sysinfo`` (báo cáo khả năng
@@ -28,14 +28,15 @@ v7.4 nâng cấp:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
-import json
 import logging
 import platform
 import sys
 import time
 from pathlib import Path
 
+from json_output import dumps_json, error_text, write_json_document
 from platform_utils import safe_print, setup_console
 
 logger = logging.getLogger(__name__)
@@ -53,9 +54,12 @@ INFO = "[i]  "
 FULL_INSTALL = 'pip install "vi-voice-assistant[full]"'
 TTS_INSTALL = 'pip install "vi-voice-assistant[tts]"'
 STT_INSTALL = 'pip install "vi-voice-assistant[stt]"'
-AI_VOICE_INSTALL = 'pip install "vi-voice-assistant[ai-voice]" && python giong_noi_ai.py tai'
-LITE_RETRAIN = 'python -c "from lite_model import train_lite_model as t; t()"'
-CONFIG_WRITE = 'python -c "import config; config.save_config(config.DEFAULT_CONFIG)"'
+AI_VOICE_INSTALL = ('pip install "vi-voice-assistant[ai-voice]" '
+                    '&& python -m vi_voice_assistant.giong_noi_ai tai')
+LITE_RETRAIN = ('python -c "from vi_voice_assistant.lite_model import get_lite_model as t; '
+                't(force_retrain=True)"')
+CONFIG_WRITE = ('python -c "from vi_voice_assistant import config; '
+                'config.save_config(config.DEFAULT_CONFIG)"')
 
 OPTIONAL_LIBS = {
     # ten goi: (mo ngan, lenh cai)
@@ -72,7 +76,8 @@ OPTIONAL_LIBS = {
 def _module_available(name: str) -> bool:
     """Có module mà KHÔNG import nó (import pyttsx3/torch là mất vài giây)."""
     try:
-        return importlib.util.find_spec(name) is not None
+        module = "speech_recognition" if name == "SpeechRecognition" else name
+        return importlib.util.find_spec(module) is not None
     except (ImportError, ValueError):
         return False
 
@@ -161,15 +166,9 @@ def check_config() -> tuple[list[tuple[str, str]], list[str]]:
         fixes.append(f"mở {path} bằng trình soạn thảo, sửa JSON cho đúng cú pháp")
         return rows, fixes
 
-    # app_map RỖNG trong config không có nghĩa là "mở app không được": executor
-    # chọn đúng map theo nền tảng đang chạy, nên phải đếm bằng chính hàm đó
-    # thay vì đoán số khoá trong config.
-    try:
-        import executor
-
-        n_apps = len(executor._app_map_for_platform())
-    except Exception:
-        n_apps = len(cfg.get("app_map") or {})
+    key = {"Windows": "app_map_windows", "Darwin": "app_map_macos"}.get(
+        platform.system(), "app_map_linux")
+    n_apps = len(cfg.get(key) or {})
     counts = {
         "ứng dụng (nền tảng này)": n_apps,
         "website (website_map)": len(cfg.get("website_map") or {}),
@@ -365,22 +364,27 @@ def print_report(report: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Điểm vào CLI: ``vi-doctor`` / ``python -m vi_voice_assistant.diagnostic``."""
+    """Doctor CLI: validate before printing one portable, strict JSON value."""
     setup_console()
     as_json = "--json" in (argv if argv is not None else sys.argv[1:])
     try:
-        report = run_checks()
-    except Exception as e:          # CLI khong duoc nem traceback ra nguoi dung
-        logger.warning("Bộ chẩn đoán lỗi: %s", e, exc_info=True)
+        with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
+            report = run_checks()
+            if not isinstance(report, dict) or not isinstance(report.get("ok"), bool):
+                raise ValueError("Báo cáo chẩn đoán phải là object có trường ok kiểu bool.")
+            document = dumps_json(report)
+    except Exception as error:
+        message = error_text(error)
+        logger.warning("Bộ chẩn đoán lỗi: %s", message)
         report = {
-            "ok": False,
-            "problems": 1,
-            "warnings": 0,
-            "sections": {"Bộ chẩn đoán": [(BAD, f"không chạy được: {type(e).__name__}: {e}")]},
+            "ok": False, "problems": 1, "warnings": 0,
+            "sections": {"Bộ chẩn đoán": [(BAD, f"không chạy được: {message}")]},
             "fixes": [],
         }
+        document = dumps_json(report)
     if as_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        if not write_json_document(document):
+            return 1
     else:
         print_report(report)
     return 0 if report["ok"] else 1

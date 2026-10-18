@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.8
+main.py - Trợ lý ảo tiếng Việt v7.11.1
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:
@@ -35,13 +35,18 @@ v7.1 nâng cấp (tiếp nối v7.0):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
-import math
 import signal
 import sys
+import threading
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO
 
+from _version import __version__
+from json_output import dumps_json, error_text, write_json_document
 from paths import atomic_write_json, data_path
 from platform_utils import safe_print, setup_console
 
@@ -54,7 +59,7 @@ from nlu_advanced import NLU
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "7.9"
+APP_VERSION = __version__
 APP_NAME = "Trợ lý ảo tiếng Việt"
 
 BANNER = rf"""
@@ -92,6 +97,7 @@ YES_WORDS = {"có", "co", "ừ", "u", "ủ", "đúng", "dung", "ok", "y", "yes",
 
 HISTORY_PATH = data_path(".history.json")   # v7.3: thu muc du lieu - xem paths.py
 MAX_HISTORY = 200
+_HISTORY_LOCK = threading.RLock()
 
 
 @dataclass
@@ -119,6 +125,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Chỉ phân tích, không thực thi")
     parser.add_argument("--voice", action="store_true", help="Nhận lệnh qua micro")
     parser.add_argument("--speak", action="store_true", help="Đọc phản hồi bằng giọng nói")
+    parser.add_argument("--stt-engine", choices=["auto", "offline", "google"], default="auto",
+                        help="STT local-first; chọn google là đồng ý gửi audio tới Google")
+    parser.add_argument("--allow-cloud-stt", action="store_true",
+                        help="cho phép auto STT fallback Google (gửi audio)")
+    parser.add_argument("--stt-download", action="store_true",
+                        help="cho phép tải model STT chưa có trong cache")
+    parser.add_argument("--allow-cloud-tts", action="store_true",
+                        help="cho phép auto TTS/cache fallback gTTS (gửi văn bản)")
     parser.add_argument(
         "--once", metavar="CÂU_LỆNH", help='Chạy 1 lệnh rồi thoát (vd: --once "mở youtube")'
     )
@@ -144,7 +158,7 @@ def parse_args() -> argparse.Namespace:
         "--engine",
         # v7.2: thêm "nc" (nhân bản giọng) - tts.py hỗ trợ engine này từ lâu
         # nhưng CLI không cho chọn, nên muốn dùng phải sửa mã nguồn.
-        choices=["auto", "piper", "nc", "pyttsx3", "sapi", "gtts", "print"],
+        choices=["auto", "piper", "vieneu", "nc", "pyttsx3", "sapi", "gtts", "print"],
         help="Chọn engine TTS",
     )
     parser.add_argument("--history", action="store_true", help="In lịch sử lệnh rồi thoát")
@@ -156,37 +170,55 @@ def parse_args() -> argparse.Namespace:
         "--doctor", action="store_true",
         help="Chẩn đoán cài đặt: thư viện, model, config, quyền ghi, giọng nói + in lệnh khắc phục",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.stt_engine == "offline" and args.allow_cloud_stt:
+        parser.error("--stt-engine offline không dùng cùng --allow-cloud-stt.")
+    if args.json and args.once is None and args.text is None and not args.doctor:
+        parser.error("--json cần một câu lệnh (--once hoặc CÂU_LỆNH), hoặc --doctor.")
+    return args
 
 
 # --- History ---
-def load_history() -> list[str]:
-    if not HISTORY_PATH.exists():
-        return []
+def _read_history_file() -> list[str] | None:
+    """None means unreadable/unknown format, not an empty or missing history."""
     try:
-        with HISTORY_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception:
+        with Path(HISTORY_PATH).open("r", encoding="utf-8-sig") as stream:
+            data = json.load(stream)
+        if not isinstance(data, list):
+            logger.warning("History phải là danh sách; giữ nguyên file để sửa.")
+            return None
+        return [entry for entry in data if isinstance(entry, str)][-MAX_HISTORY:]
+    except FileNotFoundError:
         return []
+    except Exception as error:
+        logger.warning("Không đọc được history; giữ nguyên file: %s", error)
+        return None
+
+
+def load_history() -> list[str]:
+    with _HISTORY_LOCK:
+        return _read_history_file() or []
 
 
 def save_history_entry(text: str) -> None:
-    if not text or len(text) < 2:
+    if not isinstance(text, str) or len(text) < 2:
         return
-    try:
-        hist = load_history()
-        hist.append(text)
-        # Giữ tối đa MAX_HISTORY, bỏ trùng liên tiếp
-        if len(hist) >= 2 and hist[-1] == hist[-2]:
-            hist.pop()
-        hist = hist[-MAX_HISTORY:]
-        # v7.4: open("w") cắt file ngay lập tức - tiến trình chết giữa chừng
-        # để lại .history.json rỗng/hỏng và mất luôn lịch sử cũ. Dùng hàm ghi
-        # atomic chung của paths.py.
-        atomic_write_json(HISTORY_PATH, hist, prefix=".history_tmp_")
-    except Exception as e:
-        logger.debug("Không lưu được history: %s", e)
+    with _HISTORY_LOCK:
+        try:
+            hist = _read_history_file()
+            if hist is None:
+                logger.warning(
+                    "Không ghi đè history chưa đọc được; hãy sửa hoặc di chuyển file cũ."
+                )
+                return
+            hist.append(text)
+            if len(hist) >= 2 and hist[-1] == hist[-2]:
+                hist.pop()
+            # Keep one read/modify/atomic-write operation inside the thread lock.
+            # This is not an inter-process lock.
+            atomic_write_json(HISTORY_PATH, hist[-MAX_HISTORY:], prefix=".history_tmp_")
+        except Exception as error:
+            logger.debug("Không lưu được history: %s", error)
 
 
 def print_history() -> None:
@@ -211,7 +243,8 @@ def get_input(use_voice: bool) -> str:
                     return str(text)
                 safe_print("(Không nhận diện được giọng nói, bạn có thể gõ tay bên dưới)")
             else:
-                safe_print("[CẢNH BÁO] Chưa cài SpeechRecognition, chuyển sang gõ phím.")
+                safe_print("[STT] Backend theo policy chưa sẵn sàng -> dùng gõ phím. "
+                           "Chọn --stt-engine google nếu đồng ý gửi audio, hoặc cài STT local.")
         except Exception as e:
             logger.debug("STT lỗi: %s", e)
             safe_print(f"[LỖI STT] {e} -> chuyển sang gõ phím")
@@ -231,13 +264,9 @@ def _confidence_percent(result: dict) -> float:
     JSON của mình, model trả `None`) - xảy ra đúng ở dòng in sau câu hỏi
     xác nhận nên người dùng thấy lỗi thay vì câu hỏi. Giá trị hỏng hiện 0%.
     """
-    try:
-        value = float(result.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(value):
-        return 0.0
-    return min(1.0, max(0.0, value))
+    value: float = executor._read_confidence(result.get("confidence", 0.0))
+    return max(0.0, value)
+
 
 
 def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
@@ -250,6 +279,11 @@ def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
             indent=2,
         )
     )
+
+    if dry_run:
+        safe_print(f"   [{_confidence_percent(result):.0%} tự tin] "
+                   "(Chế độ test: không thực thi, không hỏi xác nhận, không dạy)")
+        return
 
     if status == "unknown":
         executor.respond("Xin lỗi, tôi chưa hiểu ý bạn")
@@ -268,10 +302,9 @@ def handle_result(result: dict, nlu: NLU, dry_run: bool) -> None:
             executor.respond("Đã huỷ lệnh")
             return
         nlu.teach(result.get("raw", ""), result.get("intent", ""))
-
-    if dry_run:
-        safe_print("   (Chế độ test: không thực thi)")
-        return
+        # Con người đã xác nhận một kết quả ít tự tin; không được từ chối
+        # lại bởi ngưỡng thấp hơn của executor. Không sửa object của caller.
+        result = dict(result, confidence=1.0)
 
     try:
         ok = execute_command(result)
@@ -289,46 +322,61 @@ def print_sysinfo() -> None:
     safe_print(format_capability_report(capability_report()))
 
 
-def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False) -> int:
-    try:
-        commands = nlu.understand(text)
-    except Exception as e:
-        logger.exception("Lỗi khi phân tích câu: %r", text)
-        if as_json:
-            print(json.dumps({"ok": False, "error": str(e), "raw": text}, ensure_ascii=False))
-        else:
-            safe_print(f"[LỖI] Không phân tích được: {e}")
+def _execute_once(result: dict, dry_run: bool) -> int:
+    if dry_run:
+        return 0
+    status = result.get("status")
+    if status == "need_confirm" and executor.AUTO_CONFIRM:
+        status = "ok"
+    # Chế độ một-câu không có lượt hỏi lại: không được thực thi kết quả
+    # low_confidence chỉ vì ngưỡng executor (0.35) thấp hơn NLU (0.45).
+    if status != "ok":
         return 2
+    try:
+        return 0 if execute_command(result) else 1
+    except Exception as e:
+        logger.exception("Lỗi khi thực thi lệnh (intent=%s)", result.get("intent"))
+        safe_print(f"[LỖI] Không thực thi được: {e}")
+        return 1
 
-    if as_json:
-        print(json.dumps(commands, ensure_ascii=False, indent=2, default=str))
 
-    exit_code = 0
-    for result in commands:
-        if not as_json:
-            safe_print(
-                "-> {} | {} | {:.0%} | {}".format(
-                    result.get("intent"),
-                    result.get("target"),
-                    _confidence_percent(result),
-                    result.get("status"),
-                )
-            )
-        if dry_run:
-            continue
-        status = result.get("status")
-        # v7.3: `--yes` phai co tac dung o CAI che do `--once`. Trc day no chi
-        # duoc executor dung den, con run_once luon tra ma 2 cho `need_confirm`
-        # -> nguoi dung dung script (vi-assistant --yes "tat may tinh") bi tu
-        # choi chinh lenh ma ho da bao "khoi hoi", va khong co loi bao nao.
-        if status == "need_confirm" and executor.AUTO_CONFIRM:
-            status = "ok"
-        if status in ("ok", "low_confidence"):
-            if not execute_command(result):
-                exit_code = 1
-        else:
-            exit_code = 2
-    return exit_code
+def _prepare_once(text: str, nlu: NLU) -> tuple[list[dict], str, list[str]]:
+    commands = nlu.understand(text)
+    if not isinstance(commands, list) or any(not isinstance(item, dict) for item in commands):
+        raise ValueError("NLU phải trả về danh sách các object lệnh.")
+    results: list[dict] = commands
+    document = dumps_json(results)
+    # Prepare every display/serialization before the first command can act.
+    summaries = ["-> {} | {} | {:.0%} | {}".format(
+        str(item.get("intent")), str(item.get("target")),
+        _confidence_percent(item), str(item.get("status"))) for item in results]
+    return results, document, summaries
+
+
+def run_once(text: str, nlu: NLU, dry_run: bool = False, as_json: bool = False,
+             *, json_output: TextIO | None = None) -> int:
+    output = json_output if json_output is not None else sys.stdout
+    with contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext():
+        try:
+            commands, document, summaries = _prepare_once(text, nlu)
+        except Exception as error:
+            message = error_text(error)
+            logger.warning("Không phân tích/biểu diễn được lệnh: %s", message)
+            if as_json:
+                raw = text if isinstance(text, str) else error_text(text)
+                write_json_document(dumps_json({"ok": False, "error": message, "raw": raw}),
+                                    output=output)
+            else:
+                safe_print(f"[LỖI] Không phân tích được: {message}")
+            return 2
+        if as_json and not write_json_document(document, output=output):
+            return 1
+        exit_code = 0
+        for result, summary in zip(commands, summaries):
+            if not as_json:
+                safe_print(summary)
+            exit_code = max(exit_code, _execute_once(result, dry_run))
+        return exit_code
 
 
 def setup_signal_handlers():
@@ -360,13 +408,37 @@ def _print_version() -> None:
     safe_print(f"Python: {sys.version.split()[0]} | Platform: {sys.platform}")
 
 
+def _reset_speech_policy() -> None:
+    """Revoke prior consent on already-loaded controllers without eager imports."""
+    for name in ("stt", "tts"):
+        module = sys.modules.get(name)
+        configure = getattr(module, "configure", None)
+        if callable(configure):
+            configure("auto")
+    executor.set_speech_enabled(False)
+
+
+def _apply_speech_policy(args: argparse.Namespace) -> None:
+    if (getattr(args, "voice", False) or "stt" in sys.modules
+            or getattr(args, "stt_engine", "auto") != "auto"
+            or getattr(args, "allow_cloud_stt", False) or getattr(args, "stt_download", False)):
+        import stt
+
+        stt.configure(getattr(args, "stt_engine", "auto"),
+                      allow_cloud=getattr(args, "allow_cloud_stt", False),
+                      allow_download=getattr(args, "stt_download", False))
+    if (getattr(args, "speak", False) or args.engine or "tts" in sys.modules
+            or getattr(args, "allow_cloud_tts", False)):
+        import tts
+
+        tts.configure(args.engine or "auto", allow_cloud=getattr(args, "allow_cloud_tts", False))
+
+
 def _apply_cli_options(args: argparse.Namespace) -> int | None:
     """Áp --yes / --config / --engine. Trả về mã lỗi (1) nếu không đi tiếp được."""
-    if args.yes:
-        # executor._confirm() trả về True mà không hỏi - chủ ý cho script/CI.
-        # Chỉ cắt BƯỚC XÁC NHẬN, không cắt bước CHẶN lệnh ngoài whitelist.
-        executor.set_auto_confirm(True)
-        safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")
+    # Never retain consent from a previous main() call or a failed config load.
+    executor.set_auto_confirm(False)
+    _reset_speech_policy()
     if args.config:
         try:
             executor.reload_config(args.config)
@@ -375,19 +447,21 @@ def _apply_cli_options(args: argparse.Namespace) -> int | None:
             safe_print(f"[LỖI] Không nạp được config {args.config}: {e}")
             return 1
 
-    if args.engine:
-        try:
-            import tts
-
-            tts.ENGINE = args.engine
-            safe_print(f"[TTS] Engine: {args.engine}")
-        except Exception as e:
-            safe_print(f"[LỖI] Không đặt được engine TTS: {e}")
+    try:
+        _apply_speech_policy(args)
+    except Exception as error:
+        _reset_speech_policy()
+        safe_print(f"[LỖI] Không áp dụng được speech policy: {error_text(error)}")
+        return 1
+    executor.set_auto_confirm(bool(args.yes))
+    if args.yes:
+        safe_print("[CHẾ ĐỘ --yes] Các lệnh nguy hiểm sẽ chạy mà không hỏi lại.")
     return None
 
 
 def _warn_missing_optional_features(args: argparse.Namespace) -> None:
     """Báo (không chết) nếu người dùng bật --voice/--speak mà máy thiếu thư viện."""
+    executor.set_speech_enabled(False)
     if args.voice:
         try:
             import stt
@@ -466,9 +540,10 @@ def _format_reminder(item: dict) -> str:
     """Một dòng liệt kê nhắc nhở, chịu được dữ liệu thiếu/hỏng (v7.2)."""
     task = item.get("task", "?") or "?"
     at = executor._reminder_at(item)
-    if at is None:
-        return f"{task} - ??:??"
-    return f"{task} - {at:%H:%M %d/%m}"
+    when = "??:??" if at is None else f"{at:%H:%M %d/%m}"
+    status = (" [TẠM DỪNG: không tạo được timer; khởi động lại để thử khôi phục]"
+              if item.get("_timer_error") else "")
+    return f"{task} - {when}{status}"
 
 
 @_control("help", "giup", "giúp", "?")
@@ -546,7 +621,7 @@ def _cmd_reload_config(ctx: ReplContext) -> None:
     try:
         cfg = executor.reload_config()
         safe_print(
-            f"[CẤU HÌNH] Đã nạp lại config.json "
+            f"[CẤU HÌNH] Đã nạp lại {executor.current_config_path()} "
             f"({len(cfg['website_map'])} web, {len(cfg['file_map'])} file)."
         )
         # v7.2: in ra ngưỡng đang dùng để người dùng THẤY được config có thực sự
@@ -779,7 +854,7 @@ def _run_info_command(args: argparse.Namespace) -> int | None:
     if args.doctor:
         import diagnostic
 
-        code: int = diagnostic.main()
+        code: int = diagnostic.main(["--json"] if args.json else [])
         return code
     if args.sysinfo:
         print_sysinfo()
@@ -808,7 +883,7 @@ def _adopt_shipped_data() -> list[str]:
         if paths.describe()["from_source"]:
             return []
         return list(paths.migrate_from_package_dir(
-            ("config.json", "reminders.json", ".history.json", "feedback.csv")
+            ("config.json",)
         ))
     except Exception as e:                      # khong duoc phep lam chet tro ly vi sao chep
         logger.debug("không chép được dữ liệu từ gói: %s", e)
@@ -847,9 +922,20 @@ def _one_shot_text(args: argparse.Namespace) -> tuple[str | None, bool]:
     return one_shot, False
 
 
-def main() -> int:
-    args = parse_args()
+def _json_error(message: str, output: TextIO | None) -> None:
+    if output is not None:
+        write_json_document(dumps_json({"ok": False, "error": message}), output=output)
 
+
+def _blank_once(args: argparse.Namespace, output: TextIO | None) -> int:
+    if args.json and not write_json_document("[]", output=output):
+        return 1
+    safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
+    safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
+    return 0
+
+
+def _main(args: argparse.Namespace, json_output: TextIO | None = None) -> int:
     early = _run_info_command(args)
     if early is not None:
         return early
@@ -864,6 +950,8 @@ def main() -> int:
 
     option_error = _apply_cli_options(args)
     if option_error is not None:
+        _json_error("Không áp dụng được tuỳ chọn dòng lệnh; xem stderr để biết chi tiết.",
+                    json_output)
         return option_error
 
     one_shot, blank_once = _one_shot_text(args)
@@ -873,33 +961,40 @@ def main() -> int:
             safe_print(BANNER)
         safe_print("Đang nạp mô hình hiểu ý...")
     elif blank_once:
-        # `--once ""`/`--once "   "`: da chi dinh che do mot-cau thi phai thoat,
-        # khong im lang roi roi vao REPL (kieu im lang do giết script/CI).
-        safe_print("[CÂU LỆNH] Câu rỗng - không có gì để thực hiện.")
-        safe_print("   Muốn hội thoại liên tục: chạy mà không kèm --once.")
-        return 0
+        return _blank_once(args, json_output)
 
     _warn_missing_optional_features(args)
     try:
         nlu = NLU()
     except Exception as e:
         logger.exception("Không nạp được model NLU")
-        safe_print(f"[LỖI NGHIÊM TRỌNG] Không nạp được mô hình hiểu ý: {e}")
-        safe_print("   Thử chạy: python -m dataset hoặc python train_nlu.py --fast")
+        safe_print(f"[LỖI NGHIÊM TRỌNG] Không nạp được mô hình hiểu ý: {error_text(e)}")
+        safe_print("   Thử chạy: python -m vi_voice_assistant.train_nlu --fast")
+        _json_error(error_text(e), json_output)
         return 1
 
     logger.info("Đã nạp model, bắt đầu phiên làm việc mới.")
     setup_signal_handlers()
 
-    restored = executor.restore_reminders()
+    restored = 0 if args.dry_run else executor.restore_reminders()
     if restored:
         safe_print(f"[NHẮC NHỞ] Đã khôi phục {restored} lời nhắc còn hạn từ lần chạy trước.")
 
     if one_shot:
         save_history_entry(one_shot)
-        return run_once(one_shot, nlu, dry_run=args.dry_run, as_json=args.json)
+        return run_once(one_shot, nlu, dry_run=args.dry_run, as_json=args.json,
+                        json_output=json_output)
 
     return _run_repl(nlu, ReplState(dry_run=args.dry_run, mic_mode=args.voice))
+
+
+def main() -> int:
+    args = parse_args()
+    if args.json and not args.doctor:
+        output = sys.stdout
+        with contextlib.redirect_stdout(sys.stderr):
+            return _main(args, json_output=output)
+    return _main(args)
 
 
 if __name__ == "__main__":

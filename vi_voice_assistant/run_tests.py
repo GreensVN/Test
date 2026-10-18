@@ -19,6 +19,7 @@ import importlib.util
 import inspect
 import io
 import logging
+import math
 import os
 import pathlib
 import re
@@ -81,11 +82,57 @@ _MISSING = object()
 class _Skip(Exception): pass  # noqa: N818
 
 class _Approx:
-    def __init__(self, expected, rel=1e-6, abs_tol=None):
-        self.expected, self._rel, self._abs = expected, rel, abs_tol
+    """Real scalars and flat list/tuple/dict parity, without a NumPy dependency.
+
+    Nested containers are deliberately refused, not silently compared with
+    relaxed tolerances. This remains a small shim, not all of pytest.approx.
+    """
+    def __init__(self, expected, rel=None, abs_tol=None, nan_ok=False, **kwargs):
+        if "abs" in kwargs:
+            if abs_tol is not None:
+                raise TypeError("absolute tolerance supplied twice")
+            abs_tol = kwargs.pop("abs")
+        if kwargs:
+            raise TypeError("unsupported approx options: %s" % sorted(kwargs))
+        self.expected, self._nan_ok = expected, bool(nan_ok)
+        self._rel = float(1e-6 if rel is None and abs_tol is None else (rel or 0.0))
+        self._abs = float(1e-12 if abs_tol is None else abs_tol)
+        if any(math.isnan(value) or value < 0 for value in (self._rel, self._abs)):
+            raise ValueError("approx tolerances must be nonnegative, not NaN")
+        values = expected.values() if isinstance(expected, dict) else expected
+        if isinstance(expected, (dict, list, tuple)):
+            if any(isinstance(value, (dict, list, tuple, set)) for value in values):
+                raise TypeError("nested approx containers are not supported")
+        elif isinstance(expected, set):
+            raise TypeError("unordered approx containers are not supported")
+
+    def _scalar(self, actual, expected):
+        if actual == expected:
+            return True
+        if isinstance(actual, (str, bytes)) or isinstance(expected, (str, bytes)):
+            return False
+        try:
+            actual_number, expected_number = float(actual), float(expected)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if math.isnan(expected_number):
+            return self._nan_ok and math.isnan(actual_number)
+        if not math.isfinite(actual_number) or not math.isfinite(expected_number):
+            return False
+        tolerance = max(self._abs, self._rel * abs(expected_number))
+        return abs(actual_number - expected_number) <= tolerance
+
     def __eq__(self, other):
-        if self._abs is not None: return abs(other - self.expected) <= self._abs
-        return abs(other - self.expected) <= self._rel * max(abs(self.expected), 1e-12)
+        if isinstance(self.expected, dict):
+            return (isinstance(other, dict) and other.keys() == self.expected.keys()
+                    and all(self._scalar(other[key], value)
+                            for key, value in self.expected.items()))
+        if isinstance(self.expected, (list, tuple)):
+            return (isinstance(other, (list, tuple)) and len(other) == len(self.expected)
+                    and all(self._scalar(actual, expected)
+                            for actual, expected in zip(other, self.expected)))
+        return self._scalar(other, self.expected)
+
     def __repr__(self): return "approx(%r)" % self.expected
 
 class _ExceptionInfo:
@@ -174,10 +221,14 @@ def _raises(exc_type, *args, match=None, **kwargs):
 
 class _MarkParam:
     def __init__(self, argnames, argvalues):
-        self.argnames = [n.strip() for n in argnames.split(",")]
-        self.argvalues = argvalues
+        self.argnames = ([n.strip() for n in argnames.split(",")]
+                         if isinstance(argnames, str) else list(argnames))
+        self.argvalues = list(argvalues)
     def __call__(self, fn):
-        fn.__parametrize__ = (self.argnames, self.argvalues); return fn
+        # Decorator phía ngoài không được ghi đè decorator phía trong.
+        fn.__parametrize__ = [*getattr(fn, "__parametrize__", []),
+                              (self.argnames, self.argvalues)]
+        return fn
 
 class _MarkSkipif:
     def __init__(self, cond, reason=""):
@@ -237,7 +288,17 @@ class _Capsys:
 
 class _Tee:
     def __init__(self, real, buf): self._r, self._b = real, buf
-    def write(self, s): self._r.write(s); self._b.write(s)
+    def write(self, s: str) -> int:
+        written = self._r.write(s)
+        # Match _ResilientStream's compatibility with legacy None-returning
+        # real streams, while presenting TextIO's count contract to callers.
+        if written is None:
+            written = len(s)
+        if (isinstance(written, bool) or not isinstance(written, int)
+                or not 0 <= written <= len(s)):
+            raise OSError("Capture stream received an invalid write count")
+        self._b.write(s[:written])
+        return written
     def flush(self): self._r.flush()
     def fileno(self): return self._r.fileno()
     @property
@@ -325,14 +386,16 @@ class _Monkeypatch:
         del os.environ[name]
         self._patches.append((os.environ, name, old, False, "item"))
     def chdir(self, path) -> None:
-        self._cwd = os.getcwd()
+        if self._cwd is _MISSING:
+            self._cwd = os.getcwd()
         os.chdir(str(path))
 
     def syspath_prepend(self, path) -> None:
         path = str(path)
-        self._syspath = list(sys.path)
-        if path not in sys.path:
-            sys.path.insert(0, path)
+        if self._syspath is None:
+            self._syspath = list(sys.path)
+        sys.path.insert(0, path)
+        importlib.invalidate_caches()
 
     def undo(self):
         if self._syspath is not None:
@@ -569,9 +632,9 @@ def _resolve(name, fixtures, mp, capsys, tmp_path, finalizers=None, depth=0, cap
         for pname, param in inspect.signature(fn).parameters.items():
             value = _resolve(pname, fixtures, mp, capsys, tmp_path, finalizers,
                              depth + 1, caplog)
-            if value is None and param.default is inspect.Parameter.empty:
+            if value is _MISSING and param.default is inspect.Parameter.empty:
                 raise RuntimeError(f"fixture '{name}' can '{pname}' - khong tim thay")
-            if value is not None:
+            if value is not _MISSING:
                 kwargs[pname] = value
         v = fn(**kwargs)
         if inspect.isgenerator(v):
@@ -586,7 +649,7 @@ def _resolve(name, fixtures, mp, capsys, tmp_path, finalizers=None, depth=0, cap
         if scope == "module":
             _MOD_CACHE[name] = v
         return v
-    return None
+    return _MISSING
 
 def _count_test_files(test_dir) -> int:
     """Bao nhieu file test trong thu muc (khong nem loi neu thu muc khong ton tai)."""
@@ -621,6 +684,33 @@ def _keyword_matches(keyword: str, nodeid: str) -> bool:
     return False
 
 
+def _parametrize_cases(name, fn):
+    """Tích Descartes của tất cả decorator, cùng thứ tự như pytest."""
+    cases: list[Any] = [(name, fn, {})]
+    for arg_names, arg_values in getattr(fn, "__parametrize__", []):
+        if not arg_values:
+            return [("%s[empty-parametrize]" % name, _empty_parametrize, {})]
+        expanded = []
+        for case_name, test_fn, existing in cases:
+            for vals in arg_values:
+                # Một tham số nhận nguyên list/tuple, không bị bung ra.
+                try:
+                    seq = (vals,) if len(arg_names) == 1 else tuple(vals)
+                except TypeError:
+                    return [("%s[invalid-parametrize]" % name, _invalid_parametrize, {})]
+                if len(seq) != len(arg_names) or set(existing).intersection(arg_names):
+                    return [("%s[invalid-parametrize]" % name, _invalid_parametrize, {})]
+                pkw = dict(existing, **dict(zip(arg_names, seq)))
+                cid = "-".join(str(v)[:18] for v in seq)
+                expanded.append(("%s[%s]" % (case_name, cid), test_fn, pkw))
+        cases = expanded
+    return cases
+
+
+def _invalid_parametrize(*args, **kwargs):
+    raise AssertionError("@parametrize trùng tên tham số hoặc sai số lượng giá trị")
+
+
 def run(keyword=None, verbose=False, quiet=False):
     test_dir = pathlib.Path(__file__).parent / "tests"
     files = sorted(test_dir.glob("test_*.py"))
@@ -651,32 +741,7 @@ def run(keyword=None, verbose=False, quiet=False):
             if keyword and not _keyword_matches(keyword, "%s::%s" % (path.name, name)):
                 continue
 
-            cases: list[Any] = [(name, fn, {})]
-            if hasattr(fn, "__parametrize__"):
-                arg_names, arg_values = fn.__parametrize__
-                cases = []
-                for vals in arg_values:
-                    # MOT tham so thi gia tri duoc truyen NGUYEN VAN: dung quy
-                    # tac cua pytest. Ban cu dung `isinstance(vals,(list,tuple))`
-                    # de tach ra -> voi @parametrize("flags", [["--version"],
-                    # ["--doctor"]]) no tang chu "--version" thanh 10 ki tu cho
-                    # 10 tham so, test goi main.py bang ["-", "h", "i", ...] va
-                    # che do -q cua CI chay fail khong giai thich duoc.
-                    if len(arg_names) == 1:
-                        pkw = {arg_names[0]: vals}
-                        shown = (vals,)
-                    else:
-                        seq = tuple(vals) if isinstance(vals, (list, tuple)) else (vals,)
-                        pkw = dict(zip(arg_names, seq))
-                        shown = seq
-                    cid = "-".join(str(v)[:18] for v in shown)
-                    cases.append(("%s[%s]" % (name, cid), fn, pkw))
-                if not arg_values:
-                    # @parametrize khong gia tri -> vong lap tren chay 0 lan, test
-                    # bien "khong co gi de kiem tra" thanh PASS. Do la mau xanh
-                    # gia ( cung ho voi `|| echo passed`), nen no phai la MOT
-                    # that bai co ten ro.
-                    cases.append(("%s[empty-parametrize]" % name, _empty_parametrize, {}))
+            cases = _parametrize_cases(name, fn)
 
             for case_name, test_fn, extra_kw in cases:
                 total += 1
@@ -696,16 +761,17 @@ def run(keyword=None, verbose=False, quiet=False):
                     kwargs = dict(extra_kw)
                     # fixture autouse: giai (de setup + dang ky teardown) nhung
                     # KHONG truyen vao kwargs - test khong khai bao tham so.
-                    for auto_name in autouse_names:
-                        _resolve(auto_name, fixtures, mp, capsys, tmp_path,
-                                 finalizers, 0, caplog)
-                    for pname in sig.parameters:
-                        if pname not in kwargs:
-                            v = _resolve(pname, fixtures, mp, capsys, tmp_path,
-                                         finalizers, 0, caplog)
-                            if v is not None: kwargs[pname] = v
                     outcome, detail = "pass", None
                     try:
+                        for auto_name in autouse_names:
+                            _resolve(auto_name, fixtures, mp, capsys, tmp_path,
+                                     finalizers, 0, caplog)
+                        for pname in sig.parameters:
+                            if pname not in kwargs:
+                                value = _resolve(pname, fixtures, mp, capsys, tmp_path,
+                                                 finalizers, 0, caplog)
+                                if value is not _MISSING:
+                                    kwargs[pname] = value
                         test_fn(**kwargs)
                     except _Skip as e:
                         outcome, detail = "skip", str(e)

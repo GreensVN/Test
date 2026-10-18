@@ -1,12 +1,163 @@
-# Trợ lý ảo tiếng Việt v7.8
+# Trợ lý ảo tiếng Việt v7.11.1
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1134 pass](https://img.shields.io/badge/tests-1134%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 2049 pass](https://img.shields.io/badge/tests-2049%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
 
-Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu, 11 intent, đa nền tảng (Windows 7/10/11, macOS, Linux, WSL).
+Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
+11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
+khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.11.1 (2026-10-18)**: timeout cloud hữu hạn, audio đúng format/rate và cleanup.
+- Google STT áp `operation_timeout=15s` ở mỗi request, cả recognizer đã cache;
+  không áp được deadline thì không gửi. gTTS speak/cache có connect/read timeout
+  `(15s,15s)`. Đây không phải deadline toàn pipeline hay mọi retry nội bộ SDK.
+- MP3 tạm nằm trong directory riêng và được dọn best effort sau lỗi, playback
+  hoặc Python cancellation, không để tên UUID công khai ở thư mục temp chung.
+- Array STT nhận mono PCM int16 hoặc float32/64 hữu hạn trong [-1,1], giữ biên độ,
+  không chia float đã normalize thêm lần nữa. Truyền sampling_rate thật; helper
+  không tự resample/downmix. Từ chối dữ liệu mơ hồ/stereo/quá 15s thay vì đoán/cắt.
+- VAD tách timeout chờ khỏi phrase_limit tính từ speech đầu tiên, làm tròn theo
+  chunk 0,1s; tổng cap 15s. RMS thống nhất kể cả khi NumPy không có mặt.
+- Runner approx hỗ trợ scalar/list/tuple/dict phẳng, tolerance/NaN/inf đúng hơn;
+  không bỏ các assertion vector audio để né khác biệt pytest/embedded.
+- **2049 ca kiểm thử**, thêm **78** ca. Cloud vẫn opt-in, không có permission mới ngầm.
+
+**v7.11.0 (2026-10-18)**: speech local-first với cloud/tải model có lựa chọn rõ ràng.
+- STT không ưu tiên Google chỉ vì cài SpeechRecognition; `auto` dùng local cache,
+  không upload audio hay tải weights ngầm. Google/gTTS phải được chọn tường minh
+  hoặc cho phép fallback. Tải model STT là quyền riêng qua `--stt-download`.
+- Tách engine thật: `piper` gọi Piper + model `PIPER_MODEL`; `vieneu` gọi VieNeu.
+  Helper tên cũ `_speak_piper` trước đây thực tế đã gọi VieNeu — không phải thiếu
+  tích hợp. Auto chỉ reuse VieNeu đã khởi tạo, không cold-download. `print` không phát cache.
+- PhoBERT model/checkpoints/my_dataset.csv dùng data home. Đọc labels BOM, kiểm
+  schema/weights/count/id2label, chỉ load local và không remote code; không publish
+  instance state dở khi load lỗi. CSV training phối hợp qua reader có OS lock.
+- **1971 ca kiểm thử**, thêm **95** ca; core vẫn stdlib-only.
+
+### Chuyển đổi speech và model (v7.11)
+
+```bash
+# STT cục bộ, lần đầu cho phép tải model nếu chưa cache
+pip install -e ".[stt-offline]"
+python -m vi_voice_assistant --voice --stt-engine offline --stt-download
+
+# Những lần sau chỉ dùng cache local, không cho tải hay gửi audio
+python -m vi_voice_assistant --voice --stt-engine offline
+
+# Chọn Google là đồng ý gửi audio; hoặc auto + --allow-cloud-stt để cho fallback
+pip install -e ".[stt]"
+python -m vi_voice_assistant --voice --stt-engine google
+
+# TTS cloud chỉ khi chọn gtts hoặc bật --allow-cloud-tts cho auto
+python -m vi_voice_assistant --speak --engine gtts
+python -m vi_voice_assistant --speak --engine vieneu
+
+# PhoBERT training là tùy chọn, không kéo torch vào core
+pip install -e ".[phobert]"
+python -m vi_voice_assistant.train_phobert --local-files-only
+```
+
+`offline` ở đây nói về STT local; nếu bật `--stt-download` thì vẫn có mạng để tải
+weights, không phải gửi audio. VieNeu được chọn tường minh có thể tải model lần
+đầu. Custom TTS resolver là code plugin đáng tin, không phải network sandbox.
+
+Model PhoBERT đã đặt trong thư mục package cũ không bị xoá/copy ngầm: chuyển
+bundle tin cậy vào `DATA_DIR/phobert_model`, hoặc truyền `model_dir` cũ tường minh.
+Piper cần binary và model ONNX local qua `PIPER_MODEL`; lệnh tải VieNeu không tải Piper.
+Micro/loa/GPU và inference trọng số thật vẫn cần kiểm tra trên thiết bị.
+
+**v7.10.6 (2026-10-18)** giữ một runtime, một data root và đúng config đang chọn:
+- Bốn module `paths/config/executor/nlu_advanced` dùng chung state giữa import
+  package và import phẳng. Bridge lazy, không nạp core khi chỉ đọc version;
+  không thay module tên ngắn của app khác, cần restart sau nâng cấp.
+- Chọn data root theo nền tảng; bỏ qua XDG/LOCALAPPDATA tương đối, không theo cwd.
+  Init/reset cache có lock, fallback cũng là path tuyệt đối và chỉ tạo một lần
+  giữa các thread. Wheel không thành source chỉ vì có pyproject của app khác.
+- `reload` không có path giữ profile custom lần thành công gần nhất. NLU refresh
+  lỗi thì không báo thành công/đổi config executor; kiểm policy trước cập nhật.
+  `dangerous_actions: []` hợp lệ được cả hai tầng tôn trọng: **chủ động tắt danh
+  sách xác nhận**, chỉ dùng nếu thật sự muốn; thiếu/sai policy không đồng nghĩa rỗng.
+- Lần áp CLI options mới không giữ `--yes`/speech từ lần gọi trước; config lỗi
+  không để auto-confirm còn bật. Flags vẫn global, không hỗ trợ nhiều CLI session đồng thời.
+- Nếu trước đây dùng XDG tương đối hoặc XDG trên Windows/macOS, dữ liệu cũ không
+  bị xoá: đặt `VI_ASSISTANT_HOME` tới đường dẫn **tuyệt đối** cũ nếu muốn giữ nơi lưu.
+- **1876 ca kiểm thử**, thêm **68** ca; core vẫn stdlib-only.
+
+**v7.10.5 (2026-10-18)** JSON sạch cả khi startup/I/O lỗi, không chạy batch hỏng:
+- Cảnh báo tạo config/log đi **stderr**, kể cả trước khi parse CLI. Log custom
+  dùng đúng thư mục được chỉ định; không tạo được file log vẫn có console fallback.
+- Kiểm cả batch và serialization trước action đầu tiên. JSON sai shape, NaN/inf,
+  circular metadata hoặc lỗi chuyển text trả lỗi có kiểm soát, không chạy một phần batch.
+- JSON máy dùng ASCII escape (giữ giá trị sau decode), kiểm short-write và flush
+  trước khi dispatch. Lỗi output trả nonzero, không thực thi lệnh từ batch đó.
+- Ghi file atomic dùng staged-file owner chung; `KeyboardInterrupt`/`SystemExit`
+  trước publish dọn temp và giữ file cũ, không nuốt tín hiệu huỷ. Kiểm encoding/
+  prefix trước I/O; prefix không được là path. Không rollback sau publish/SIGKILL.
+- **1808 ca kiểm thử**, thêm **132** ca; core vẫn stdlib-only.
+
+**v7.10.4 (2026-10-18)** giữ dữ liệu cũ khi đọc/khởi tạo gặp lỗi hoặc chạy đua:
+- History đọc UTF-8 BOM; lỗi đọc/JSON hỏng không bị hiểu thành lịch sử trống
+  rồi ghi đè. Cần sao lưu/sửa hoặc di chuyển `.history.json` hỏng để ghi tiếp.
+- Các thao tác history cùng module được khoá trong một process, không mất entry
+  khi nhiều thread append. Giữ giới hạn 200, bỏ trùng liên tiếp và bỏ input sai kiểu.
+- Migration kiểm containment cả nguồn/đích; từ chối traversal, Windows-rooted
+  path và symlink thoát vùng. File mới được xuất bản đầy đủ, **không thay thế**
+  đích có sẵn; config đầu tiên đọc lại file của bên tạo thắng cuộc.
+- Khởi tạo dùng rename no-replace trên Windows, hardlink trên POSIX. Nếu filesystem
+  không hỗ trợ thì cảnh báo, bỏ migration/dùng config RAM, không fallback ghi đè.
+- JSON vượt giới hạn decoder và target/nhãn không chuyển được sang text bị từ
+  chối thay vì traceback hay gọi action mặc định.
+- **1676 ca kiểm thử**, thêm **91** ca; core vẫn chỉ cần stdlib.
+
+**v7.10.3 (2026-10-18)** không coi "tạo được process" là lệnh hệ thống đã thành công:
+- Công cụ hệ thống/âm lượng/chụp màn hình kiểm mã thoát. Chuỗi dự phòng dùng
+  chung tối đa 15 giây; timeout hoặc kết quả không xác định thì **không thử lệnh
+  tiếp theo**, vì hành động trước có thể đã diễn ra. Không có rollback thao tác OS.
+- Mở app/trình duyệt/file vẫn bất đồng bộ, chỉ xác nhận gửi yêu cầu mở, không
+  chờ ứng dụng đóng. Không tự chạy lại cùng lệnh khi wrapper ném `TypeError`.
+- Confidence quá lớn/ngoài [0,1]/bool không bị đổi thành 100% hay gây overflow;
+  executor/NLU từ chối, phần hiển thị và feedback dùng 0.
+- Ảnh chụp dùng timestamp kèm UUID, tránh dùng lại tên trong cùng tick đồng hồ.
+  Output công cụ được tách khỏi stdout JSON của trợ lý.
+- **1585 ca kiểm thử**, thêm **103** ca; core vẫn chỉ cần stdlib.
+
+**v7.10.2 (2026-10-18)** bảo vệ phần phục hồi nhắc nhở khi timer lỗi:
+- Callback gắn với từng thế hệ timer: callback cũ/đúp không bật thêm timer,
+  không đụng vào lời nhắc vừa khôi phục với cùng ID.
+- Không mất lịch tương lai/lịch lặp khi thiếu tài nguyên tạo timer. Giữ bản ghi
+  **tạm dừng**, báo rõ trong danh sách; khởi động lại để thử khôi phục. Lịch tạm
+  dừng vẫn huỷ được; không giả rằng nó đang chạy và không có vòng tự retry nền.
+- Lỗi `cancel()` không chặn thông báo đến giờ; số nguyên rất lớn và biên năm
+  9999 không làm sập handler. Chỉ chuẩn hoá `Z` cuối chuỗi ISO.
+- CI nhận cả PR xếp chồng nhắm vào nhánh khác `main`.
+- **1482 ca kiểm thử**, thêm **55** ca; giữ core stdlib-only.
+
+**v7.10.1 (2026-10-17)** tiếp tục sửa các ranh giới chưa được bảo vệ:
+- Ngưỡng cấu hình bằng 0 vẫn từ chối confidence 0/không hợp lệ; `--yes` không
+  thể biến lệnh phủ định thành hành động hệ thống.
+- Ghi/đọc CSV dùng khóa OS có timeout; nhiều thread/process không tạo header/BOM
+  trùng hoặc trộn record. Phản hồi chỉ báo thành công sau flush/fsync; dạy model
+  báo lỗi thật nếu không lưu được, không tự xác nhận chuỗi `"false"`/`"0"`.
+- Ngữ cảnh giữ snapshot riêng, dung lượng 0 thực sự tắt nhớ; thay đại từ một lần,
+  không làm hỏng URL/path có `no`, không diễn giải lại nội dung vừa chèn.
+- **1427 ca kiểm thử**, thêm **83** ca ở đợt tiếp tục này; core vẫn chỉ cần stdlib.
+
+**v7.10.0 (2026-10-17)** nâng độ ổn định và an toàn tại các điểm vào:
+- Nhắc nhở xa ngày dùng từng chặng timer; huỷ nhắc chặn callback đã cũ, khôi phục
+  giữ ID và tránh nhân đôi; lịch lặp bỏ qua mốc đã lỡ thay vì dừng hẳn.
+- `--json` một lần chạy xuất đúng một giá trị JSON trên **stdout**; thông báo
+  khởi động/chẩn đoán sang **stderr**. `--dry-run` không khôi phục timer hay thực thi lệnh.
+- Chặn lệnh hệ thống có phủ định; giữ nguyên dấu câu của truy vấn và URL, không
+  coi `,`/`;` trong URL là lệnh riêng. Sửa trí nhớ ngữ cảnh và tách câu viết hoa.
+- Toán dùng AST có giới hạn tài nguyên, hỗ trợ căn/luỹ thừa âm/toán tử Unicode;
+  không nhận kết quả không hữu hạn hoặc biểu thức ghép mới tính được một phần.
+- Kiểm tra cấu hình, đường dẫn và JSON chặt hơn; cache lite chỉ đọc dữ liệu,
+  không giải tuần tự đối tượng tuỳ ý. Phiên bản gói/API/CLI dùng chung một nguồn.
+- **1344 ca kiểm thử** (tăng 210 so với bản gốc của đợt này), chạy được bằng
+  pytest và runner nhúng không cần thư viện ngoài. Chi tiết trong [CHANGELOG](vi_voice_assistant/CHANGELOG.md).
 
 **v7.8** soi chỗ **giữ** dữ liệu, và phần lớn lỗi tìm được đều có cùng một dạng:
 một lớp bảo vệ chạy trước rồi làm hỏng thứ nó định bảo vệ. `normalize_text` xoá
@@ -82,7 +233,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1134 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 2049 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -125,7 +276,7 @@ python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 Test/
 ├── install.py             # Bootstrap cài đặt + tự kiểm tra (chỉ stdlib, mới v7.3)
-├── pyproject.toml         # deps = []; [full] [ml] [tts] [stt] [dev] [all]
+├── pyproject.toml         # deps = []; [full] [tts] [stt] [dev] [all]
 └── vi_voice_assistant/
     ├── __init__.py        # Nối import phẳng -> `pip install .` chạy được (mới v7.3)
     ├── __main__.py        # python -m vi_voice_assistant              (mới v7.3)
@@ -143,22 +294,44 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1134 test)
-    └── tests/             # 1134 test (v7.2 - v7.9 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (2049 test)
+    └── tests/             # 2049 test (v7.2 - v7.11.1 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1134 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 2049 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
-python vi_voice_assistant/run_tests.py
-# Ket qua: 1134 pass, 0 fail, 0 skip
+VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
+# Ket qua: 2049 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao
 python -m mypy                             # 0 loi (doc [tool.mypy] trong pyproject.toml)
 ```
+
+## Dùng trong script
+
+```bash
+vi-assistant --once "15 + 27" --dry-run --json > result.json
+vi-assistant --doctor --json > doctor.json
+```
+
+`--json` cần câu lệnh một lần (`--once` hoặc đối số văn bản), hoặc `--doctor`;
+không dùng với REPL. Câu rỗng trả `[]`. Mã thoát cho lệnh một lần: **0** = đã
+xử lý, **1** = lỗi khởi động/cấu hình/thực thi, **2** = chưa hiểu, cần xác nhận
+hoặc không phân tích được. Riêng `--dry-run` trả **0** nếu đã phân tích được,
+kể cả khi JSON có `status: "unknown"`; script nên đọc trường `status`.
+`--yes` chỉ bỏ xác nhận hành động nguy hiểm, **không** bỏ ngưỡng tự tin.
+Nếu có cả đối số văn bản và `--once`, `--once` được ưu tiên. Confidence bằng
+0 luôn bị từ chối, kể cả khi đặt các ngưỡng bằng 0.
+
+Nhắc nhở cần tiến trình trợ lý còn chạy; bản này không tạo dịch vụ nền của hệ
+điều hành. Dry-run vẫn có thể tạo cache model, log và lịch sử. Kiểm chứng tại
+môi trường phát triển Linux/Python 3.11; micro, âm thanh, model giọng nói và
+thao tác hệ điều hành thật cần thử riêng trên máy đích. CI có ma trận
+Python 3.9–3.13 trên Windows/macOS/Linux.
 
 ## Tài liệu
 
