@@ -21,6 +21,7 @@ Ba lỗi tìm được, cùng họ "lỗi bị nuốt rồi biến thành hành 
 """
 import sys
 import types
+from array import array
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,7 @@ def fake_numpy(monkeypatch):
     """`numpy` giả: máy CI không cài, mà `transcribe_array` cần `np.float32`."""
     np = types.ModuleType("numpy")
     np.float32 = "float32"
+    np.asarray = lambda value, dtype=None: value
     monkeypatch.setitem(sys.modules, "numpy", np)
     return np
 
@@ -244,14 +246,7 @@ def test_loi_giai_ma_offline_khong_lam_sap_cau_lenh(fake_numpy, tmp_path, capsys
     st = stt.STT()
     st._pipe = Boom()
 
-    class FakeArray:
-        def astype(self, _t):
-            return self
-
-        def __truediv__(self, _o):
-            return self
-
-    assert st.transcribe_array(FakeArray()) == ""
+    assert st.transcribe_array(array("h", [0, 100])) == ""
     assert "Lỗi" in capsys.readouterr().out
     (tmp_path / "audio.wav").write_bytes(b"fake local audio")
     assert st.transcribe_file(tmp_path / "audio.wav") == ""

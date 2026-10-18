@@ -245,14 +245,17 @@ jobs:
         python - <<'PY'
         import contextlib
         import datetime
+        from array import array
         import io
         import importlib
         import json
         import pathlib
+        import struct
         import sys
         import tempfile
         from types import SimpleNamespace
         from unittest import mock
+        import vi_voice_assistant.audio_utils as audio
         import vi_voice_assistant.config as config
         import vi_voice_assistant.executor as executor
         import vi_voice_assistant.main as cli
@@ -466,6 +469,23 @@ jobs:
                 mock.patch.object(tts, "_speak_gtts", lambda text: speech_calls.append(text) or True):
             tts.speak("must not upload", show=False)
         assert speech_calls == []
+        normalized = audio.normalize_mono(array("h", [-32768, 0, 32767]))
+        assert audio.pcm16_bytes(normalized) == struct.pack("<hhh", -32768, 0, 32767)
+        assert list(audio.normalize_mono(array("f", [-1.0, 0.0, 1.0]))) == [-1.0, 0.0, 1.0]
+
+        class Recognizer:
+            operation_timeout = None
+
+            def recognize_google(self, payload, language=None):
+                assert 0 < self.operation_timeout <= 15
+                return "timeout configured"
+
+        service = SimpleNamespace(UnknownValueError=type("UnknownValueError", (Exception,), {}),
+                                  RequestError=type("RequestError", (Exception,), {}))
+        stt.configure("google")
+        with mock.patch.object(stt, "_sr", service):
+            assert stt._recognize(Recognizer(), object(), "vi-VN") == "timeout configured"
+        stt.configure("auto")
         print("installed assistant safety and persistence passed")
         PY
     - name: User data must NOT be written into site-packages
@@ -548,7 +568,7 @@ jobs:
         need = {"vi_voice_assistant/__init__.py", "vi_voice_assistant/__main__.py",
                 "vi_voice_assistant/config.json", "vi_voice_assistant/diagnostic.py",
                 "vi_voice_assistant/_version.py", "vi_voice_assistant/json_output.py",
-                "vi_voice_assistant/_vi_runtime_aliases.py"}
+                "vi_voice_assistant/_vi_runtime_aliases.py", "vi_voice_assistant/audio_utils.py"}
         missing = need - set(names)
         assert not missing, f"wheel thiếu: {missing}"
         print("wheel ok:", len(names), "files")

@@ -1,5 +1,5 @@
 """
-tts.py v7.11.0 - local-first Text-To-Speech, cloud opt-in
+tts.py v7.11.1 - local-first Text-To-Speech, cloud opt-in
 
 v7.0 nâng cấp:
 - Type hints, pathlib, thread-safe engine cache
@@ -44,7 +44,6 @@ import shutil
 import subprocess
 import tempfile
 import threading
-import uuid
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
@@ -58,6 +57,7 @@ SYSTEM = platform.system()
 ENABLED: bool = True
 ENGINE: str = "auto"
 ALLOW_CLOUD = False
+_CLOUD_REQUEST_TIMEOUT = (15.0, 15.0)
 
 _engine_cache: Any | None = None
 _resolved_engine: Callable[[str], bool] | None = None
@@ -329,25 +329,30 @@ def _speak_macos(text: str) -> bool:
 def _speak_gtts(text: str) -> bool:
     if ENGINE != "gtts" and not ALLOW_CLOUD:
         return False
+    temporary = None
     try:
         from gtts import gTTS
 
-        tmp_path = Path(tempfile.gettempdir()) / f"tro_ly_tts_{uuid.uuid4().hex}.mp3"
-        gTTS(text=text, lang="vi").save(str(tmp_path))
-        ok = _play_audio(tmp_path)
-        try:
-            # Đợi 1 chút trước khi xoá nếu dùng os.startfile (không block)
-            if SYSTEM == "Windows":
-                import time
+        # Owner-private directory, not a public UUID filename under /tmp.
+        temporary = tempfile.TemporaryDirectory(prefix="vi-gtts-")
+        path = Path(temporary.name) / "speech.mp3"
+        gTTS(text=text, lang="vi", timeout=_CLOUD_REQUEST_TIMEOUT).save(str(path))
+        ok = _play_audio(path)
+        if SYSTEM == "Windows":
+            import time
 
-                time.sleep(0.5)
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+            time.sleep(0.5)  # Legacy asynchronous player handoff; not completion proof.
         return ok
-    except Exception as e:
-        logger.debug("gTTS lỗi: %s", e)
+    except Exception as error:
+        logger.debug("gTTS lỗi: %s", error)
         return False
+    finally:
+        if temporary is not None:
+            try:
+                temporary.cleanup()
+            except OSError as error:
+                # Do not claim playback failed and retry after a cleanup-only error.
+                logger.warning("Không dọn được audio tạm %s: %s", temporary.name, error)
 
 
 def _engine_order() -> list:
@@ -479,7 +484,7 @@ def _write_gtts(text: str, out: Path) -> bool:
     except ImportError as e:
         raise TTSWriteError("chưa cài gTTS (pip install gTTS)") from e
     try:
-        gTTS(text=text, lang="vi").save(str(out))
+        gTTS(text=text, lang="vi", timeout=_CLOUD_REQUEST_TIMEOUT).save(str(out))
     except Exception as e:  # loi mang/HTTP - giu nguyen thong bao that de in ra
         raise TTSWriteError(f"gTTS cần mạng mà gọi không được ({type(e).__name__})") from e
     if not _file_written(out, minimum=1):

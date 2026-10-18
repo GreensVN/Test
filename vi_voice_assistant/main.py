@@ -1,5 +1,5 @@
 """
-main.py - Trợ lý ảo tiếng Việt v7.11.0
+main.py - Trợ lý ảo tiếng Việt v7.11.1
 
 v7.5 nâng cấp (ĐIỂM VÀO CHỊU ĐƯỢC DỮ LIỆU THẬT):
 - config.json hỏng (danh sách, thiếu dấu phẩy) KHÔNG giết cả ứng dụng nữa:

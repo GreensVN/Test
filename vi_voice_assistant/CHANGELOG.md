@@ -1,5 +1,62 @@
 # CHANGELOG
 
+## v7.11.1 (2026-10-18) - cloud request timeout, typed audio, VAD budget và temp privacy
+
+### Lỗi tái hiện và sửa
+
+- **Cloud có thể chờ không giới hạn:** recognizer operation_timeout từng None,
+  gồm instance được cache. Áp/kiểm timeout 15s trước mỗi recognize_google; không
+  set được thì không gửi. gTTS playback/cache truyền connect/read timeout 15/15s.
+  Không tự retry network ở lớp này; SDK có thể có nhiều request/retry riêng,
+  nên không gọi đây là deadline 15s cho toàn utterance/pipeline.
+- **MP3 tạm rò rỉ:** save/player lỗi hoặc KeyboardInterrupt từng bỏ lại file
+  tại temp chung, mode theo umask. Dùng directory owner-private và finally
+  cleanup; denied cloud không allocate file. Lỗi cleanup-only được log, không
+  đổi success thành playback failure để tự phát lại. Windows handoff cũ 0,5s
+  vẫn không chứng minh async player hoàn tất; file/dir bị giữ có thể chưa dọn được.
+- **Biên độ/rate sai:** float audio đã normalized từng bị chia 32768 như int16;
+  mọi array bị gắn 16000 Hz. Thêm audio_utils thuần stdlib: buffer native int16
+  hoặc float32/64 trong [-1,1], mono 1D/(frames,1), rate integer 8000..192000,
+  finite và tối đa 15s. Kiểm shape/length trước tolist allocation, không sửa input.
+  Pass sampling_rate thật, không tự resample/downmix/guess endian/bit depth.
+  Unsupported/stereo/empty/quá dài bị từ chối, không cắt im lặng. Backend có thể
+  cần resampler riêng; không có thì fail có kiểm soát.
+- **Google WAV:** normalized float được encode lại PCM16 little-endian, clamp
+  +1 thành 32767, giữ rate/channels/sample width; cloud array route không cần
+  NumPy chỉ để dựng WAV. Invalid audio dừng trước load model/network.
+- **VAD sai budget:** giới hạn phrase từng là timeout + phrase_limit, dù speech
+  bắt đầu ngay; silence wait dư chunk và int() làm tròn sớm. Tách wait/speech
+  counters, ceil tới chunk 0,1s, giữ tổng MAX_DURATION. Đây là frame budget,
+  không bảo đảm wall-clock nếu native stream.read bị kẹt.
+- **RMS lệch theo dependency:** bytes/typed buffer không có astype khi NumPy có
+  mặt; fallback dùng len(array) như byte count. Dùng chung chuẩn normalize,
+  PCM16 bytes có endian rõ, invalid frame về 0, không phụ thuộc import NumPy.
+- **Runner approx:** full pytest/ML đã pass nhưng 4 embedded case fail vì shim
+  chỉ scalar. Thêm flat list/tuple/dict, exact infinity, nan_ok, abs/rel phối
+  hợp, default abs cho zero; reject tolerance âm/NaN và nested containers.
+  Tránh lỗi cũ finite có thể match infinity do inf <= inf. Không nới tolerance
+  audio hay giả vờ triển khai toàn bộ pytest/NumPy/complex approx semantics.
+- Cập nhật fake decoder theo np.asarray và typed PCM thật để assertion lỗi
+  decoder cũ vẫn chạm decoder, không pass chỉ vì input bị reject sớm.
+
+### Kiểm chứng và giới hạn
+
+- Thêm **78 ca** trong 3 file test_v7111_*.py, tổng **2049**. Nhóm đầu 54 ca
+  có **44 fail / 10 pass** trước sửa; RMS thêm 8 ca (6 fail/2 pass trước sửa),
+  approx thêm 16 ca (15 fail/1 pass trước sửa). Không bỏ coverage cũ.
+- Pytest core và scikit-learn/joblib/rapidfuzz: **2049 passed**; runner nhúng:
+  **2049 pass, 0 fail, 0 skip**. Ruff/mypy sạch; build/clean no-optional wheel
+  install ngoài repo; 5 installed CI scripts, version/JSON/privacy đều pass local.
+- Audio/HTTP/ASR/TTS tests dùng mock và buffer tổng hợp, không gửi request cloud,
+  thu mic, phát loa hay tải weights. Chưa xác minh real provider deadlines,
+  ASR quality/resampling dependency, GPU/CPU speed, async Windows audio hoặc
+  native Windows/macOS/WSL. Timeout không huỷ request đang chạy đã được opt-in;
+  policy mới áp cho lần gọi sau. Không claim mọi lỗi đã được loại bỏ.
+- Directory cleanup/fsync best effort, không SIGKILL/power-loss transaction.
+  History/reminders vẫn chưa có inter-process lock, timer cần tiến trình sống.
+  Chưa có Actions run cho branch ở lần kiểm tra; integration dispatch trước
+  đó HTTP 403, local không thay remote matrix.
+
 ## v7.11.0 (2026-10-18) - speech opt-in, đúng engine, optional model assets ở data home
 
 ### Thay đổi hành vi và lỗi sửa

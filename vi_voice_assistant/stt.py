@@ -1,5 +1,5 @@
 """
-stt.py - Speech-To-Text v7.11.0
+stt.py - Speech-To-Text v7.11.1
 
 v7.0 nâng cấp:
 - Type hints, pathlib, better error handling
@@ -17,10 +17,12 @@ import os
 import sys
 import threading
 import wave
+from array import array
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
+from audio_utils import normalize_mono, pcm16_bytes
 from platform_utils import safe_print, setup_console
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ CHUNK_DURATION = 0.1
 # Một lần là quá ít: lỗi tải thường là lỗi TẠM THỜI (mạng chập chờn, đĩa bận),
 # và bỏ model sau một lần thất bại là mất nhầm.
 _MAX_MODEL_LOAD_ATTEMPTS = 3
+_CLOUD_REQUEST_TIMEOUT = 15.0
 
 
 ENGINE = "auto"
@@ -93,6 +96,15 @@ def _duration(value: Any) -> float:
     return number
 
 
+def _apply_cloud_timeout(recognizer) -> None:
+    """SpeechRecognition forwards operation_timeout to the HTTP request."""
+    recognizer.operation_timeout = _CLOUD_REQUEST_TIMEOUT
+    configured = recognizer.operation_timeout
+    if (isinstance(configured, bool) or not isinstance(configured, (int, float))
+            or not math.isfinite(configured) or not 0 < configured <= _CLOUD_REQUEST_TIMEOUT):
+        raise ValueError("Google recognizer không nhận timeout hữu hạn.")
+
+
 def _build_offline_pipeline(model_name: str, device: str, allow_download: bool):
     import torch
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
@@ -117,27 +129,20 @@ def _decoded_text(result: object) -> str:
 
 
 def _rms(chunk) -> float:
+    """One amplitude convention regardless of whether NumPy is installed."""
     try:
-        import numpy as np
-
-        return float(np.sqrt(np.mean(chunk.astype("float32") ** 2))) / 32768.0
-    except ImportError:
-        # Fallback không có numpy
-        import math
-        import struct
-
-        # chunk là bytes hoặc array
-        try:
-            # Giả sử int16
-            count = len(chunk) // 2
-            if count == 0:
+        if isinstance(chunk, (bytes, bytearray)):
+            if not chunk or len(chunk) % 2:
                 return 0.0
-            fmt = f"{count}h"
-            samples = struct.unpack(fmt, chunk[: count * 2])
-            sum_squares = sum(s * s for s in samples)
-            return math.sqrt(sum_squares / count) / 32768.0
-        except Exception:
-            return 0.0
+            pcm = array("h")
+            pcm.frombytes(chunk)
+            if sys.byteorder != "little":
+                pcm.byteswap()
+            chunk = pcm
+        samples = normalize_mono(chunk, sampling_rate=SAMPLE_RATE, max_duration=MAX_DURATION)
+        return math.sqrt(sum(value * value for value in samples) / len(samples))
+    except (TypeError, ValueError, OverflowError, NotImplementedError):
+        return 0.0
 
 
 class STT:
@@ -193,15 +198,22 @@ class STT:
             self._sd = sd
         return _record_pcm_sd(timeout, phrase_limit, device=self._sd)
 
-    def transcribe_array(self, audio) -> str:
-        try:
-            import numpy as np
+    def transcribe_array(self, audio, *, sampling_rate: int = SAMPLE_RATE) -> str:
+        """Typed mono PCM16/normalized float, bounded before backend loading.
 
+        The rate is passed to the adapter, not guessed or resampled here.
+        Transformers may require an installed resampler for non-native rates.
+        """
+        try:
+            samples = normalize_mono(audio, sampling_rate=sampling_rate,
+                                     max_duration=MAX_DURATION)
             self._load_model()
             if self._use_google:
-                return self._google_from_array(audio)
-            audio_float = audio.astype(np.float32) / 32768.0
-            return _decoded_text(self._pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_float}))
+                return self._google_from_array(samples, sampling_rate=sampling_rate)
+            import numpy as np
+
+            audio_float = np.asarray(samples, dtype=np.float32)
+            return _decoded_text(self._pipe({"sampling_rate": sampling_rate, "raw": audio_float}))
         except Exception as error:
             logger.warning("STT array lỗi: %s", error)
             safe_print(f"[STT] Lỗi khi xử lý âm thanh: {error}")
@@ -248,6 +260,7 @@ class STT:
         if self._recognizer is None:
             self._recognizer = sr.Recognizer()
         try:
+            _apply_cloud_timeout(self._recognizer)
             raw = self._recognizer.recognize_google(audio_data, language=self._language)
             text = raw.strip() if isinstance(raw, str) else ""
             # Nghe được rồi thì số lần hỏng liên tiếp tính lại từ đầu. Không
@@ -272,7 +285,7 @@ class STT:
                            "- bạn có thể gõ tay.")
             return ""
 
-    def _google_from_array(self, audio) -> str:
+    def _google_from_array(self, audio, *, sampling_rate: int = SAMPLE_RATE) -> str:
         if not self.allow_cloud:
             safe_print("[STT] Cloud chưa được cho phép; không gửi audio.")
             return ""
@@ -281,12 +294,13 @@ class STT:
         if self._recognizer is None:
             self._recognizer = sr.Recognizer()
 
+        samples = normalize_mono(audio, sampling_rate=sampling_rate, max_duration=MAX_DURATION)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(audio.tobytes())
+            wf.setframerate(sampling_rate)
+            wf.writeframes(pcm16_bytes(samples))
         buf.seek(0)
 
         with sr.AudioFile(buf) as source:
@@ -345,48 +359,35 @@ def _record_pcm_sd(timeout: float = 6.0, phrase_limit: float = 8.0, *, device=No
 
     timeout, phrase_limit = _duration(timeout), _duration(phrase_limit)
     backend = _sd if device is None else device
-
     chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
-    silence_chunks = int(SILENCE_DURATION / CHUNK_DURATION)
-    timeout_chunks = int(timeout / CHUNK_DURATION)
-    max_chunks = int(min(MAX_DURATION, phrase_limit + timeout) / CHUNK_DURATION)
-
-    frames = []
-    silent_count = 0
+    silence_chunks = max(1, math.ceil(SILENCE_DURATION / CHUNK_DURATION))
+    wait_chunks = max(1, math.ceil(timeout / CHUNK_DURATION))
+    speech_chunks = max(1, math.ceil(phrase_limit / CHUNK_DURATION))
+    total_chunks = max(1, math.ceil(MAX_DURATION / CHUNK_DURATION))
+    frames, silent_count = [], 0
     speech_started = False
-
     safe_print("[STT] Đang nghe... (nói vào micro, im lặng ~1s là tự dừng)")
-
     with backend.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=chunk_samples
     ) as stream:
-        for i in range(max_chunks):
+        for index in range(total_chunks):
             chunk, _overflow = stream.read(chunk_samples)
             if _rms(chunk) > SILENCE_THRESHOLD:
-                speech_started = True
-                silent_count = 0
-            else:
-                if speech_started:
-                    silent_count += 1
-                elif i >= timeout_chunks:
+                speech_started, silent_count = True, 0
+            elif speech_started:
+                silent_count += 1
+            if not speech_started:
+                if index + 1 >= wait_chunks:
                     return None
-            if speech_started:
-                frames.append(chunk.copy())
-            if speech_started and silent_count >= silence_chunks:
+                continue
+            frames.append(chunk.copy())
+            if len(frames) >= speech_chunks or silent_count >= silence_chunks:
                 break
-
     if not frames:
         return None
-
     audio = np.concatenate(frames, axis=0).flatten()
     safe_print("   Đã ghi %.1fs audio." % (len(audio) / SAMPLE_RATE))
-
-    # v7.2: AudioData nhận thẳng PCM gốc, không cần đóng/mở WAV giả rồi cắt
-    # cứng 44 byte đầu. Con số 44 chỉ ĐÚNG với header PCM "canonical" - nếu
-    # wave thêm chunk mở rộng (hoặc ai đó đổi định dạng) là dữ liệu bị lệch
-    # một vài byte và nhận diện ra kết quả rác mà không báo lỗi nào.
     return audio
-
 
 
 def _record_audiodata_sd(timeout: float = 6.0, phrase_limit: float = 8.0):
@@ -450,6 +451,11 @@ def _capture_audio(timeout: float, phrase_limit: float = 8.0):
 def _recognize(recognizer, audio, language: str) -> str:
     """Gửi audio tới Google Web Speech API, trả về chuỗi rỗng khi không nhận được."""
     if ENGINE != "google" and not (ENGINE == "auto" and ALLOW_CLOUD):
+        return ""
+    try:
+        _apply_cloud_timeout(recognizer)
+    except Exception as error:
+        logger.warning("Không áp được timeout STT; không gửi audio: %s", error)
         return ""
     try:
         raw = recognizer.recognize_google(audio, language=language)

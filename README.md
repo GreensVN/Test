@@ -1,7 +1,7 @@
-# Trợ lý ảo tiếng Việt v7.11.0
+# Trợ lý ảo tiếng Việt v7.11.1
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests 1971 pass](https://img.shields.io/badge/tests-1971%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
+[![Tests 2049 pass](https://img.shields.io/badge/tests-2049%20pass-brightgreen.svg)](vi_voice_assistant/run_tests.py)
 [![mypy 0 errors](https://img.shields.io/badge/mypy-0%20errors-informational.svg)](vi_voice_assistant)
 [![ruff 0](https://img.shields.io/badge/ruff-0%20warnings-informational.svg)](pyproject.toml)
 [![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](vi_voice_assistant/GIAY_PHEP_MODEL.md)
@@ -9,6 +9,21 @@
 Trợ lý ảo tiếng Việt chạy bằng dòng lệnh, hiểu tiếng Việt có dấu lẫn không dấu,
 11 intent, đa nền tảng (Windows, macOS, Linux, WSL), yêu cầu Python 3.9+;
 khuyến nghị Python 3.12/3.13 và Windows 10/11.
+
+**v7.11.1 (2026-10-18)**: timeout cloud hữu hạn, audio đúng format/rate và cleanup.
+- Google STT áp `operation_timeout=15s` ở mỗi request, cả recognizer đã cache;
+  không áp được deadline thì không gửi. gTTS speak/cache có connect/read timeout
+  `(15s,15s)`. Đây không phải deadline toàn pipeline hay mọi retry nội bộ SDK.
+- MP3 tạm nằm trong directory riêng và được dọn best effort sau lỗi, playback
+  hoặc Python cancellation, không để tên UUID công khai ở thư mục temp chung.
+- Array STT nhận mono PCM int16 hoặc float32/64 hữu hạn trong [-1,1], giữ biên độ,
+  không chia float đã normalize thêm lần nữa. Truyền sampling_rate thật; helper
+  không tự resample/downmix. Từ chối dữ liệu mơ hồ/stereo/quá 15s thay vì đoán/cắt.
+- VAD tách timeout chờ khỏi phrase_limit tính từ speech đầu tiên, làm tròn theo
+  chunk 0,1s; tổng cap 15s. RMS thống nhất kể cả khi NumPy không có mặt.
+- Runner approx hỗ trợ scalar/list/tuple/dict phẳng, tolerance/NaN/inf đúng hơn;
+  không bỏ các assertion vector audio để né khác biệt pytest/embedded.
+- **2049 ca kiểm thử**, thêm **78** ca. Cloud vẫn opt-in, không có permission mới ngầm.
 
 **v7.11.0 (2026-10-18)**: speech local-first với cloud/tải model có lựa chọn rõ ràng.
 - STT không ưu tiên Google chỉ vì cài SpeechRecognition; `auto` dùng local cache,
@@ -218,7 +233,7 @@ Ba lenh kiem tra nhanh sau khi cai:
 
 ```bash
 python vi_voice_assistant/main.py --doctor   # may du gi, thieu gi, lenh khac phuc
-python vi_voice_assistant/run_tests.py -q    # 1971 test, khong can pytest
+python vi_voice_assistant/run_tests.py -q    # 2049 test, khong can pytest
 python vi_voice_assistant/main.py "mở youtube" --dry-run
 ```
 
@@ -279,17 +294,17 @@ Test/
     ├── giong_noi_ai.py    # Giọng AI VieNeu-TTS (Apache 2.0)
     ├── platform_utils.py  # capability report, safe_print, setup_console
     ├── logging_setup.py   # logs/ trong thư mục dữ liệu, lock thật
-    ├── run_tests.py       # Test runner KHÔNG cần pytest (1971 test)
-    └── tests/             # 1971 test (v7.2 - v7.11.0 + compat/hardening)
+    ├── run_tests.py       # Test runner KHÔNG cần pytest (2049 test)
+    └── tests/             # 2049 test (v7.2 - v7.11.1 + compat/hardening)
 ```
 
 ## Kiểm thử
 
 ```bash
-# Ca hai cach deu chay duoc 1971 test - may CHUA cai pytest van ok
+# Ca hai cach deu chay duoc 2049 test - may CHUA cai pytest van ok
 python -m pytest vi_voice_assistant/tests -q
 VI_TESTS_FORCE_EMBEDDED=1 python vi_voice_assistant/run_tests.py -q
-# Ket qua: 1971 pass, 0 fail, 0 skip
+# Ket qua: 2049 pass, 0 fail, 0 skip
 
 # Kiem chat luong nen (CI that hai muc nay - xem job lint/typecheck):
 python -m ruff check .                     # 0 canh bao

@@ -19,6 +19,7 @@ import importlib.util
 import inspect
 import io
 import logging
+import math
 import os
 import pathlib
 import re
@@ -81,11 +82,57 @@ _MISSING = object()
 class _Skip(Exception): pass  # noqa: N818
 
 class _Approx:
-    def __init__(self, expected, rel=1e-6, abs_tol=None):
-        self.expected, self._rel, self._abs = expected, rel, abs_tol
+    """Real scalars and flat list/tuple/dict parity, without a NumPy dependency.
+
+    Nested containers are deliberately refused, not silently compared with
+    relaxed tolerances. This remains a small shim, not all of pytest.approx.
+    """
+    def __init__(self, expected, rel=None, abs_tol=None, nan_ok=False, **kwargs):
+        if "abs" in kwargs:
+            if abs_tol is not None:
+                raise TypeError("absolute tolerance supplied twice")
+            abs_tol = kwargs.pop("abs")
+        if kwargs:
+            raise TypeError("unsupported approx options: %s" % sorted(kwargs))
+        self.expected, self._nan_ok = expected, bool(nan_ok)
+        self._rel = float(1e-6 if rel is None and abs_tol is None else (rel or 0.0))
+        self._abs = float(1e-12 if abs_tol is None else abs_tol)
+        if any(math.isnan(value) or value < 0 for value in (self._rel, self._abs)):
+            raise ValueError("approx tolerances must be nonnegative, not NaN")
+        values = expected.values() if isinstance(expected, dict) else expected
+        if isinstance(expected, (dict, list, tuple)):
+            if any(isinstance(value, (dict, list, tuple, set)) for value in values):
+                raise TypeError("nested approx containers are not supported")
+        elif isinstance(expected, set):
+            raise TypeError("unordered approx containers are not supported")
+
+    def _scalar(self, actual, expected):
+        if actual == expected:
+            return True
+        if isinstance(actual, (str, bytes)) or isinstance(expected, (str, bytes)):
+            return False
+        try:
+            actual_number, expected_number = float(actual), float(expected)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if math.isnan(expected_number):
+            return self._nan_ok and math.isnan(actual_number)
+        if not math.isfinite(actual_number) or not math.isfinite(expected_number):
+            return False
+        tolerance = max(self._abs, self._rel * abs(expected_number))
+        return abs(actual_number - expected_number) <= tolerance
+
     def __eq__(self, other):
-        if self._abs is not None: return abs(other - self.expected) <= self._abs
-        return abs(other - self.expected) <= self._rel * max(abs(self.expected), 1e-12)
+        if isinstance(self.expected, dict):
+            return (isinstance(other, dict) and other.keys() == self.expected.keys()
+                    and all(self._scalar(other[key], value)
+                            for key, value in self.expected.items()))
+        if isinstance(self.expected, (list, tuple)):
+            return (isinstance(other, (list, tuple)) and len(other) == len(self.expected)
+                    and all(self._scalar(actual, expected)
+                            for actual, expected in zip(other, self.expected)))
+        return self._scalar(other, self.expected)
+
     def __repr__(self): return "approx(%r)" % self.expected
 
 class _ExceptionInfo:

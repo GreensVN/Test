@@ -2,6 +2,7 @@
 
 import sys
 import types
+from array import array
 
 import pytest
 import stt
@@ -154,18 +155,12 @@ def test_invalid_timeout_never_records_or_transmits(speech, monkeypatch, timeout
 def test_bad_decoder_result_is_not_a_command(monkeypatch, result):
     np = types.ModuleType("numpy")
     np.float32 = "float32"
+    np.asarray = lambda value, dtype=None: value
     monkeypatch.setitem(sys.modules, "numpy", np)
-
-    class Audio:
-        def astype(self, dtype):
-            return self
-
-        def __truediv__(self, other):
-            return self
 
     instance = stt.STT()
     instance._pipe = lambda audio: result
-    assert instance.transcribe_array(Audio()) == ""
+    assert instance.transcribe_array(array("h", [0, 100])) == ""
 
 
 @pytest.mark.parametrize("url", ["http://example.com/audio.wav", "https://example.com/audio.wav"])

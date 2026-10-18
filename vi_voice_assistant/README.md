@@ -1,8 +1,16 @@
-# Trợ lý ảo tiếng Việt v7.11.0
+# Trợ lý ảo tiếng Việt v7.11.1
 
 Trợ lý ảo chạy bằng dòng lệnh, hiểu tiếng Việt **có dấu lẫn không dấu**, nhận diện
 11 nhóm ý định và thực thi lệnh thật trên Windows (khuyến nghị Windows 10/11), macOS, Linux và WSL.
 
+> **v7.11.1 (2026-10-18)** - cloud có timeout mỗi request, không phải
+> deadline toàn pipeline. MP3 tạm private-directory/cleanup best effort. Array
+> STT hỗ trợ PCM int16 và normalized float; kiểm mono/finite/size/rate trước
+> backend, giữ biên độ và truyền rate thật. Không đoán bit depth/downmix/resample.
+> VAD giới hạn speech từ lúc bắt đầu nói; RMS không phụ thuộc NumPy. Cloud vẫn
+> opt-in; helper mới không phải network sandbox hay bảo đảm phần cứng realtime.
+> **2049 ca kiểm thử**, thêm 78 ca so với 7.11.0.
+>
 > **v7.11.0 (2026-10-18)** - STT `auto` chỉ thử local, không auto cloud
 > hay tải weights. Chọn `--stt-engine google` là đồng ý gửi audio; auto fallback
 > cần `--allow-cloud-stt`. `--stt-download` chỉ cho phép tải model STT. TTS auto
@@ -248,16 +256,16 @@ quả được deepcopy để caller sửa dict không đổi lại lịch sử 
 | `giong_noi_ai.py` | Giọng AI VieNeu | CLI chuyển sang bảng `_CLI_COMMANDS` |
 | `pyproject.toml` | Metadata | `dependencies = []`, marker `python_version < "3.9"` đã bỏ, ignore ruff có chú thích |
 | `run_tests.py` | Test runner | Uỷ quyền pytest + trả exit code thật |
-| `tests/` | 1971 ca kiểm thử | Thêm 3 file `test_v711_*.py` cho speech policy, optional model storage và CLI/runner; giữ coverage cũ với consent tường minh |
+| `tests/` | 2049 ca kiểm thử | Thêm 3 file `test_v7111_*.py` cho cloud timeout/temp, typed audio và VAD/approx; giữ assertions cũ với typed-buffer mocks |
 
 ## Kiểm thử
 
 ```bash
-python run_tests.py -q     # 1971 pass, 0 fail - không cần cài gì
+python run_tests.py -q     # 2049 pass, 0 fail - không cần cài gì
 # Ép runner nhúng ngay cả khi đã cài pytest:
 # Linux/macOS: VI_TESTS_FORCE_EMBEDDED=1 python run_tests.py -q
 # PowerShell: $env:VI_TESTS_FORCE_EMBEDDED="1"; python run_tests.py -q
-python -m pytest tests/ -q # 1971 passed
+python -m pytest tests/ -q # 2049 passed
 # Từ thư mục GỐC repo, sau khi cài ".[dev]":
 python -m ruff check .
 python -m mypy
